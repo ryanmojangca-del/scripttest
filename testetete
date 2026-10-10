@@ -42,7 +42,7 @@ do
     local keeperSrc = [====[
 local UIS, player, Workspace, VirtualInputManager, isCurrent = ...
     local touchState = {
-        usesTouch = UIS.LastInputType == Enum.UserInputType.Touch,
+        usesTouch = UIS:GetLastInputType() == Enum.UserInputType.Touch,
         virtualUntil = 0,
         retryQueued = false,
         dirty = false,
@@ -72,7 +72,7 @@ local UIS, player, Workspace, VirtualInputManager, isCurrent = ...
         if UIS.KeyboardEnabled and not (touchState.usesTouch or _G.KAMUI_ForceTouchRestore) then
             return
         end
-        if UIS.LastInputType == Enum.UserInputType.Touch then
+        if UIS:GetLastInputType() == Enum.UserInputType.Touch then
             return
         end
         --// a virtual touch is already in flight: queue ONE retry so the last call of a burst is never lost
@@ -102,7 +102,7 @@ local UIS, player, Workspace, VirtualInputManager, isCurrent = ...
                 if not okTouch then
                     warn("[KAMUI input] SendTouchEvent FAILED (executor may not support it):", errTouch)
                 end
-                print("[KAMUI input] restored touch controls, LastInputType =", UIS.LastInputType.Name)
+                print("[KAMUI input] restored touch controls, LastInputType =", UIS:GetLastInputType().Name)
             end
         end)
     end
