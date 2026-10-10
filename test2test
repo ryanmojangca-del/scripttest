@@ -3406,6 +3406,17 @@ if _G.KAMUI_M1Mobile then
     --// press = action, or drag when "Move" mode is on
     local function movable(handle, target, onPress)
         local dragging, dragStart, startPos, dragInput = false, nil, nil, nil
+        --// buttons fire through the engine's own button event (fires the instant a finger
+        --// lands) instead of a raw touch listener; the raw listener now only drives dragging
+        local isButton = handle:IsA("GuiButton")
+        if isButton then
+            handle.Selectable = false
+            handle.MouseButton1Down:Connect(function()
+                if not editing and onPress then
+                    onPress()
+                end
+            end)
+        end
         handle.InputBegan:Connect(function(input)
             if not isPress(input) then
                 return
@@ -3419,7 +3430,7 @@ if _G.KAMUI_M1Mobile then
                         dragging = false
                     end
                 end)
-            elseif onPress then
+            elseif onPress and not isButton then
                 onPress()
             end
         end)
@@ -7383,6 +7394,17 @@ if _G.KAMUI_BackdashMobile then
     --// press = action, or drag when "Move" mode is on
     local function movable(handle, target, onPress)
         local dragging, dragStart, startPos, dragInput = false, nil, nil, nil
+        --// buttons fire through the engine's own button event (fires the instant a finger
+        --// lands) instead of a raw touch listener; the raw listener now only drives dragging
+        local isButton = handle:IsA("GuiButton")
+        if isButton then
+            handle.Selectable = false
+            handle.MouseButton1Down:Connect(function()
+                if not editing and onPress then
+                    onPress()
+                end
+            end)
+        end
         handle.InputBegan:Connect(function(input)
             if input.UserInputType ~= Enum.UserInputType.Touch
                 and input.UserInputType ~= Enum.UserInputType.MouseButton1 then
@@ -7397,7 +7419,7 @@ if _G.KAMUI_BackdashMobile then
                         dragging = false
                     end
                 end)
-            elseif onPress then
+            elseif onPress and not isButton then
                 onPress()
             end
         end)
