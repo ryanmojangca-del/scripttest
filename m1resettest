@@ -1,0 +1,174 @@
+local a = game:GetService("Players")
+local b = game:GetService("UserInputService")
+local c = game:GetService("VirtualInputManager")
+local d = game:GetService("TweenService")
+local e = a.LocalPlayer
+local f = workspace.CurrentCamera
+local g = false
+local h = false
+local function i()
+    local j = e.Character
+    if not j then
+        return
+    end
+    local k = j:FindFirstChildOfClass("Humanoid")
+    local l = j:FindFirstChild("HumanoidRootPart")
+    return j, k, l
+end
+local function m()
+    local n, k = i()
+    if not k then
+        return
+    end
+    local o = k:FindFirstChildOfClass("Animator")
+    if not o then
+        return
+    end
+    for n, p in ipairs(o:GetPlayingAnimationTracks()) do
+        p:Stop(0)
+    end
+end
+local function q(r)
+    local n, k = i()
+    if not k then
+        return
+    end
+    local o = k:FindFirstChildOfClass("Animator") or Instance.new("Animator", k)
+    local s = Instance.new("Animation")
+    s.AnimationId = "rbxassetid://" .. r
+    local p = o:LoadAnimation(s)
+    p.Priority = Enum.AnimationPriority.Action
+    p:Play()
+    p:AdjustSpeed(1.1)
+    return p
+end
+local function t(u)
+    if not g or h then
+        return
+    end
+    h = true
+    local n, n, l = i()
+    if not l then
+        h = false
+        return
+    end
+    local v = l.CFrame.LookVector
+    local w = math.atan2(-v.X, -v.Z)
+    local x = w + math.rad(u)
+    l.CFrame = CFrame.new(l.Position) * CFrame.Angles(0, x, 0)
+    local y = (f.CFrame.Position - l.Position).Magnitude
+    local z = Vector3.new(math.sin(x) * y, 0, math.cos(x) * y)
+    local A = l.Position + z
+    f.CFrame = CFrame.lookAt(Vector3.new(A.X, f.CFrame.Y, A.Z), l.Position)
+    h = false
+end
+local function B(C, D, E)
+    if h then
+        return
+    end
+    h = true
+    local n, n, l = i()
+    if l then
+        local F =
+            d:Create(
+            l,
+            TweenInfo.new(E, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            {CFrame = l.CFrame * CFrame.new(C * D, 0, 0)}
+        )
+        F:Play()
+        F.Completed:Wait()
+        F:Destroy()
+    end
+    h = false
+end
+local function G(C, D, H, I, E)
+    if h then
+        return
+    end
+    h = true
+    local n, n, l = i()
+    if l then
+        local J = Instance.new("BodyVelocity")
+        J.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+        J.Velocity = (l.CFrame.RightVector * C * D + Vector3.new(0, H, 0)).Unit * I
+        J.Parent = l
+        task.delay(
+            E,
+            function()
+                if J then
+                    J:Destroy()
+                end
+            end
+        )
+    end
+    h = false
+end
+local K = Instance.new("ScreenGui")
+K.Name = "CustomUI"
+K.ResetOnSpawn = false
+K.Parent = game:GetService("CoreGui")
+local L = Instance.new("Frame", K)
+L.Size = UDim2.fromOffset(200, 120)
+L.Position = UDim2.fromOffset(10, 10)
+L.BackgroundTransparency = 1
+local function M(N, O)
+    local P = Instance.new("TextButton")
+    P.Size = UDim2.fromOffset(130, 40)
+    P.Position = UDim2.fromOffset(0, O)
+    P.Text = N
+    P.Font = Enum.Font.Garamond
+    P.TextSize = 20
+    P.TextColor3 = Color3.new(1, 1, 1)
+    P.BackgroundColor3 = Color3.fromRGB(100, 100, 100)
+    P.BackgroundTransparency = 0.5
+    P.Parent = L
+    Instance.new("UICorner", P).CornerRadius = UDim.new(0, 8)
+    return P
+end
+local Q = M("M1 Reset", 0)
+local R = M("Emote Dash", 45)
+local S = M("Rotation: OFF", 90)
+local function T()
+    S.Text = "Rotation: " .. (g and "ON" or "OFF")
+end
+local function U()
+    m()
+    q(10480793962)
+    B(1, 26, 0.24)
+    t(80)
+    task.wait(0.0025)
+    c:SendKeyEvent(true, Enum.KeyCode.Q, false, game)
+    c:SendKeyEvent(false, Enum.KeyCode.Q, false, game)
+end
+local function V()
+    m()
+    q(10480793962)
+    t(89)
+    G(1, 37, 7, 90, 0.3)
+end
+Q.MouseButton1Click:Connect(U)
+R.MouseButton1Click:Connect(V)
+S.MouseButton1Click:Connect(
+    function()
+        g = not g
+        T()
+    end
+)
+getgenv().keybinds = {m1reset = Enum.KeyCode.R, emotedash = Enum.KeyCode.T, rotation = Enum.KeyCode.H}
+b.InputBegan:Connect(
+    function(W, X)
+        if X or b:GetFocusedTextBox() then
+            return
+        end
+        local Y = getgenv().keybinds
+        if W.KeyCode == Y.m1reset then
+            U()
+        elseif W.KeyCode == Y.emotedash then
+            V()
+        elseif W.KeyCode == Y.rotation then
+            g = not g
+            T()
+        end
+    end
+)
+T()
