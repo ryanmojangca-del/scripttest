@@ -152,6 +152,17 @@ local UIS, player, Workspace, VirtualInputManager, isCurrent = ...
             if not isCurrent() then
                 return
             end
+            --// close M1 reset + Backdash cancel completely while dead, so nothing of them is
+            --// alive when the new character spawns; open them again after respawning.
+            --// Keep them open on death instead: _G.KAMUI_KeepToolsOnDeath = true
+            if not _G.KAMUI_KeepToolsOnDeath then
+                for _, name in ipairs({ "KAMUI_M1Cleanup", "KAMUI_BackdashCleanup" }) do
+                    local fn = _G[name]
+                    if type(fn) == "function" then
+                        pcall(fn)
+                    end
+                end
+            end
             task.spawn(function()
                 local t0 = os.clock()
                 while isCurrent() and player.Character == char and os.clock() - t0 < 12 do
@@ -2681,7 +2692,7 @@ end
 if localPlayer.Character then
     setupCharacter(localPlayer.Character)
 end
-localPlayer.CharacterAdded:Connect(setupCharacter)
+local charAddedConn = localPlayer.CharacterAdded:Connect(setupCharacter)
 local function tapKeyWithDelay(key)
     sendKeyEvent(key)
     task.wait()
@@ -2879,6 +2890,12 @@ gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = CoreGui
 _G.KAMUI_M1Cleanup = function()
+    if charAddedConn then
+        pcall(function()
+            charAddedConn:Disconnect()
+        end)
+        charAddedConn = nil
+    end
     for _, c in ipairs(conns) do
         pcall(function()
             c:Disconnect()
