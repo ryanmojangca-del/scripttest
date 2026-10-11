@@ -29,191 +29,34 @@ end
 
 --// MOBILE INPUT KEEPER
 --// Virtual keyboard / mouse input (VirtualInputManager) flips Roblox's "last input type"
---// to Keyboard / Mouse. The game rebuilds its mobile buttons when the NEW character spawns
---// and reads the input type at that moment, so if the last macro left it on Keyboard the
---// rebuilt buttons come up dead. To prevent that, Touch is restored:
---//   1) after every macro (M1 reset / emote dash / backdash cancel),
---//   2) continuously while the character is dead (before the new one exists),
---//   3) again when the new character spawns.
---// Phones only (touch device; keyboard devices only once real touch was seen).
---// Disable: _G.KAMUI_NoTouchRestore = true
+--// to Keyboard / Mouse. On a phone that makes Roblox's control module and the game think
+--// a keyboard took over, so the on-screen buttons (dash, M1, block, jump) can stop
+--// responding, and after a respawn they often never come back. This sends ONE harmless
+--// virtual touch on the empty top strip of the screen to put the input type back on Touch.
+--// Phones only (touch device without a keyboard). Disable: _G.KAMUI_NoTouchRestore = true
 --// Emulator / touch laptop: _G.KAMUI_ForceTouchRestore = true
-do
-    local keeperSrc = [====[
-local UIS, player, Workspace, VirtualInputManager, isCurrent = ...
-    local touchState = {
-        usesTouch = UIS:GetLastInputType() == Enum.UserInputType.Touch,
-        virtualUntil = 0,
-        retryQueued = false,
-        dirty = false,
-    }
-
-    --// remember that this device is really played by touch (ignores our own virtual touch)
-    UIS.LastInputTypeChanged:Connect(function(t)
-        if not isCurrent() then
-            return
-        end
-        if t == Enum.UserInputType.Touch then
-            if os.clock() > touchState.virtualUntil then
-                touchState.usesTouch = true
-            end
-        elseif t == Enum.UserInputType.Keyboard or t == Enum.UserInputType.MouseButton1 then
-            touchState.dirty = true
-        end
+_G.KAMUI_RestoreTouchInput = function()
+    if _G.KAMUI_NoTouchRestore then
+        return
+    end
+    if not UIS.TouchEnabled then
+        return
+    end
+    if UIS.KeyboardEnabled and not _G.KAMUI_ForceTouchRestore then
+        return
+    end
+    if UIS:GetLastInputType() == Enum.UserInputType.Touch then
+        return
+    end
+    pcall(function()
+        local cam = Workspace.CurrentCamera
+        local vp = cam and cam.ViewportSize or Vector2.new(800, 400)
+        local x = math.floor(vp.X * 0.5)
+        VirtualInputManager:SendTouchEvent(99, 0, x, 3)
+        VirtualInputManager:SendTouchEvent(99, 2, x, 3)
     end)
-
-    _G.KAMUI_RestoreTouchInput = function()
-        if _G.KAMUI_NoTouchRestore then
-            return
-        end
-        if not UIS.TouchEnabled then
-            return
-        end
-        if UIS.KeyboardEnabled and not (touchState.usesTouch or _G.KAMUI_ForceTouchRestore) then
-            return
-        end
-        if UIS:GetLastInputType() == Enum.UserInputType.Touch then
-            return
-        end
-        --// a virtual touch is already in flight: queue ONE retry so the last call of a burst is never lost
-        if os.clock() < touchState.virtualUntil then
-            if not touchState.retryQueued then
-                touchState.retryQueued = true
-                task.delay(touchState.virtualUntil - os.clock() + 0.05, function()
-                    touchState.retryQueued = false
-                    if _G.KAMUI_RestoreTouchInput then
-                        _G.KAMUI_RestoreTouchInput()
-                    end
-                end)
-            end
-            return
-        end
-        touchState.virtualUntil = os.clock() + 0.3
-        task.spawn(function()
-            local okTouch, errTouch = pcall(function()
-                local cam = Workspace.CurrentCamera
-                local vp = cam and cam.ViewportSize or Vector2.new(800, 400)
-                local x = math.floor(vp.X * 0.5)
-                VirtualInputManager:SendTouchEvent(99, 0, x, 3)
-                task.wait()
-                VirtualInputManager:SendTouchEvent(99, 2, x, 3)
-            end)
-            if _G.KAMUI_DebugInput then
-                if not okTouch then
-                    warn("[KAMUI input] SendTouchEvent FAILED (executor may not support it):", errTouch)
-                end
-                print("[KAMUI input] restored touch controls, LastInputType =", UIS:GetLastInputType().Name)
-            end
-        end)
-    end
-
-    --// Direct refresh of Roblox's own touch controls (jump button / thumbstick / TouchGui).
-    --// Used on respawn when a macro left the input type on Keyboard: re-selects the touch
-    --// controller even if the virtual touch above did not register.
-    _G.KAMUI_RefreshTouchControls = function()
-        if _G.KAMUI_NoTouchRestore or not UIS.TouchEnabled then
-            return
-        end
-        if UIS.KeyboardEnabled and not (touchState.usesTouch or _G.KAMUI_ForceTouchRestore) then
-            return
-        end
-        local okA, errA = pcall(function()
-            local pg = player:FindFirstChildOfClass("PlayerGui")
-            local tg = pg and pg:FindFirstChild("TouchGui")
-            if tg and tg:IsA("ScreenGui") then
-                tg.Enabled = false
-                task.wait()
-                tg.Enabled = true
-            end
-        end)
-        local okB, errB = pcall(function()
-            local ps = player:FindFirstChild("PlayerScripts")
-            local pm = ps and ps:FindFirstChild("PlayerModule")
-            if pm then
-                local controls = require(pm):GetControls()
-                controls:Enable(false)
-                task.wait()
-                controls:Enable(true)
-            end
-        end)
-        if _G.KAMUI_DebugInput then
-            print("[KAMUI input] refresh TouchGui ok =", okA, errA or "", "| controls ok =", okB, errB or "")
-        end
-    end
-
-    --// while dead (before the new character exists) keep the input type on Touch,
-    --// so the game rebuilds its mobile buttons in a good state
-    local function watchCharacter(char)
-        local hum = char:WaitForChild("Humanoid", 10)
-        if not hum or not isCurrent() then
-            return
-        end
-        hum.Died:Connect(function()
-            if not isCurrent() then
-                return
-            end
-            --// close M1 reset + Backdash cancel completely while dead, so nothing of them is
-            --// alive when the new character spawns; open them again after respawning.
-            --// Keep them open on death instead: _G.KAMUI_KeepToolsOnDeath = true
-            if not _G.KAMUI_KeepToolsOnDeath then
-                for _, name in ipairs({ "KAMUI_M1Cleanup", "KAMUI_BackdashCleanup" }) do
-                    local fn = _G[name]
-                    if type(fn) == "function" then
-                        pcall(fn)
-                    end
-                end
-            end
-            task.spawn(function()
-                local t0 = os.clock()
-                while isCurrent() and player.Character == char and os.clock() - t0 < 12 do
-                    _G.KAMUI_RestoreTouchInput()
-                    task.wait(0.5)
-                end
-            end)
-        end)
-    end
-    if player.Character then
-        task.spawn(watchCharacter, player.Character)
-    end
-    player.CharacterAdded:Connect(function(char)
-        if not isCurrent() then
-            return
-        end
-        task.spawn(watchCharacter, char)
-        local wasDirty = touchState.dirty
-        touchState.dirty = false
-        if not wasDirty then
-            return
-        end
-        task.spawn(function()
-            local passed = 0
-            for _, t in ipairs({ 0.6, 1.8, 3.5 }) do
-                task.wait(t - passed)
-                passed = t
-                if not isCurrent() or player.Character ~= char then
-                    return
-                end
-                _G.KAMUI_RestoreTouchInput()
-                task.wait(0.15)
-                _G.KAMUI_RefreshTouchControls()
-            end
-        end)
-    end)
-    player.CharacterRemoving:Connect(function()
-        if isCurrent() then
-            _G.KAMUI_RestoreTouchInput()
-        end
-    end)
-]====]
-    --// runs in its own chunk: a problem in here can never stop the rest of the script from loading
-    local keeperFn, keeperCompileErr = loadstring(keeperSrc)
-    if keeperFn then
-        local keeperOk, keeperRunErr = pcall(keeperFn, UIS, player, Workspace, VirtualInputManager, isCurrent)
-        if not keeperOk then
-            warn("[KAMUI] touch keeper failed:", keeperRunErr)
-        end
-    else
-        warn("[KAMUI] touch keeper did not compile:", keeperCompileErr)
+    if _G.KAMUI_DebugInput then
+        print("[KAMUI input] restored touch controls, LastInputType =", UIS:GetLastInputType().Name)
     end
 end
 
@@ -2668,20 +2511,8 @@ local function releaseHeldKeys()
         end)
     end
 end
---// phone only: puts the game's mobile buttons back after virtual keyboard input
-local function restoreTouch(delaySeconds)
-    local f = _G.KAMUI_RestoreTouchInput
-    if f then
-        task.delay(delaySeconds or 0, function()
-            pcall(f)
-        end)
-    end
-end
 local function setupCharacter(character)
     releaseHeldKeys()
-    restoreTouch(0)
-    restoreTouch(0.4)
-    restoreTouch(1.5)
     camera = workspace.CurrentCamera
     currentCharacter = character
     currentHumanoid = character:WaitForChild("Humanoid", 10)
@@ -2692,7 +2523,7 @@ end
 if localPlayer.Character then
     setupCharacter(localPlayer.Character)
 end
-local charAddedConn = localPlayer.CharacterAdded:Connect(setupCharacter)
+localPlayer.CharacterAdded:Connect(setupCharacter)
 local function tapKeyWithDelay(key)
     sendKeyEvent(key)
     task.wait()
@@ -2859,9 +2690,6 @@ do
         local ok, err = pcall(rawM1Reset)
         if not ok then
             releaseHeldKeys()
-        end
-        restoreTouch(0.05)
-        if not ok then
             error(err, 0)
         end
     end
@@ -2869,9 +2697,6 @@ do
         local ok, err = pcall(rawEmoteDash)
         if not ok then
             releaseHeldKeys()
-        end
-        restoreTouch(0.05)
-        if not ok then
             error(err, 0)
         end
     end
@@ -2890,12 +2715,6 @@ gui.ResetOnSpawn = false
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = CoreGui
 _G.KAMUI_M1Cleanup = function()
-    if charAddedConn then
-        pcall(function()
-            charAddedConn:Disconnect()
-        end)
-        charAddedConn = nil
-    end
     for _, c in ipairs(conns) do
         pcall(function()
             c:Disconnect()
@@ -3423,17 +3242,6 @@ if _G.KAMUI_M1Mobile then
     --// press = action, or drag when "Move" mode is on
     local function movable(handle, target, onPress)
         local dragging, dragStart, startPos, dragInput = false, nil, nil, nil
-        --// buttons fire through the engine's own button event (fires the instant a finger
-        --// lands) instead of a raw touch listener; the raw listener now only drives dragging
-        local isButton = handle:IsA("GuiButton")
-        if isButton then
-            handle.Selectable = false
-            handle.MouseButton1Down:Connect(function()
-                if not editing and onPress then
-                    onPress()
-                end
-            end)
-        end
         handle.InputBegan:Connect(function(input)
             if not isPress(input) then
                 return
@@ -3447,7 +3255,7 @@ if _G.KAMUI_M1Mobile then
                         dragging = false
                     end
                 end)
-            elseif onPress and not isButton then
+            elseif onPress then
                 onPress()
             end
         end)
@@ -7411,17 +7219,6 @@ if _G.KAMUI_BackdashMobile then
     --// press = action, or drag when "Move" mode is on
     local function movable(handle, target, onPress)
         local dragging, dragStart, startPos, dragInput = false, nil, nil, nil
-        --// buttons fire through the engine's own button event (fires the instant a finger
-        --// lands) instead of a raw touch listener; the raw listener now only drives dragging
-        local isButton = handle:IsA("GuiButton")
-        if isButton then
-            handle.Selectable = false
-            handle.MouseButton1Down:Connect(function()
-                if not editing and onPress then
-                    onPress()
-                end
-            end)
-        end
         handle.InputBegan:Connect(function(input)
             if input.UserInputType ~= Enum.UserInputType.Touch
                 and input.UserInputType ~= Enum.UserInputType.MouseButton1 then
@@ -7436,7 +7233,7 @@ if _G.KAMUI_BackdashMobile then
                         dragging = false
                     end
                 end)
-            elseif onPress and not isButton then
+            elseif onPress then
                 onPress()
             end
         end)
