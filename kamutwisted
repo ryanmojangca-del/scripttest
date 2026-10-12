@@ -17,13 +17,13 @@ local localPlayer = Players.LocalPlayer
 -- Tune the numbers in the window. Nothing here uses virtual keys or mouse.
 --============================================================
 local Settings = {
-    Version = 4,
+    Version = 5,
     Enabled = true,
     Key = Enum.KeyCode.V,
     Direction = "Right", -- side of the first flick (the second flick goes the other way)
-    Angle = 50,          -- first flick, degrees (AHK g1)
-    BackAngle = 70,      -- second flick back, degrees (AHK f1)
-    DashAt = 0.03,       -- dash fires this long after the first flick (AHK Sleep 30)
+    Angle = 70,          -- first flick, degrees
+    BackAngle = 95,      -- second flick back, degrees
+    DashAt = 0,          -- dash fires this long after the first flick (0 = same moment)
     BackAt = 0.14,       -- second flick, seconds after the press (30 + 80 q-hold + 30)
     EndWait = 0.03,      -- cooldown before it can run again (AHK last Sleep 30)
     BackTap = false,     -- optional: walk backwards for a moment first
@@ -254,7 +254,7 @@ local function fmt(v)
     return string.format("%g", v)
 end
 
-local W, H = 270, 326
+local W, H = 270, 286
 local main = mk("Frame", {
     Name = "Main",
     Size = UDim2.fromOffset(W, H),
@@ -455,11 +455,11 @@ runButton.MouseButton1Click:Connect(function()
     task.spawn(executeTrueTwisted)
 end)
 
---// settings card: six rows of 34px
+--// settings card: five rows of 34px
 local ROW_H = 34
 local card = mk("Frame", {
     Name = "Settings",
-    Size = UDim2.new(1, -24, 0, ROW_H * 6),
+    Size = UDim2.new(1, -24, 0, ROW_H * 5),
     Position = UDim2.fromOffset(12, 104),
     BackgroundColor3 = PAL.Panel,
     BorderSizePixel = 0,
@@ -577,67 +577,6 @@ numberRow(2, "Flick out (deg)", "Angle", 0, 180)
 numberRow(3, "Flick back (deg)", "BackAngle", 0, 360)
 numberRow(4, "Dash at (s)", "DashAt", 0, 1)
 numberRow(5, "Flick back at (s)", "BackAt", 0.02, 1)
-
---// row 6: back tap switch (same switch look as the main menu)
-do
-    local row = makeRow(6, "Back tap first")
-    local track = mk("Frame", {
-        Name = "Track",
-        AnchorPoint = Vector2.new(1, 0.5),
-        Position = UDim2.new(1, -12, 0.5, 0),
-        Size = UDim2.fromOffset(36, 20),
-        BorderSizePixel = 0,
-        ZIndex = 5,
-    }, row)
-    applyCorner(track, 10)
-    local knob = mk("Frame", {
-        Name = "Knob",
-        Size = UDim2.fromOffset(14, 14),
-        BorderSizePixel = 0,
-        ZIndex = 6,
-    }, track)
-    applyCorner(knob, 7)
-    local hit = mk("TextButton", {
-        Name = "Hit",
-        Text = "",
-        Size = UDim2.new(1, 0, 1, 0),
-        BackgroundTransparency = 1,
-        BorderSizePixel = 0,
-        AutoButtonColor = false,
-        ZIndex = 7,
-    }, row)
-    local function paint(animated)
-        local on = Settings.BackTap
-        local trackColor = on and PAL.Red or PAL.OffTrack
-        local knobPos = on and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
-        local knobColor = on and PAL.White or PAL.OffKnob
-        if animated then
-            TweenSvc:Create(track, pressInfo, { BackgroundColor3 = trackColor }):Play()
-            TweenSvc:Create(knob, pressInfo, { Position = knobPos, BackgroundColor3 = knobColor }):Play()
-        else
-            track.BackgroundColor3 = trackColor
-            knob.Position = knobPos
-            knob.BackgroundColor3 = knobColor
-        end
-    end
-    paint(false)
-    hit.MouseButton1Click:Connect(function()
-        Settings.BackTap = not Settings.BackTap
-        paint(true)
-    end)
-end
-
-mk("TextLabel", {
-    Name = "Hint",
-    Text = "Land your 4th M1, then run it. Flick 50, dash, flick 70.",
-    Size = UDim2.new(1, -24, 0, 14),
-    Position = UDim2.new(0, 12, 1, -22),
-    BackgroundTransparency = 1,
-    Font = Enum.Font.Gotham,
-    TextSize = 11,
-    TextColor3 = PAL.Head,
-    ZIndex = 4,
-}, main)
 
 --// key capture + keybind
 local waitingForKey = false
