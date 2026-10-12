@@ -1,0 +1,913 @@
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local TweenSvc = game:GetService("TweenService")
+local localPlayer = Players.LocalPlayer
+
+--============================================================
+-- TRUE TWISTED
+-- Garou "twisted": land the 4th M1, then front dash into the opponent.
+-- Lee twisted (ported from the AHK macro): flick right 50 deg, 30 ms later dash,
+-- 110 ms after that flick left 70 deg (net 20 deg left). Flicks are instant snaps.
+-- Press the button / key right after your 4th M1. Shift lock should be ON.
+-- Tune the numbers in the window. Nothing here uses virtual keys or mouse.
+--============================================================
+local Settings = {
+    Version = 4,
+    Enabled = true,
+    Key = Enum.KeyCode.V,
+    Direction = "Right", -- side of the first flick (the second flick goes the other way)
+    Angle = 50,          -- first flick, degrees (AHK g1)
+    BackAngle = 70,      -- second flick back, degrees (AHK f1)
+    DashAt = 0.03,       -- dash fires this long after the first flick (AHK Sleep 30)
+    BackAt = 0.14,       -- second flick, seconds after the press (30 + 80 q-hold + 30)
+    EndWait = 0.03,      -- cooldown before it can run again (AHK last Sleep 30)
+    BackTap = false,     -- optional: walk backwards for a moment first
+    BackTapTime = 0.05,
+    RotateChar = true,   -- turn the character with the camera (works without shift lock)
+    CooldownGuard = false, -- true = client-side 5s dash lock (the server enforces the real one)
+}
+--// values survive closing and reopening the window
+local saved = _G.KAMUI_TrueTwistedSettings
+if type(saved) == "table" and saved.Version == Settings.Version then
+    for k, v in pairs(saved) do
+        if Settings[k] ~= nil then
+            Settings[k] = v
+        end
+    end
+end
+_G.KAMUI_TrueTwistedSettings = Settings
+
+local DASH_PAYLOAD = { Dash = Enum.KeyCode.W, Key = Enum.KeyCode.Q, Goal = "KeyPress" }
+local FLICK_BIND = "KAMUI_TwistedFlick"
+local BACKTAP_BIND = "KAMUI_TwistedBackTap"
+local dashBusy = false
+local running = false
+
+local function isAlive()
+    local character = localPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    return humanoid ~= nil
+        and humanoid.Health > 0
+        and character:FindFirstChild("HumanoidRootPart") ~= nil
+end
+
+local function getCommunicate()
+    local character = localPlayer.Character
+    return character and character:FindFirstChild("Communicate")
+end
+
+local function easeInOut(x)
+    return x * x * (3 - 2 * x)
+end
+
+--// one instant flick, like a single big mouse_event: camera and character turn together by
+--// `angle` radians (positive = left). Applied once, right after Roblox's own camera script.
+local snapId = 0
+local function snapTurn(angle)
+    if angle == 0 or not workspace.CurrentCamera then
+        return
+    end
+    snapId = snapId + 1
+    local name = FLICK_BIND .. snapId
+    RunService:BindToRenderStep(name, Enum.RenderPriority.Camera.Value + 1, function()
+        RunService:UnbindFromRenderStep(name)
+        local cam = workspace.CurrentCamera
+        if cam then
+            local focus = cam.Focus.Position
+            cam.CFrame = CFrame.new(focus) * CFrame.Angles(0, angle, 0) * CFrame.new(-focus) * cam.CFrame
+        end
+        if Settings.RotateChar then
+            local ch = localPlayer.Character
+            local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local p = hrp.Position
+                hrp.CFrame = CFrame.new(p) * CFrame.Angles(0, angle, 0) * (CFrame.new(-p) * hrp.CFrame)
+            end
+        end
+    end)
+end
+
+--// "light S tap": walk backwards (relative to the camera) for a moment, no virtual keys
+local function backTap(duration)
+    local character = localPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or duration <= 0 then
+        return
+    end
+    local untilT = os.clock() + duration
+    pcall(function()
+        RunService:UnbindFromRenderStep(BACKTAP_BIND)
+    end)
+    RunService:BindToRenderStep(BACKTAP_BIND, Enum.RenderPriority.Camera.Value + 2, function()
+        if os.clock() >= untilT or humanoid.Health <= 0 then
+            RunService:UnbindFromRenderStep(BACKTAP_BIND)
+            return
+        end
+        humanoid:Move(Vector3.new(0, 0, 1), true)
+    end)
+end
+
+local function executeTrueTwisted()
+    if not Settings.Enabled or running or not isAlive() then
+        return
+    end
+    running = true
+    local ok, err = pcall(function()
+        local t0 = os.clock()
+        local function waitUntil(t)
+            local w = t - (os.clock() - t0)
+            if w > 0 then
+                task.wait(w)
+            end
+        end
+        local sign = (Settings.Direction == "Left") and 1 or -1
+        --// 1) FLICK OUT
+        snapTurn(sign * math.rad(Settings.Angle))
+        if Settings.BackTap then
+            backTap(Settings.BackTapTime)
+        end
+        --// 2) DASH
+        waitUntil(Settings.DashAt)
+        if isAlive() then
+            local remote = getCommunicate()
+            if remote then
+                if not (Settings.CooldownGuard and dashBusy) then
+                    remote:FireServer(DASH_PAYLOAD)
+                    if Settings.CooldownGuard and not workspace:GetAttribute("NoDashCooldown") then
+                        dashBusy = true
+                        task.delay(5, function()
+                            dashBusy = false
+                        end)
+                    end
+                end
+            else
+                warn("[KAMUI Twisted] no Communicate remote on your character")
+            end
+        end
+        --// 3) FLICK BACK (the other way, bigger)
+        waitUntil(Settings.BackAt)
+        snapTurn(-sign * math.rad(Settings.BackAngle))
+        waitUntil(Settings.BackAt + Settings.EndWait)
+    end)
+    running = false
+    if not ok then
+        warn("[KAMUI Twisted] error:", err)
+    end
+end
+
+--============================================================
+-- WINDOW
+--============================================================
+local conns = {}
+if _G.KAMUI_TwistedCleanup then
+    pcall(_G.KAMUI_TwistedCleanup)
+end
+local oldGui = CoreGui:FindFirstChild("KAMUI_TrueTwisted")
+if oldGui then
+    oldGui:Destroy()
+end
+local gui = Instance.new("ScreenGui")
+gui.Name = "KAMUI_TrueTwisted"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = CoreGui
+_G.KAMUI_TwistedCleanup = function()
+    for _, c in ipairs(conns) do
+        pcall(function()
+            c:Disconnect()
+        end)
+    end
+    table.clear(conns)
+    pcall(function()
+        RunService:UnbindFromRenderStep(FLICK_BIND)
+    end)
+    pcall(function()
+        RunService:UnbindFromRenderStep(BACKTAP_BIND)
+    end)
+    local box = UserInputService:GetFocusedTextBox()
+    if box and gui and box:IsDescendantOf(gui) then
+        pcall(function()
+            box:ReleaseFocus()
+        end)
+    end
+    if gui then
+        gui:Destroy()
+    end
+end
+
+local PAL = {
+    Panel = Color3.fromRGB(13, 13, 14),
+    Chip = Color3.fromRGB(20, 20, 22),
+    Line = Color3.fromRGB(36, 36, 38),
+    Div = Color3.fromRGB(26, 26, 28),
+    Red = Color3.fromRGB(205, 18, 20),
+    Bright = Color3.fromRGB(240, 30, 24),
+    DarkRed = Color3.fromRGB(52, 8, 12),
+    Text = Color3.fromRGB(240, 236, 236),
+    Muted = Color3.fromRGB(150, 145, 146),
+    Head = Color3.fromRGB(105, 105, 108),
+    OffTrack = Color3.fromRGB(42, 42, 45),
+    OffKnob = Color3.fromRGB(189, 184, 184),
+    White = Color3.fromRGB(255, 255, 255),
+}
+local pressInfo = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+local function applyCorner(obj, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 8)
+    c.Parent = obj
+end
+local function addStroke(obj, color, thickness, transparency)
+    local s = Instance.new("UIStroke")
+    s.Color = color
+    s.Thickness = thickness or 1
+    s.Transparency = transparency or 0
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Parent = obj
+    return s
+end
+--// builds an instance; flags it so the main script's skin pass leaves it alone
+local function mk(class, props, parent)
+    local o = Instance.new(class)
+    for k, v in pairs(props) do
+        o[k] = v
+    end
+    if class == "TextButton" or class == "TextBox" or class == "Frame" then
+        o:SetAttribute("KamuiSkinned", true)
+    end
+    o.Parent = parent
+    return o
+end
+local function isPress(input)
+    return input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch
+end
+local function keyName(key)
+    return key and key.Name or "None"
+end
+local function fmt(v)
+    return string.format("%g", v)
+end
+
+local W, H = 270, 326
+local main = mk("Frame", {
+    Name = "Main",
+    Size = UDim2.fromOffset(W, H),
+    Position = UDim2.new(0.5, -W / 2, 0.4, -H / 2),
+    BackgroundColor3 = Color3.fromRGB(6, 6, 7),
+    BackgroundTransparency = 0.06,
+    BorderSizePixel = 0,
+    Active = true,
+    ClipsDescendants = true,
+}, gui)
+applyCorner(main, 16)
+addStroke(main, Color3.fromRGB(40, 40, 42), 1.2, 0)
+addStroke(main, PAL.Red, 1.5, 0.8)
+local bgImage = mk("ImageLabel", {
+    Name = "BackgroundImage",
+    Size = UDim2.new(1, 0, 1, 0),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    Image = "rbxassetid://135016327821234",
+    ImageTransparency = 0.86,
+    ScaleType = Enum.ScaleType.Crop,
+    Active = false,
+    Selectable = false,
+    ZIndex = 0,
+}, main)
+applyCorner(bgImage, 16)
+--// responsive scale (same idea as the main window): fit small screens, never above 1x
+do
+    local vp = gui.AbsoluteSize
+    if vp.X == 0 or vp.Y == 0 then
+        local cam = workspace.CurrentCamera
+        vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+    end
+    local sc = math.clamp(math.min((vp.X - 24) / W, (vp.Y - 24) / H), 0.55, 1)
+    local us = Instance.new("UIScale")
+    us.Scale = sc
+    us.Parent = main
+    main.Position = UDim2.new(0.5, -(W / 2) * sc, 0.4, -(H / 2) * sc)
+end
+
+--// top bar: dot + title on the left, close button on the right
+local topBar = mk("Frame", {
+    Name = "TopBar",
+    Size = UDim2.new(1, 0, 0, 34),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    Active = true,
+    ZIndex = 5,
+}, main)
+local titleDot = mk("Frame", {
+    Name = "TitleDot",
+    Size = UDim2.fromOffset(6, 6),
+    Position = UDim2.new(0, 14, 0.5, -3),
+    BackgroundColor3 = PAL.Red,
+    BorderSizePixel = 0,
+    ZIndex = 6,
+}, topBar)
+applyCorner(titleDot, 3)
+mk("TextLabel", {
+    Name = "Title",
+    Text = "True twisted",
+    Size = UDim2.new(1, -80, 1, 0),
+    Position = UDim2.fromOffset(28, 0),
+    BackgroundTransparency = 1,
+    Font = Enum.Font.GothamMedium,
+    TextSize = 12,
+    TextColor3 = PAL.Text,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 6,
+}, topBar)
+local closeBtn = mk("TextButton", {
+    Name = "CloseButton",
+    Text = "×",
+    Size = UDim2.fromOffset(24, 24),
+    Position = UDim2.new(1, -34, 0.5, -12),
+    BackgroundColor3 = PAL.Chip,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Font = Enum.Font.GothamBold,
+    TextSize = 14,
+    TextColor3 = PAL.Muted,
+    ZIndex = 7,
+}, topBar)
+applyCorner(closeBtn, 7)
+addStroke(closeBtn, PAL.Line, 1, 0)
+closeBtn.MouseEnter:Connect(function()
+    TweenSvc:Create(closeBtn, pressInfo, { TextColor3 = PAL.Bright }):Play()
+end)
+closeBtn.MouseLeave:Connect(function()
+    TweenSvc:Create(closeBtn, pressInfo, { TextColor3 = PAL.Muted }):Play()
+end)
+closeBtn.MouseButton1Click:Connect(function()
+    if _G.KAMUI_TwistedCleanup then
+        _G.KAMUI_TwistedCleanup()
+    end
+end)
+mk("Frame", {
+    Name = "TopDivider",
+    Size = UDim2.new(1, -24, 0, 1),
+    Position = UDim2.new(0, 12, 0, 34),
+    BackgroundColor3 = PAL.Div,
+    BorderSizePixel = 0,
+    ZIndex = 5,
+}, main)
+
+--// run pad: tap the pad to run it, tap the key chip to rebind
+local pad = mk("Frame", {
+    Name = "RunPad",
+    Size = UDim2.new(1, -24, 0, 52),
+    Position = UDim2.fromOffset(12, 44),
+    BackgroundColor3 = PAL.Panel,
+    BorderSizePixel = 0,
+    ZIndex = 3,
+}, main)
+applyCorner(pad, 10)
+local padStroke = addStroke(pad, PAL.Line, 1, 0)
+local ring = mk("Frame", {
+    Name = "IconRing",
+    Size = UDim2.fromOffset(30, 30),
+    Position = UDim2.fromOffset(12, 11),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    ZIndex = 4,
+}, pad)
+applyCorner(ring, 15)
+addStroke(ring, Color3.fromRGB(74, 13, 18), 1, 0)
+mk("TextLabel", {
+    Name = "IconFallback",
+    Size = UDim2.new(1, 0, 1, 0),
+    BackgroundTransparency = 1,
+    Text = "TW",
+    Font = Enum.Font.GothamBold,
+    TextSize = 11,
+    TextColor3 = PAL.Bright,
+    ZIndex = 5,
+}, ring)
+mk("TextLabel", {
+    Name = "PadLabel",
+    Text = "True twisted",
+    Size = UDim2.new(1, -140, 1, 0),
+    Position = UDim2.fromOffset(52, 0),
+    BackgroundTransparency = 1,
+    Font = Enum.Font.GothamMedium,
+    TextSize = 12,
+    TextColor3 = PAL.Text,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 4,
+}, pad)
+local runButton = mk("TextButton", {
+    Name = "Function",
+    Text = "",
+    Size = UDim2.new(1, 0, 1, 0),
+    BackgroundTransparency = 1,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    ZIndex = 5,
+}, pad)
+local keyButton = mk("TextButton", {
+    Name = "Keybind",
+    Text = keyName(Settings.Key),
+    Size = UDim2.fromOffset(0, 26),
+    AutomaticSize = Enum.AutomaticSize.X,
+    AnchorPoint = Vector2.new(1, 0.5),
+    Position = UDim2.new(1, -12, 0.5, 0),
+    BackgroundColor3 = PAL.Chip,
+    BorderSizePixel = 0,
+    AutoButtonColor = false,
+    Font = Enum.Font.GothamMedium,
+    TextSize = 12,
+    TextColor3 = PAL.Text,
+    ZIndex = 6,
+}, pad)
+applyCorner(keyButton, 7)
+addStroke(keyButton, PAL.Line, 1, 0)
+do
+    local keyPad = Instance.new("UIPadding")
+    keyPad.PaddingLeft = UDim.new(0, 12)
+    keyPad.PaddingRight = UDim.new(0, 12)
+    keyPad.Parent = keyButton
+    local keyMin = Instance.new("UISizeConstraint")
+    keyMin.MinSize = Vector2.new(34, 26)
+    keyMin.Parent = keyButton
+end
+local function setPadPressed(pressed)
+    TweenSvc:Create(pad, pressInfo, { BackgroundColor3 = pressed and PAL.Chip or PAL.Panel }):Play()
+    TweenSvc:Create(padStroke, pressInfo, { Color = pressed and PAL.Red or PAL.Line }):Play()
+end
+runButton.MouseButton1Down:Connect(function()
+    setPadPressed(true)
+end)
+runButton.MouseButton1Up:Connect(function()
+    setPadPressed(false)
+end)
+runButton.MouseLeave:Connect(function()
+    setPadPressed(false)
+end)
+runButton.MouseButton1Click:Connect(function()
+    task.spawn(executeTrueTwisted)
+end)
+
+--// settings card: six rows of 34px
+local ROW_H = 34
+local card = mk("Frame", {
+    Name = "Settings",
+    Size = UDim2.new(1, -24, 0, ROW_H * 6),
+    Position = UDim2.fromOffset(12, 104),
+    BackgroundColor3 = PAL.Panel,
+    BorderSizePixel = 0,
+    ZIndex = 3,
+}, main)
+applyCorner(card, 10)
+addStroke(card, PAL.Line, 1, 0)
+
+local function makeRow(index, label)
+    local row = mk("Frame", {
+        Name = "Row" .. index,
+        Size = UDim2.new(1, 0, 0, ROW_H),
+        Position = UDim2.fromOffset(0, (index - 1) * ROW_H),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ZIndex = 4,
+    }, card)
+    if index > 1 then
+        mk("Frame", {
+            Name = "Divider",
+            Size = UDim2.new(1, -20, 0, 1),
+            Position = UDim2.fromOffset(10, 0),
+            BackgroundColor3 = PAL.Div,
+            BorderSizePixel = 0,
+            ZIndex = 4,
+        }, row)
+    end
+    mk("TextLabel", {
+        Name = "Label",
+        Text = label,
+        Size = UDim2.new(1, -130, 1, 0),
+        Position = UDim2.fromOffset(12, 0),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = PAL.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 5,
+    }, row)
+    return row
+end
+
+--// row 1: direction (Right / Left)
+do
+    local row = makeRow(1, "Direction")
+    local holder = mk("Frame", {
+        Name = "DirectionPicker",
+        Size = UDim2.fromOffset(106, 26),
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -12, 0.5, 0),
+        BackgroundColor3 = PAL.Chip,
+        BorderSizePixel = 0,
+        ZIndex = 5,
+    }, row)
+    applyCorner(holder, 7)
+    local btns = {}
+    local function paint()
+        for name, b in pairs(btns) do
+            local on = Settings.Direction == name
+            b.BackgroundTransparency = on and 0 or 1
+            b.TextColor3 = on and PAL.White or PAL.Muted
+        end
+    end
+    for i, name in ipairs({ "Right", "Left" }) do
+        local b = mk("TextButton", {
+            Name = name,
+            Text = name,
+            Size = UDim2.fromOffset(50, 22),
+            Position = UDim2.fromOffset(2 + (i - 1) * 52, 2),
+            BackgroundColor3 = PAL.Red,
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Font = Enum.Font.GothamMedium,
+            TextSize = 11,
+            ZIndex = 6,
+        }, holder)
+        applyCorner(b, 5)
+        btns[name] = b
+        b.MouseButton1Click:Connect(function()
+            Settings.Direction = name
+            paint()
+        end)
+    end
+    paint()
+end
+
+--// rows 2-5: number boxes
+local function numberRow(index, label, key, minV, maxV)
+    local row = makeRow(index, label)
+    local box = mk("TextBox", {
+        Name = "Value",
+        Size = UDim2.fromOffset(60, 24),
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -12, 0.5, 0),
+        BackgroundColor3 = PAL.Chip,
+        BorderSizePixel = 0,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = PAL.Text,
+        Text = fmt(Settings[key]),
+        ClearTextOnFocus = false,
+        ZIndex = 5,
+    }, row)
+    applyCorner(box, 6)
+    addStroke(box, PAL.Line, 1, 0)
+    box.FocusLost:Connect(function()
+        local v = tonumber((box.Text:gsub("%s+", "")))
+        if v then
+            Settings[key] = math.clamp(v, minV, maxV)
+        end
+        box.Text = fmt(Settings[key])
+    end)
+end
+numberRow(2, "Flick out (deg)", "Angle", 0, 180)
+numberRow(3, "Flick back (deg)", "BackAngle", 0, 360)
+numberRow(4, "Dash at (s)", "DashAt", 0, 1)
+numberRow(5, "Flick back at (s)", "BackAt", 0.02, 1)
+
+--// row 6: back tap switch (same switch look as the main menu)
+do
+    local row = makeRow(6, "Back tap first")
+    local track = mk("Frame", {
+        Name = "Track",
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -12, 0.5, 0),
+        Size = UDim2.fromOffset(36, 20),
+        BorderSizePixel = 0,
+        ZIndex = 5,
+    }, row)
+    applyCorner(track, 10)
+    local knob = mk("Frame", {
+        Name = "Knob",
+        Size = UDim2.fromOffset(14, 14),
+        BorderSizePixel = 0,
+        ZIndex = 6,
+    }, track)
+    applyCorner(knob, 7)
+    local hit = mk("TextButton", {
+        Name = "Hit",
+        Text = "",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        ZIndex = 7,
+    }, row)
+    local function paint(animated)
+        local on = Settings.BackTap
+        local trackColor = on and PAL.Red or PAL.OffTrack
+        local knobPos = on and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+        local knobColor = on and PAL.White or PAL.OffKnob
+        if animated then
+            TweenSvc:Create(track, pressInfo, { BackgroundColor3 = trackColor }):Play()
+            TweenSvc:Create(knob, pressInfo, { Position = knobPos, BackgroundColor3 = knobColor }):Play()
+        else
+            track.BackgroundColor3 = trackColor
+            knob.Position = knobPos
+            knob.BackgroundColor3 = knobColor
+        end
+    end
+    paint(false)
+    hit.MouseButton1Click:Connect(function()
+        Settings.BackTap = not Settings.BackTap
+        paint(true)
+    end)
+end
+
+mk("TextLabel", {
+    Name = "Hint",
+    Text = "Land your 4th M1, then run it. Flick 50, dash, flick 70.",
+    Size = UDim2.new(1, -24, 0, 14),
+    Position = UDim2.new(0, 12, 1, -22),
+    BackgroundTransparency = 1,
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    TextColor3 = PAL.Head,
+    ZIndex = 4,
+}, main)
+
+--// key capture + keybind
+local waitingForKey = false
+keyButton.MouseButton1Click:Connect(function()
+    waitingForKey = true
+    keyButton.Text = "..."
+end)
+conns[#conns + 1] = UserInputService.InputBegan:Connect(function(input, processed)
+    if waitingForKey then
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            Settings.Key = input.KeyCode
+            waitingForKey = false
+            keyButton.Text = keyName(Settings.Key)
+        end
+        return
+    end
+    if processed or input.UserInputType ~= Enum.UserInputType.Keyboard then
+        return
+    end
+    if Settings.Key and input.KeyCode == Settings.Key then
+        task.spawn(executeTrueTwisted)
+    end
+end)
+
+--// drag the window by its top bar
+do
+    local dragging = false
+    local dragStart, startPosition
+    conns[#conns + 1] = topBar.InputBegan:Connect(function(input)
+        if isPress(input) then
+            dragging = true
+            dragStart = input.Position
+            startPosition = main.Position
+        end
+    end)
+    conns[#conns + 1] = UserInputService.InputEnded:Connect(function(input)
+        if isPress(input) then
+            dragging = false
+        end
+    end)
+    conns[#conns + 1] = UserInputService.InputChanged:Connect(function(input)
+        if dragging
+            and (input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            main.Position = UDim2.new(
+                startPosition.X.Scale,
+                startPosition.X.Offset + delta.X,
+                startPosition.Y.Scale,
+                startPosition.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+--// respawn: fresh cooldown guard, and give typing focus back to the game
+conns[#conns + 1] = localPlayer.CharacterAdded:Connect(function()
+    dashBusy = false
+    local box = UserInputService:GetFocusedTextBox()
+    if box and box:IsDescendantOf(gui) then
+        pcall(function()
+            box:ReleaseFocus()
+        end)
+    end
+end)
+
+--============================================================
+-- MOBILE MODE (Others -> True twisted -> Mobile -> Open)
+-- One touch button that fires on touch-down, plus a small card with
+-- Move / x chips and a switch that shows or hides the settings window.
+--============================================================
+if _G.KAMUI_TwistedMobile then
+    main.Visible = false
+    local editing = false
+    local strokes = {}
+
+    local function movable(handle, target, onPress)
+        local dragging, dragStart, startPos, dragInput = false, nil, nil, nil
+        handle.InputBegan:Connect(function(input)
+            if not isPress(input) then
+                return
+            end
+            if editing then
+                dragging = true
+                dragStart = input.Position
+                startPos = target.Position
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then
+                        dragging = false
+                    end
+                end)
+            elseif onPress then
+                onPress()
+            end
+        end)
+        handle.InputChanged:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch then
+                dragInput = input
+            end
+        end)
+        conns[#conns + 1] = UserInputService.InputChanged:Connect(function(input)
+            if dragging and input == dragInput then
+                local d = input.Position - dragStart
+                target.Position = UDim2.new(
+                    startPos.X.Scale, startPos.X.Offset + d.X,
+                    startPos.Y.Scale, startPos.Y.Offset + d.Y
+                )
+            end
+        end)
+    end
+
+    local twistBtn = mk("TextButton", {
+        Name = "TwistTouch",
+        Size = UDim2.fromOffset(60, 60),
+        Position = UDim2.new(0, 14, 0.28, 0),
+        BackgroundColor3 = PAL.Panel,
+        BackgroundTransparency = 0.05,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Text = "",
+        ZIndex = 10,
+    }, gui)
+    applyCorner(twistBtn, 12)
+    local twistStroke = addStroke(twistBtn, PAL.Line, 1, 0)
+    strokes[#strokes + 1] = twistStroke
+    mk("TextLabel", {
+        Name = "Icon",
+        Size = UDim2.new(1, 0, 0, 22),
+        Position = UDim2.fromOffset(0, 7),
+        BackgroundTransparency = 1,
+        Text = "TW",
+        Font = Enum.Font.GothamBold,
+        TextSize = 14,
+        TextColor3 = PAL.Bright,
+        ZIndex = 11,
+    }, twistBtn)
+    mk("TextLabel", {
+        Name = "Label",
+        Size = UDim2.new(1, 0, 0, 16),
+        Position = UDim2.fromOffset(0, 31),
+        BackgroundTransparency = 1,
+        Text = "Twisted",
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = PAL.Text,
+        ZIndex = 11,
+    }, twistBtn)
+    local accent = mk("Frame", {
+        Name = "Accent",
+        Size = UDim2.fromOffset(14, 3),
+        Position = UDim2.new(0.5, -7, 1, -11),
+        BackgroundColor3 = PAL.Red,
+        BorderSizePixel = 0,
+        ZIndex = 11,
+    }, twistBtn)
+    applyCorner(accent, 2)
+    movable(twistBtn, twistBtn, function()
+        task.spawn(executeTrueTwisted)
+        twistBtn.BackgroundColor3 = PAL.DarkRed
+        twistStroke.Color = PAL.Bright
+        TweenSvc:Create(twistBtn, TweenInfo.new(0.22), { BackgroundColor3 = PAL.Panel }):Play()
+        TweenSvc:Create(twistStroke, TweenInfo.new(0.22), { Color = PAL.Line }):Play()
+    end)
+
+    local panel = mk("Frame", {
+        Name = "TwistMobilePanel",
+        Size = UDim2.fromOffset(176, 66),
+        Position = UDim2.new(0, 80, 0.28, 0),
+        BackgroundColor3 = PAL.Panel,
+        BackgroundTransparency = 0.05,
+        BorderSizePixel = 0,
+        ZIndex = 10,
+    }, gui)
+    applyCorner(panel, 10)
+    local panelStroke = addStroke(panel, PAL.Line, 1, 0)
+    mk("Frame", {
+        Name = "Divider",
+        Size = UDim2.new(1, -20, 0, 1),
+        Position = UDim2.new(0, 10, 0, 30),
+        BackgroundColor3 = PAL.Div,
+        BorderSizePixel = 0,
+        ZIndex = 11,
+    }, panel)
+    local function chip(text, w, x)
+        local c = mk("TextButton", {
+            Size = UDim2.fromOffset(w, 20),
+            Position = UDim2.new(1, x, 0, 5),
+            BackgroundColor3 = PAL.Chip,
+            TextColor3 = PAL.Muted,
+            Font = Enum.Font.GothamMedium,
+            TextSize = 11,
+            Text = text,
+            AutoButtonColor = false,
+            BorderSizePixel = 0,
+            ZIndex = 12,
+        }, panel)
+        applyCorner(c, 6)
+        return c, addStroke(c, PAL.Line, 1, 0)
+    end
+    local header = mk("Frame", {
+        Name = "Header",
+        Size = UDim2.new(1, -90, 0, 30),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ZIndex = 11,
+    }, panel)
+    mk("TextLabel", {
+        Name = "Title",
+        Size = UDim2.new(1, -12, 1, 0),
+        Position = UDim2.new(0, 12, 0, 0),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 11,
+        TextColor3 = PAL.Head,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = "TRUE TWISTED",
+        ZIndex = 12,
+    }, header)
+    movable(header, panel, nil)
+    local moveChip, moveStroke = chip("Move", 44, -80)
+    local closeChip = chip("x", 24, -32)
+    moveChip.MouseButton1Click:Connect(function()
+        editing = not editing
+        moveChip.Text = editing and "Done" or "Move"
+        moveChip.BackgroundColor3 = editing and PAL.Red or PAL.Chip
+        moveChip.TextColor3 = editing and PAL.White or PAL.Muted
+        moveStroke.Color = editing and PAL.Red or PAL.Line
+        for _, st in ipairs(strokes) do
+            st.Color = editing and PAL.Red or PAL.Line
+        end
+        panelStroke.Color = editing and PAL.Red or PAL.Line
+    end)
+    closeChip.MouseButton1Click:Connect(function()
+        if _G.KAMUI_TwistedCleanup then
+            _G.KAMUI_TwistedCleanup()
+        end
+    end)
+
+    --// settings row: show / hide the full settings window
+    mk("TextLabel", {
+        Name = "SettingsLabel",
+        Size = UDim2.new(0, 110, 0, 34),
+        Position = UDim2.new(0, 12, 0, 31),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = PAL.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = "Settings",
+        ZIndex = 12,
+    }, panel)
+    local showBtn = mk("TextButton", {
+        Name = "ShowSettings",
+        Size = UDim2.fromOffset(56, 24),
+        Position = UDim2.new(1, -68, 0, 36),
+        BackgroundColor3 = PAL.Chip,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = PAL.Text,
+        Text = "Open",
+        ZIndex = 12,
+    }, panel)
+    applyCorner(showBtn, 7)
+    addStroke(showBtn, PAL.Line, 1, 0)
+    showBtn.MouseButton1Click:Connect(function()
+        main.Visible = not main.Visible
+        showBtn.Text = main.Visible and "Hide" or "Open"
+    end)
+end
+print("KAMUI True twisted loaded")
