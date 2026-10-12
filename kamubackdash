@@ -1,0 +1,1788 @@
+--[[
+    KAMUI - Macro / Backdash Cancel + Magnet
+
+    FEATURES:
+    - Backdash Cancel 1-4
+    - Individual macro enable/disable
+    - Custom keybinds
+    - Magnet ON/OFF
+    - Magnet Delay editable by typing
+    - Closest player/NPC detection
+    - Magnet pull after Backdash Cancel
+    - Teleport behind target during Magnet
+
+    MAGNET DELAY:
+    Type the desired delay directly into the Magnet Delay box.
+    Examples:
+        0      = instant
+        0.05   = 0.05 seconds
+        0.10   = 0.10 seconds
+        0.25   = 0.25 seconds
+        1      = 1 second
+]]
+
+--============================================================
+-- SERVICES
+--============================================================
+local Services = setmetatable({}, {
+    __index = function(_, serviceName)
+        return game:GetService(serviceName)
+    end,
+})
+local VirtualInputManager = Services.VirtualInputManager
+local Players = Services.Players
+local UserInputService = Services.UserInputService
+local TweenService = Services.TweenService
+local RunService = Services.RunService
+local Workspace = Services.Workspace
+local Camera = workspace.CurrentCamera or workspace:WaitForChild("Camera")
+local localPlayer = Players.LocalPlayer
+local playerGui = localPlayer.PlayerGui
+local sAutoUnequip = localPlayer:GetAttribute("S_AutoUnequip")
+
+--============================================================
+-- SETTINGS
+--============================================================
+local viewportSize = Camera.ViewportSize
+local halfViewportX = math.floor(viewportSize.X / 2)
+local halfViewportY = math.floor(viewportSize.Y / 2)
+local keyQ = Enum.KeyCode.Q
+local keyS = Enum.KeyCode.S
+local Settings = {
+    Macro = {
+        BackDashCancel1 = { Enabled = false, },
+        BackDashCancel2 = { Enabled = false, },
+        BackDashCancel3 = { Enabled = false, },
+        BackDashCancel4 = { Enabled = false, },
+    },
+    Magnet = {
+        Enabled = false,
+        Delay = 0.10,
+    },
+    --// false = original behaviour (virtual keyboard/mouse input).
+    --// true  = fire the game's remote instead of virtual keys/mouse for the dash and
+    --//         the M1 click (use it to test whether virtual input breaks the game's
+    --//         buttons after a respawn). The macro key 1-4 is always a virtual key.
+    Remote = {
+        Dash = false,
+        M1 = false,
+    },
+}
+
+--============================================================
+-- MAGNET VARIABLES
+--============================================================
+local pullConnection = nil
+local npcList = {}
+local lastNpcUpdate = 0
+
+--============================================================
+-- NPC CACHE
+--============================================================
+
+local function updateNpcCache()
+    npcList = {}
+    for _, model in ipairs(
+        Workspace:GetDescendants()
+    ) do
+        if model:IsA("Model")
+            and model:FindFirstChild("Humanoid")
+            and model:FindFirstChild("HumanoidRootPart") then
+            local root = model:FindFirstChild("HumanoidRootPart")
+            if root then
+                table.insert(npcList, root)
+            end
+        end
+    end
+end
+local npcCacheConnection = RunService.Heartbeat:Connect(
+    function()
+        --// scanning the whole workspace twice a second is heavy on phones and
+        --// only the Magnet uses the result, so it runs only while Magnet is on
+        if Settings.Magnet.Enabled and tick() - lastNpcUpdate > 0.5 then
+            lastNpcUpdate = tick()
+            updateNpcCache()
+        end
+    end
+)
+
+--============================================================
+-- GET CLOSEST TARGET
+--============================================================
+
+local function getClosestTarget()
+    local character = localPlayer.Character
+    if not character then
+        return nil
+    end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then
+        return nil
+    end
+    local closestRoot = nil
+    local shortestDistance = math.huge
+    local myPos = rootPart.Position
+    --========================================================
+    -- PLAYERS
+    --========================================================
+    for _, plr in ipairs(
+        Players:GetPlayers()
+    ) do
+        if plr ~= localPlayer
+            and plr.Character then
+            local root = plr.Character:FindFirstChild("HumanoidRootPart")
+            if root then
+                local humanoid = plr.Character:FindFirstChildOfClass("Humanoid")
+                if humanoid
+                    and humanoid.Health > 0 then
+                    local distance = (myPos - root.Position).Magnitude
+                    if distance <
+                        shortestDistance
+                        and distance > 0.1 then
+                        shortestDistance = distance
+                        closestRoot = root
+                    end
+                end
+            end
+        end
+    end
+    --========================================================
+    -- NPCS
+    --========================================================
+    for _, npcRoot in ipairs(
+        npcList
+    ) do
+        if npcRoot
+            and npcRoot.Parent
+            and npcRoot ~= rootPart then
+            local model = npcRoot.Parent
+            local humanoid = model:FindFirstChildOfClass("Humanoid")
+            if humanoid
+                and humanoid.Health > 0 then
+                local distance = (myPos - npcRoot.Position).Magnitude
+                if distance <
+                    shortestDistance
+                    and distance > 0.1 then
+                    shortestDistance = distance
+                    closestRoot = npcRoot
+                end
+            end
+        end
+    end
+    return closestRoot
+end
+
+--============================================================
+-- MAGNET PULL
+--============================================================
+
+local function startMagnetPull(
+    targetRoot
+)
+    if pullConnection then
+        pullConnection:Disconnect()
+        pullConnection = nil
+    end
+    if not Settings.Magnet.Enabled then
+        return
+    end
+    local character = localPlayer.Character
+    if not character then
+        return
+    end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then
+        return
+    end
+    if not targetRoot
+        or not targetRoot.Parent then
+        return
+    end
+    local startTime = tick()
+    local pullDuration = 0.5
+    local pullStrength = 50
+    local smoothness = 0.65
+    pullConnection = RunService.Heartbeat:Connect(
+            function()
+                if not Settings.Magnet.Enabled then
+                    pullConnection:Disconnect()
+                    pullConnection = nil
+                    return
+                end
+                if not rootPart
+                    or not rootPart.Parent
+                    or not targetRoot
+                    or not targetRoot.Parent then
+                    pullConnection:Disconnect()
+                    pullConnection = nil
+                    return
+                end
+                local elapsed = tick() - startTime
+                if elapsed >=
+                    pullDuration then
+                    pullConnection:Disconnect()
+                    pullConnection = nil
+                    return
+                end
+                local currentPos = rootPart.Position
+                local targetHorizontal = Vector3.new(targetRoot.Position.X, currentPos.Y, targetRoot.Position.Z)
+                local direction = targetHorizontal - currentPos
+                local distance = direction.Magnitude
+                if distance > 0.1 then
+                    direction = direction.Unit
+                    local desiredVel = direction * pullStrength
+                    local currentVel = rootPart.AssemblyLinearVelocity
+                    local newVel = currentVel:Lerp(desiredVel, smoothness)
+                    rootPart.AssemblyLinearVelocity = Vector3.new(newVel.X * 0.85, currentVel.Y, newVel.Z * 0.85)
+                end
+            end
+        )
+end
+
+--============================================================
+-- EXECUTE MAGNET
+--============================================================
+
+local function executeMagnet()
+    if not Settings.Magnet.Enabled then
+        return
+    end
+    --========================================================
+    -- MAGNET DELAY
+    --========================================================
+    local delayTime = tonumber(Settings.Magnet.Delay)
+    if not delayTime then
+        delayTime = 0
+    end
+    if delayTime > 0 then
+        task.wait(delayTime)
+    end
+    -- Magnet may have been disabled
+    -- while waiting.
+    if not Settings.Magnet.Enabled then
+        return
+    end
+    --========================================================
+    -- CHARACTER
+    --========================================================
+    local character = localPlayer.Character
+    if not character then
+        return
+    end
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then
+        return
+    end
+    --========================================================
+    -- FIND TARGET
+    --========================================================
+    local targetRoot = getClosestTarget()
+    if not targetRoot then
+        return
+    end
+    --========================================================
+    -- TELEPORT BEHIND TARGET
+    --========================================================
+    local targetPos = targetRoot.Position + targetRoot.CFrame.LookVector * 2
+    rootPart.CFrame = CFrame.new(targetPos, targetRoot.Position)
+    --========================================================
+    -- START MAGNET
+    --========================================================
+    startMagnetPull(targetRoot)
+end
+
+--============================================================
+-- INPUT HELPERS
+--============================================================
+
+--// Everything we press virtually is remembered, so a macro that gets cut short
+--// (death / respawn / error) can never leave a key or mouse button stuck down.
+local heldKeys = {}
+local mouseHeld = false
+local lifeEpoch = 0 -- +1 on every respawn; a running macro stops when it changes
+
+local function sendKeyEvent(
+    keyCode
+)
+    heldKeys[keyCode] = true
+    VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
+end
+
+local function tapKey(
+    keyCode
+)
+    heldKeys[keyCode] = nil
+    VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+end
+
+--// releases only what is actually still held (sends nothing when nothing is stuck)
+local function releaseHeldInput()
+    for keyCode in pairs(heldKeys) do
+        heldKeys[keyCode] = nil
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+        end)
+    end
+    if mouseHeld then
+        mouseHeld = false
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(halfViewportX, halfViewportY, 0, false, game, 0)
+        end)
+    end
+end
+
+--// phone only: puts the game's mobile buttons back after virtual keyboard/mouse input
+local function restoreTouchInput()
+    if _G.KAMUI_RestoreTouchInput then
+        pcall(_G.KAMUI_RestoreTouchInput)
+    end
+end
+
+local function tapKeyWithDelay(
+    keyCode
+)
+    sendKeyEvent(keyCode)
+    task.wait()
+    tapKey(keyCode)
+end
+
+local BACKDASH_PAYLOAD = { Dash = keyS, Key = keyQ, Goal = "KeyPress" }
+local M1_DOWN_PAYLOAD = { Goal = "LeftClick" }
+local M1_UP_PAYLOAD = { Goal = "LeftClickRelease" }
+local dashBusy = false
+
+local function getCommunicate()
+    local character = localPlayer.Character
+    return character and character:FindFirstChild("Communicate")
+end
+
+local function simulateM1Click(
+    keyCode
+)
+    sendKeyEvent(keyCode)
+    task.wait()
+    tapKey(keyCode)
+    if not sAutoUnequip then
+        task.wait()
+        local remote = Settings.Remote.M1 and getCommunicate()
+        if remote then
+            remote:FireServer(M1_DOWN_PAYLOAD)
+            task.wait()
+            remote:FireServer(M1_UP_PAYLOAD)
+        else
+            mouseHeld = true
+            VirtualInputManager:SendMouseButtonEvent(halfViewportX, halfViewportY, 0, true, game, 0)
+            task.wait()
+            mouseHeld = false
+            VirtualInputManager:SendMouseButtonEvent(halfViewportX, halfViewportY, 0, false, game, 0)
+        end
+    end
+end
+
+--============================================================
+-- BACKDASH MACRO
+--============================================================
+
+local function isAlive()
+    local character = localPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    return humanoid ~= nil
+        and humanoid.Health > 0
+        and character:FindFirstChild("HumanoidRootPart") ~= nil
+end
+
+local function performBackDashMacro(
+    keyCode
+)
+    if not isAlive() then
+        return false
+    end
+    local epoch = lifeEpoch
+    simulateM1Click(keyCode)
+    task.wait()
+    if not isAlive() or epoch ~= lifeEpoch then
+        releaseHeldInput()
+        return false
+    end
+    local remote = Settings.Remote.Dash and getCommunicate()
+    if remote then
+        if not dashBusy then
+            remote:FireServer(BACKDASH_PAYLOAD)
+            if not workspace:GetAttribute("NoDashCooldown") then
+                dashBusy = true
+                task.delay(5, function()
+                    dashBusy = false
+                end)
+            end
+        end
+        task.wait(0.1)
+    else
+        sendKeyEvent(keyS)
+        tapKeyWithDelay(keyQ)
+        task.wait(0.1)
+        tapKey(keyS)
+    end
+    return true
+end
+
+--============================================================
+-- KAMUI THEME
+--============================================================
+local THEME = {
+    Background = Color3.fromRGB(6, 6, 7),
+    BackgroundLight = Color3.fromRGB(13, 13, 14),
+    BackgroundMedium = Color3.fromRGB(20, 20, 22),
+    Red = Color3.fromRGB(205, 18, 20),
+    BrightRed = Color3.fromRGB(240, 30, 24),
+    DarkRed = Color3.fromRGB(52, 8, 12),
+    Text = Color3.fromRGB(240, 236, 236),
+    MutedText = Color3.fromRGB(150, 145, 146),
+    Green = Color3.fromRGB(240, 30, 24),
+    OffRed = Color3.fromRGB(105, 105, 108),
+}
+
+--============================================================
+-- CLEAN OLD GUI
+--============================================================
+local conns = {}
+if _G.KAMUI_BackdashCleanup then
+    pcall(_G.KAMUI_BackdashCleanup)
+end
+pcall(function()
+    local old = game.CoreGui:FindFirstChild("KAMUI_BackdashMacro")
+    if old then
+        old:Destroy()
+    end
+    local oldRestore = game.CoreGui:FindFirstChild("KAMUI_BackdashMacro_Restore")
+    if oldRestore then
+        oldRestore:Destroy()
+    end
+end)
+
+--============================================================
+-- SCREEN GUI
+--============================================================
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "KAMUI_BackdashMacro"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = game.CoreGui
+
+--============================================================
+-- GUI HELPERS
+--============================================================
+
+local function applyCorner(
+    obj,
+    radius
+)
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, radius or 8)
+    corner.Parent = obj
+    return corner
+end
+
+--============================================================
+-- MAIN FRAME
+--============================================================
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Parent = ScreenGui
+MainFrame.BackgroundColor3 = THEME.Background
+MainFrame.BackgroundTransparency = 0.45
+MainFrame.BorderSizePixel = 0
+MainFrame.Size = UDim2.new(0, 320, 0, 350)
+MainFrame.Position = UDim2.new(0.5, -160, 0.4, -175)
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.ClipsDescendants = true
+applyCorner(MainFrame, 12)
+
+--============================================================
+-- BACKGROUND IMAGE
+--============================================================
+local BackgroundImage = Instance.new("ImageLabel")
+BackgroundImage.Name = "BackgroundImage"
+BackgroundImage.Parent = MainFrame
+BackgroundImage.Size = UDim2.new(1, 0, 1, 0)
+BackgroundImage.Position = UDim2.new(0, 0, 0, 0)
+BackgroundImage.BackgroundTransparency = 1
+BackgroundImage.BorderSizePixel = 0
+BackgroundImage.Image = "rbxassetid://135016327821234"
+BackgroundImage.ImageTransparency = 0.38
+BackgroundImage.ScaleType = Enum.ScaleType.Crop
+BackgroundImage.Active = false
+BackgroundImage.Selectable = false
+BackgroundImage.ZIndex = 0
+applyCorner(BackgroundImage, 12)
+
+--============================================================
+-- MAIN BORDER
+--============================================================
+local MainStroke = Instance.new("UIStroke")
+MainStroke.Parent = MainFrame
+MainStroke.Color = THEME.Red
+MainStroke.Thickness = 1.2
+
+--============================================================
+-- CONTENT
+--============================================================
+local BDUI = {
+    Line = Color3.fromRGB(36, 36, 38),
+    Div = Color3.fromRGB(26, 26, 28),
+    Chip = Color3.fromRGB(20, 20, 22),
+    Head = Color3.fromRGB(105, 105, 108),
+    OffTrack = Color3.fromRGB(42, 42, 45),
+    OffKnob = Color3.fromRGB(189, 184, 184),
+    White = Color3.fromRGB(255, 255, 255),
+}
+BDUI.press = TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+--// builds an instance; flags it so the main script's skin pass leaves it alone
+function BDUI.mk(class, props, parent)
+    local o = Instance.new(class)
+    for k, v in pairs(props) do
+        o[k] = v
+    end
+    if class == "TextButton" or class == "TextBox" or class == "Frame" then
+        o:SetAttribute("KamuiSkinned", true)
+    end
+    o.Parent = parent
+    return o
+end
+function BDUI.stroke(obj, color, thickness, transparency)
+    local st = Instance.new("UIStroke")
+    st.Color = color
+    st.Thickness = thickness or 1
+    st.Transparency = transparency or 0
+    st.Parent = obj
+    return st
+end
+
+--============================================================
+-- WINDOW STYLE (matches the main KAMUI GUI)
+--============================================================
+do
+    local W, H = 320, 352
+    MainFrame.Draggable = false -- custom drag below (sliders must not move the window)
+    MainFrame.Size = UDim2.new(0, W, 0, H)
+    MainFrame.BackgroundTransparency = 0.06
+    local mainCorner = MainFrame:FindFirstChildOfClass("UICorner")
+    if mainCorner then
+        mainCorner.CornerRadius = UDim.new(0, 16)
+    end
+    local bgCorner = BackgroundImage:FindFirstChildOfClass("UICorner")
+    if bgCorner then
+        bgCorner.CornerRadius = UDim.new(0, 16)
+    end
+    BackgroundImage.ImageTransparency = 0.86
+    MainStroke.Color = Color3.fromRGB(40, 40, 42)
+    BDUI.stroke(MainFrame, THEME.Red, 1.5, 0.8)
+    --// responsive scale: fit small screens, never above 1x
+    local vp = ScreenGui.AbsoluteSize
+    if vp.X == 0 or vp.Y == 0 then
+        local cam = Workspace.CurrentCamera
+        vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+    end
+    local sc = math.clamp(math.min((vp.X - 24) / W, (vp.Y - 24) / H), 0.55, 1)
+    local us = Instance.new("UIScale")
+    us.Scale = sc
+    us.Parent = MainFrame
+    MainFrame.Position = UDim2.new(0.5, -(W / 2) * sc, 0.4, -(H / 2) * sc)
+
+    local mk = BDUI.mk
+    local TopBar = mk("Frame", {
+        Name = "TopBar",
+        Size = UDim2.new(1, 0, 0, 34),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Active = true,
+        ZIndex = 5,
+    }, MainFrame)
+    local titleDot = mk("Frame", {
+        Name = "TitleDot",
+        Size = UDim2.fromOffset(6, 6),
+        Position = UDim2.new(0, 14, 0.5, -3),
+        BackgroundColor3 = THEME.Red,
+        BorderSizePixel = 0,
+        ZIndex = 6,
+    }, TopBar)
+    applyCorner(titleDot, 3)
+    mk("TextLabel", {
+        Name = "Title",
+        Text = "Backdash cancel",
+        Size = UDim2.new(1, -80, 1, 0),
+        Position = UDim2.fromOffset(28, 0),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = THEME.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 6,
+    }, TopBar)
+    local closeBtn = mk("TextButton", {
+        Name = "CloseButton",
+        Text = "×",
+        Size = UDim2.fromOffset(24, 24),
+        Position = UDim2.new(1, -34, 0.5, -12),
+        BackgroundColor3 = BDUI.Chip,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Font = Enum.Font.GothamBold,
+        TextSize = 14,
+        TextColor3 = THEME.MutedText,
+        ZIndex = 7,
+    }, TopBar)
+    applyCorner(closeBtn, 7)
+    BDUI.stroke(closeBtn, BDUI.Line, 1, 0)
+    closeBtn.MouseEnter:Connect(function()
+        TweenService:Create(closeBtn, BDUI.press, { TextColor3 = THEME.BrightRed }):Play()
+    end)
+    closeBtn.MouseLeave:Connect(function()
+        TweenService:Create(closeBtn, BDUI.press, { TextColor3 = THEME.MutedText }):Play()
+    end)
+    closeBtn.MouseButton1Click:Connect(function()
+        if _G.KAMUI_BackdashCleanup then
+            _G.KAMUI_BackdashCleanup()
+        end
+    end)
+    mk("Frame", {
+        Name = "TopDivider",
+        Size = UDim2.new(1, -24, 0, 1),
+        Position = UDim2.new(0, 12, 0, 34),
+        BackgroundColor3 = BDUI.Div,
+        BorderSizePixel = 0,
+        ZIndex = 5,
+    }, MainFrame)
+    mk("TextLabel", {
+        Name = "MacrosHeading",
+        Text = "Macros",
+        Size = UDim2.new(0.5, -14, 0, 14),
+        Position = UDim2.fromOffset(14, 42),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextColor3 = BDUI.Head,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 4,
+    }, MainFrame)
+    mk("TextLabel", {
+        Name = "MacrosHint",
+        Text = "Tap a tile to run it",
+        Size = UDim2.new(0.5, -14, 0, 14),
+        Position = UDim2.new(0.5, 0, 0, 42),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextColor3 = BDUI.Head,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        ZIndex = 4,
+    }, MainFrame)
+    --// window drag: only from the title bar (so the slider never moves the window)
+    local dragging = false
+    local dragStart
+    local startPos
+    conns[#conns + 1] = TopBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = MainFrame.Position
+        end
+    end)
+    conns[#conns + 1] = UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    conns[#conns + 1] = UserInputService.InputChanged:Connect(function(input)
+        if dragging
+            and (input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            MainFrame.Position = UDim2.new(
+                startPos.X.Scale,
+                startPos.X.Offset + delta.X,
+                startPos.Y.Scale,
+                startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+end
+
+--============================================================
+-- KEYBINDS
+--============================================================
+local Keybinds = {
+    [1] = nil,
+    [2] = nil,
+    [3] = nil,
+    [4] = nil,
+}
+local WaitingForKey = nil
+local KeyButtons = {}
+local ToggleButtons = {}
+local ToggleIndicators = {}
+
+--============================================================
+-- EXECUTE MACRO
+--============================================================
+
+local function executeMacro(index)
+    local enabled = false
+    local macroKey = nil
+    if index == 1 then
+        enabled = Settings.Macro.BackDashCancel1.Enabled
+        macroKey = Enum.KeyCode.One
+    elseif index == 2 then
+        enabled = Settings.Macro.BackDashCancel2.Enabled
+        macroKey = Enum.KeyCode.Two
+    elseif index == 3 then
+        enabled = Settings.Macro.BackDashCancel3.Enabled
+        macroKey = Enum.KeyCode.Three
+    elseif index == 4 then
+        enabled = Settings.Macro.BackDashCancel4.Enabled
+        macroKey = Enum.KeyCode.Four
+    end
+    if not enabled then
+        return
+    end
+    --========================================================
+    -- RUN ORIGINAL MACRO
+    --========================================================
+    task.spawn(function()
+        local ok, result = pcall(performBackDashMacro, macroKey)
+        task.delay(0.05, restoreTouchInput)
+        if ok and result == false then
+            return
+        end
+        if not ok then
+            warn("[KAMUI] Backdash macro error:", result)
+            pcall(tapKey, keyS)
+            pcall(tapKey, keyQ)
+            pcall(tapKey, macroKey)
+            pcall(function()
+                VirtualInputManager:SendMouseButtonEvent(halfViewportX, halfViewportY, 0, false, game, 0)
+            end)
+            return
+        end
+        --====================================================
+        -- RUN MAGNET AFTER MACRO
+        --====================================================
+        if Settings.Magnet.Enabled then
+            executeMagnet()
+        end
+    end)
+end
+
+--============================================================
+-- CREATE MACRO ROW
+--============================================================
+
+local function createMacroRow(index)
+    local mk = BDUI.mk
+    local col = (index - 1) % 2
+    local rowIndex = math.floor((index - 1) / 2)
+    local tile = mk("Frame", {
+        Name = "MacroTile" .. tostring(index),
+        Size = UDim2.new(0.5, -15, 0, 74),
+        Position = UDim2.new(col * 0.5, col == 0 and 12 or 3, 0, 58 + (rowIndex * 80)),
+        BackgroundColor3 = THEME.BackgroundLight,
+        BorderSizePixel = 0,
+        ZIndex = 4,
+    }, MainFrame)
+    applyCorner(tile, 10)
+    local tileStroke = BDUI.stroke(tile, BDUI.Line, 1, 0)
+    mk("TextLabel", {
+        Name = "TileLabel",
+        Text = "Cancel " .. tostring(index),
+        Size = UDim2.new(1, -66, 0, 20),
+        Position = UDim2.fromOffset(12, 10),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = THEME.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 5,
+    }, tile)
+    --========================================================
+    -- RUN (tap anywhere on the tile, same as the old name button)
+    --========================================================
+    local runButton = mk("TextButton", {
+        Name = "RunButton",
+        Text = "",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        ZIndex = 6,
+    }, tile)
+    runButton.MouseButton1Click:Connect(
+        function()
+            executeMacro(index)
+        end
+    )
+    local function setPressed(pressed)
+        TweenService:Create(tile, BDUI.press, { BackgroundColor3 = pressed and BDUI.Chip or THEME.BackgroundLight }):Play()
+        TweenService:Create(tileStroke, BDUI.press, { Color = pressed and THEME.Red or BDUI.Line }):Play()
+    end
+    runButton.MouseButton1Down:Connect(function()
+        setPressed(true)
+    end)
+    runButton.MouseButton1Up:Connect(function()
+        setPressed(false)
+    end)
+    runButton.MouseLeave:Connect(function()
+        setPressed(false)
+    end)
+    --========================================================
+    -- KEY BUTTON
+    --========================================================
+    local keyButton = mk("TextButton", {
+        Name = "KeyButton",
+        Text = "Bind key",
+        Size = UDim2.new(1, -20, 0, 26),
+        Position = UDim2.fromOffset(10, 38),
+        BackgroundColor3 = BDUI.Chip,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = BDUI.Head,
+        ZIndex = 8,
+    }, tile)
+    applyCorner(keyButton, 7)
+    local chipStroke = BDUI.stroke(keyButton, BDUI.Line, 1, 0)
+    KeyButtons[index] = keyButton
+    local function styleChip()
+        local t = keyButton.Text
+        if t == "Press a key" then
+            keyButton.BackgroundColor3 = THEME.DarkRed
+            chipStroke.Color = THEME.Red
+            keyButton.TextColor3 = THEME.Text
+        elseif t == "Bind key" then
+            keyButton.BackgroundColor3 = BDUI.Chip
+            chipStroke.Color = BDUI.Line
+            keyButton.TextColor3 = BDUI.Head
+        else
+            keyButton.BackgroundColor3 = BDUI.Chip
+            chipStroke.Color = BDUI.Line
+            keyButton.TextColor3 = THEME.Text
+        end
+    end
+    keyButton:GetPropertyChangedSignal("Text"):Connect(styleChip)
+    styleChip()
+    --========================================================
+    -- TOGGLE
+    --========================================================
+    local toggle = mk("TextButton", {
+        Name = "Toggle",
+        Text = "",
+        Size = UDim2.fromOffset(52, 34),
+        Position = UDim2.new(1, -54, 0, 3),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        ZIndex = 8,
+    }, tile)
+    local track = mk("Frame", {
+        Name = "Track",
+        Size = UDim2.fromOffset(36, 20),
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -6, 0.5, 0),
+        BorderSizePixel = 0,
+        ZIndex = 9,
+    }, toggle)
+    applyCorner(track, 10)
+    local knob = mk("Frame", {
+        Name = "Knob",
+        Size = UDim2.fromOffset(14, 14),
+        BorderSizePixel = 0,
+        ZIndex = 10,
+    }, track)
+    applyCorner(knob, 7)
+    ToggleButtons[index] = toggle
+    ToggleIndicators[index] = knob
+    local function updateToggle(animated)
+        local isEnabled = false
+        if index == 1 then
+            isEnabled = Settings.Macro.BackDashCancel1.Enabled
+        elseif index == 2 then
+            isEnabled = Settings.Macro.BackDashCancel2.Enabled
+        elseif index == 3 then
+            isEnabled = Settings.Macro.BackDashCancel3.Enabled
+        elseif index == 4 then
+            isEnabled = Settings.Macro.BackDashCancel4.Enabled
+        end
+        local trackColor = isEnabled and THEME.Red or BDUI.OffTrack
+        local knobPos = isEnabled and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+        local knobColor = isEnabled and BDUI.White or BDUI.OffKnob
+        if animated then
+            TweenService:Create(track, BDUI.press, { BackgroundColor3 = trackColor }):Play()
+            TweenService:Create(knob, BDUI.press, { Position = knobPos, BackgroundColor3 = knobColor }):Play()
+        else
+            track.BackgroundColor3 = trackColor
+            knob.Position = knobPos
+            knob.BackgroundColor3 = knobColor
+        end
+    end
+    toggle.MouseButton1Click:Connect(
+        function()
+            if index == 1 then
+                Settings.Macro.BackDashCancel1.Enabled = not Settings.Macro.BackDashCancel1.Enabled
+            elseif index == 2 then
+                Settings.Macro.BackDashCancel2.Enabled = not Settings.Macro.BackDashCancel2.Enabled
+            elseif index == 3 then
+                Settings.Macro.BackDashCancel3.Enabled = not Settings.Macro.BackDashCancel3.Enabled
+            elseif index == 4 then
+                Settings.Macro.BackDashCancel4.Enabled = not Settings.Macro.BackDashCancel4.Enabled
+            end
+            updateToggle(true)
+        end
+    )
+    --========================================================
+    -- KEY ASSIGNMENT
+    --========================================================
+    keyButton.MouseButton1Click:Connect(
+        function()
+            if WaitingForKey then
+                return
+            end
+            WaitingForKey = index
+            keyButton.Text = "Press a key"
+        end
+    )
+    updateToggle(false)
+end
+
+--============================================================
+-- CREATE MACRO ROWS
+--============================================================
+createMacroRow(1)
+createMacroRow(2)
+createMacroRow(3)
+createMacroRow(4)
+
+--============================================================
+-- MAGNET ROW
+--============================================================
+local MagnetToggle
+local MagnetIndicator
+local DelayBox
+do
+    local mk = BDUI.mk
+    mk("TextLabel", {
+        Name = "MagnetHeading",
+        Text = "Magnet",
+        Size = UDim2.new(1, -28, 0, 14),
+        Position = UDim2.fromOffset(14, 220),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextColor3 = BDUI.Head,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 4,
+    }, MainFrame)
+    local card = mk("Frame", {
+        Name = "MagnetCard",
+        Size = UDim2.new(1, -24, 0, 97),
+        Position = UDim2.fromOffset(12, 236),
+        BackgroundColor3 = THEME.BackgroundLight,
+        BorderSizePixel = 0,
+        ZIndex = 4,
+    }, MainFrame)
+    applyCorner(card, 10)
+    BDUI.stroke(card, BDUI.Line, 1, 0)
+    mk("TextLabel", {
+        Name = "MagnetLabel",
+        Text = "Magnet pull",
+        Size = UDim2.new(1, -70, 0, 16),
+        Position = UDim2.fromOffset(12, 6),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = THEME.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 5,
+    }, card)
+    mk("TextLabel", {
+        Name = "MagnetSub",
+        Text = 'Teleports and pulls you towards\n<font color="rgb(255,204,0)"><b>(Use at your own risk)</b></font>',
+        RichText = true,
+        TextWrapped = true,
+        Size = UDim2.new(1, -70, 0, 28),
+        Position = UDim2.fromOffset(12, 23),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextColor3 = THEME.MutedText,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        ZIndex = 5,
+    }, card)
+    mk("Frame", {
+        Name = "Divider",
+        Size = UDim2.new(1, 0, 0, 1),
+        Position = UDim2.fromOffset(0, 56),
+        BackgroundColor3 = BDUI.Div,
+        BorderSizePixel = 0,
+        ZIndex = 5,
+    }, card)
+    MagnetToggle = mk("TextButton", {
+        Name = "MagnetToggle",
+        Text = "",
+        Size = UDim2.fromOffset(56, 56),
+        Position = UDim2.new(1, -56, 0, 0),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        ZIndex = 6,
+    }, card)
+    local magnetTrack = mk("Frame", {
+        Name = "MagnetTrack",
+        Size = UDim2.fromOffset(36, 20),
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -10, 0.5, 0),
+        BorderSizePixel = 0,
+        ZIndex = 7,
+    }, MagnetToggle)
+    applyCorner(magnetTrack, 10)
+    MagnetIndicator = mk("Frame", {
+        Name = "Knob",
+        Size = UDim2.fromOffset(14, 14),
+        BorderSizePixel = 0,
+        ZIndex = 8,
+    }, magnetTrack)
+    applyCorner(MagnetIndicator, 7)
+    local function updateMagnetToggle(animated)
+        local on = Settings.Magnet.Enabled
+        local trackColor = on and THEME.Red or BDUI.OffTrack
+        local knobPos = on and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+        local knobColor = on and BDUI.White or BDUI.OffKnob
+        if animated then
+            TweenService:Create(magnetTrack, BDUI.press, { BackgroundColor3 = trackColor }):Play()
+            TweenService:Create(MagnetIndicator, BDUI.press, { Position = knobPos, BackgroundColor3 = knobColor }):Play()
+        else
+            magnetTrack.BackgroundColor3 = trackColor
+            MagnetIndicator.Position = knobPos
+            MagnetIndicator.BackgroundColor3 = knobColor
+        end
+    end
+    MagnetToggle.MouseButton1Click:Connect(
+        function()
+            Settings.Magnet.Enabled = not Settings.Magnet.Enabled
+            if not Settings.Magnet.Enabled
+                and pullConnection then
+                pullConnection:Disconnect()
+                pullConnection = nil
+            end
+            updateMagnetToggle(true)
+        end
+    )
+    updateMagnetToggle(false)
+
+    --========================================================
+    -- MAGNET DELAY: slider + value box
+    --========================================================
+    mk("TextLabel", {
+        Name = "DelayLabel",
+        Text = "Delay",
+        Size = UDim2.fromOffset(50, 40),
+        Position = UDim2.fromOffset(12, 57),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.Gotham,
+        TextSize = 12,
+        TextColor3 = THEME.MutedText,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 5,
+    }, card)
+    local hit = mk("TextButton", {
+        Name = "DelaySliderHit",
+        Text = "",
+        Size = UDim2.new(1, -130, 0, 40),
+        Position = UDim2.fromOffset(66, 57),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        ZIndex = 6,
+    }, card)
+    local track = mk("Frame", {
+        Name = "DelayTrack",
+        Size = UDim2.new(1, -14, 0, 6),
+        Position = UDim2.new(0, 7, 0.5, -3),
+        BackgroundColor3 = BDUI.Div,
+        BorderSizePixel = 0,
+        ZIndex = 7,
+    }, hit)
+    applyCorner(track, 3)
+    BDUI.stroke(track, Color3.fromRGB(52, 52, 55), 1, 0)
+    local fill = mk("Frame", {
+        Name = "DelayFill",
+        Size = UDim2.new(0, 0, 1, 0),
+        BackgroundColor3 = THEME.BrightRed,
+        BorderSizePixel = 0,
+        ZIndex = 8,
+    }, track)
+    applyCorner(fill, 3)
+    local knob = mk("Frame", {
+        Name = "Knob",
+        Size = UDim2.fromOffset(14, 14),
+        Position = UDim2.new(0, -7, 0.5, -7),
+        BackgroundColor3 = BDUI.White,
+        BorderSizePixel = 0,
+        ZIndex = 9,
+    }, track)
+    applyCorner(knob, 7)
+    DelayBox = mk("TextBox", {
+        Name = "MagnetDelayBox",
+        Size = UDim2.fromOffset(44, 24),
+        Position = UDim2.new(1, -54, 0, 65),
+        BackgroundColor3 = BDUI.Chip,
+        TextColor3 = THEME.Red,
+        PlaceholderColor3 = THEME.MutedText,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        Text = string.format("%.2f", Settings.Magnet.Delay),
+        PlaceholderText = "0.00",
+        ClearTextOnFocus = false,
+        TextXAlignment = Enum.TextXAlignment.Center,
+        TextYAlignment = Enum.TextYAlignment.Center,
+        BorderSizePixel = 0,
+        MultiLine = false,
+        ZIndex = 7,
+    }, card)
+    applyCorner(DelayBox, 7)
+    BDUI.stroke(DelayBox, BDUI.Line, 1, 0)
+    local SLIDER_MAX = 5
+    BDUI.refreshDelay = function()
+        local v = math.clamp((Settings.Magnet.Delay or 0) / SLIDER_MAX, 0, 1)
+        fill.Size = UDim2.new(v, 0, 1, 0)
+        knob.Position = UDim2.new(v, -7, 0.5, -7)
+    end
+    BDUI.refreshDelay()
+    local sliding = false
+    local function setFromX(x)
+        local w = track.AbsoluteSize.X
+        if w <= 0 then
+            return
+        end
+        local t = math.clamp((x - track.AbsolutePosition.X) / w, 0, 1)
+        local v = math.floor((t * SLIDER_MAX * 100) + 0.5) / 100
+        Settings.Magnet.Delay = v
+        DelayBox.Text = string.format("%.2f", v)
+        BDUI.refreshDelay()
+    end
+    hit.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            sliding = true
+            setFromX(input.Position.X)
+        end
+    end)
+    conns[#conns + 1] = UserInputService.InputChanged:Connect(function(input)
+        if sliding
+            and (input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch) then
+            setFromX(input.Position.X)
+        end
+    end)
+    conns[#conns + 1] = UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            sliding = false
+        end
+    end)
+end
+
+--============================================================
+-- DELAY INPUT VALIDATION
+--============================================================
+
+local function updateDelayFromText()
+    local text = DelayBox.Text
+    text = text:gsub("%s+", "")
+    local value = tonumber(text)
+    if value == nil then
+        DelayBox.Text = string.format("%.2f", Settings.Magnet.Delay)
+        return
+    end
+    value = math.max(0, value)
+    value = math.min(60, value)
+    Settings.Magnet.Delay = value
+    DelayBox.Text = string.format("%.2f", Settings.Magnet.Delay)
+end
+DelayBox.FocusLost:Connect(
+    function(enterPressed)
+        updateDelayFromText()
+        if BDUI.refreshDelay then
+            BDUI.refreshDelay()
+        end
+    end
+)
+
+--============================================================
+-- KEYBOARD INPUT
+--============================================================
+conns[#conns + 1] = UserInputService.InputBegan:Connect(
+    function(
+        input,
+        gameProcessed
+    )
+        if input.UserInputType
+            ~= Enum.UserInputType.Keyboard then
+            return
+        end
+        if DelayBox:IsFocused() then
+            return
+        end
+        --====================================================
+        -- KEYBIND ASSIGNMENT
+        --====================================================
+        if WaitingForKey then
+            local index = WaitingForKey
+            if input.KeyCode
+                == Enum.KeyCode.Escape then
+                Keybinds[index] = nil
+                KeyButtons[index].Text = "Bind key"
+            else
+                Keybinds[index] = input.KeyCode
+                KeyButtons[index].Text = input.KeyCode.Name
+            end
+            WaitingForKey = nil
+            return
+        end
+        --====================================================
+        -- EXECUTE CUSTOM KEYBINDS
+        --====================================================
+        for index = 1, 4 do
+            if Keybinds[index]
+                and Keybinds[index]
+                == input.KeyCode then
+                executeMacro(index)
+                return
+            end
+        end
+        --====================================================
+        -- GAME PROCESSED
+        --====================================================
+        if gameProcessed then
+            return
+        end
+    end
+)
+
+--============================================================
+-- RESPAWN
+--============================================================
+conns[#conns + 1] = localPlayer.CharacterAdded:Connect(function()
+    lifeEpoch = lifeEpoch + 1
+    releaseHeldInput()
+    restoreTouchInput()
+    task.delay(0.4, restoreTouchInput)
+    task.delay(1.5, restoreTouchInput)
+    dashBusy = false
+    if pullConnection then
+        pullConnection:Disconnect()
+        pullConnection = nil
+    end
+    local box = UserInputService:GetFocusedTextBox()
+    if box and box:IsDescendantOf(ScreenGui) then
+        pcall(function()
+            box:ReleaseFocus()
+        end)
+    end
+end)
+
+--============================================================
+-- RESTORE GUI
+--============================================================
+local RestoreGui = Instance.new("ScreenGui")
+RestoreGui.Name = "KAMUI_BackdashMacro_Restore"
+RestoreGui.ResetOnSpawn = false
+RestoreGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+RestoreGui.Parent = game.CoreGui
+local RestoreButton = Instance.new("ImageButton")
+RestoreButton.Name = "RestoreButton"
+RestoreButton.Parent = RestoreGui
+RestoreButton.Size = UDim2.new(0, 34, 0, 34)
+RestoreButton.Position = UDim2.new(1, -50, 1, -70)
+RestoreButton.BackgroundTransparency = 1
+RestoreButton.BorderSizePixel = 0
+RestoreButton.AutoButtonColor = false
+RestoreButton.Visible = false
+RestoreButton.Active = true
+RestoreButton.ZIndex = 100
+local RestoreImage = Instance.new("ImageLabel")
+RestoreImage.Name = "RestoreImage"
+RestoreImage.Parent = RestoreButton
+RestoreImage.Size = UDim2.new(1, 0, 1, 0)
+RestoreImage.BackgroundTransparency = 1
+RestoreImage.BorderSizePixel = 0
+RestoreImage.Image = "rbxassetid://5661353340"
+RestoreImage.ScaleType = Enum.ScaleType.Stretch
+RestoreImage.Active = false
+RestoreImage.ZIndex = 101
+applyCorner(RestoreImage, 100)
+applyCorner(RestoreButton, 100)
+_G.KAMUI_BackdashCleanup = function()
+    for _, c in ipairs(conns) do
+        pcall(function()
+            c:Disconnect()
+        end)
+    end
+    table.clear(conns)
+    if npcCacheConnection then
+        pcall(function()
+            npcCacheConnection:Disconnect()
+        end)
+        npcCacheConnection = nil
+    end
+    if pullConnection then
+        pcall(function()
+            pullConnection:Disconnect()
+        end)
+        pullConnection = nil
+    end
+    if ScreenGui then
+        ScreenGui:Destroy()
+    end
+    if RestoreGui then
+        RestoreGui:Destroy()
+    end
+end
+
+--============================================================
+-- MINIMIZE
+--============================================================
+local originalPosition = MainFrame.Position
+local originalSize = MainFrame.Size
+
+--============================================================
+-- RESTORE DRAGGING
+--============================================================
+local restoreDragging = false
+local restoreDragStart = nil
+local restoreStartPosition = nil
+local restoreDragInput = nil
+local restoreMoved = false
+RestoreButton.InputBegan:Connect(
+    function(input)
+        if input.UserInputType
+            == Enum.UserInputType.MouseButton1
+            or input.UserInputType
+            == Enum.UserInputType.Touch then
+            restoreDragging = true
+            restoreMoved = false
+            restoreDragStart = input.Position
+            restoreStartPosition = RestoreButton.Position
+            input.Changed:Connect(
+                function()
+                    if input.UserInputState
+                        == Enum.UserInputState.End then
+                        restoreDragging = false
+                    end
+                end
+            )
+        end
+    end
+)
+RestoreButton.InputChanged:Connect(
+    function(input)
+        if input.UserInputType
+            == Enum.UserInputType.MouseMovement
+            or input.UserInputType
+            == Enum.UserInputType.Touch then
+            restoreDragInput = input
+        end
+    end
+)
+conns[#conns + 1] = UserInputService.InputChanged:Connect(
+    function(input)
+        if not restoreDragging then
+            return
+        end
+        if input ~= restoreDragInput then
+            return
+        end
+        local delta = input.Position - restoreDragStart
+        if math.abs(delta.X) > 4
+            or math.abs(delta.Y) > 4 then
+            restoreMoved = true
+        end
+        RestoreButton.Position = UDim2.new(
+                restoreStartPosition.X.Scale,
+                restoreStartPosition.X.Offset + delta.X,
+                restoreStartPosition.Y.Scale,
+                restoreStartPosition.Y.Offset + delta.Y
+            )
+    end
+)
+
+--============================================================
+-- RESTORE
+--============================================================
+RestoreButton.MouseButton1Click:Connect(
+    function()
+        if restoreMoved then
+            return
+        end
+        RestoreButton.Visible = false
+        MainFrame.Visible = true
+        local buttonCenterX = RestoreButton.AbsolutePosition.X + RestoreButton.AbsoluteSize.X * 0.5
+        local buttonCenterY = RestoreButton.AbsolutePosition.Y + RestoreButton.AbsoluteSize.Y * 0.5
+        local startSize = UDim2.fromOffset(RestoreButton.AbsoluteSize.X, RestoreButton.AbsoluteSize.Y)
+        local startPosition = UDim2.fromOffset(
+                buttonCenterX - RestoreButton.AbsoluteSize.X * 0.5,
+                buttonCenterY - RestoreButton.AbsoluteSize.Y * 0.5
+            )
+        MainFrame.Position = startPosition
+        MainFrame.Size = startSize
+        TweenService:Create(
+            MainFrame,
+            TweenInfo.new(0.42, Enum.EasingStyle.Quint, Enum.EasingDirection.Out),
+            {
+                Position = originalPosition,
+                Size = originalSize,
+            }
+        ):Play()
+    end
+)
+
+--============================================================
+-- F1 HIDE / RESTORE
+--============================================================
+-- Disabled here intentionally.
+-- The main KAMUI GUI owns the Hide GUI keybind.
+-- Backdash Cancel has its own independent GUI and must remain visible.
+
+--============================================================
+-- MOBILE MODE (Others -> Backdash cancel -> Mobile -> Open)
+-- Same look as the main KAMUI menu: dark cards, thin borders,
+-- red only as an accent, switch + slider styled like the menu.
+--============================================================
+if _G.KAMUI_BackdashMobile then
+    MainFrame.Visible = false
+    RestoreButton.Visible = false
+    for i = 1, 4 do
+        Settings.Macro["BackDashCancel" .. i].Enabled = true
+    end
+
+    local PANEL = THEME.BackgroundLight
+    local CHIP = THEME.BackgroundMedium
+    local LINE = Color3.fromRGB(36, 36, 38)
+    local DIV = Color3.fromRGB(26, 26, 28)
+    local HEAD = Color3.fromRGB(105, 105, 108)
+    local OFF_TRACK = Color3.fromRGB(42, 42, 45)
+    local OFF_KNOB = Color3.fromRGB(189, 184, 184)
+    local WHITE = Color3.fromRGB(255, 255, 255)
+    local SLIDER_MAX = 1
+    local editing = false
+    local strokes = {}
+
+    local function addStroke(obj, color)
+        local st = Instance.new("UIStroke")
+        st.Color = color
+        st.Thickness = 1
+        st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        st.Parent = obj
+        return st
+    end
+
+    --// press = action, or drag when "Move" mode is on
+    local function movable(handle, target, onPress)
+        local dragging, dragStart, startPos, dragInput = false, nil, nil, nil
+        handle.InputBegan:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.Touch
+                and input.UserInputType ~= Enum.UserInputType.MouseButton1 then
+                return
+            end
+            if editing then
+                dragging = true
+                dragStart = input.Position
+                startPos = target.Position
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then
+                        dragging = false
+                    end
+                end)
+            elseif onPress then
+                onPress()
+            end
+        end)
+        handle.InputChanged:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch then
+                dragInput = input
+            end
+        end)
+        conns[#conns + 1] = UserInputService.InputChanged:Connect(function(input)
+            if dragging and input == dragInput then
+                local d = input.Position - dragStart
+                target.Position = UDim2.new(
+                    startPos.X.Scale, startPos.X.Offset + d.X,
+                    startPos.Y.Scale, startPos.Y.Offset + d.Y
+                )
+            end
+        end)
+    end
+
+    --// four touch buttons (fire on touch-down for fast response)
+    for i = 1, 4 do
+        local col = (i - 1) % 2
+        local line = math.floor((i - 1) / 2)
+        local b = Instance.new("TextButton")
+        b.Name = "BackdashTouch" .. i
+        b.Parent = ScreenGui
+        b.Size = UDim2.new(0, 52, 0, 52)
+        b.Position = UDim2.new(0, 14 + col * 58, 0.28, line * 58)
+        b.BackgroundColor3 = PANEL
+        b.BackgroundTransparency = 0.05
+        b.BorderSizePixel = 0
+        b.AutoButtonColor = false
+        b.Text = tostring(i)
+        b.TextColor3 = WHITE
+        b.Font = Enum.Font.GothamMedium
+        b.TextSize = 20
+        b.ZIndex = 10
+        applyCorner(b, 12)
+        local pad = Instance.new("UIPadding")
+        pad.PaddingBottom = UDim.new(0, 8)
+        pad.Parent = b
+        local st = addStroke(b, LINE)
+        strokes[i] = st
+        local accent = Instance.new("Frame")
+        accent.Parent = b
+        accent.BackgroundColor3 = THEME.Red
+        accent.BorderSizePixel = 0
+        accent.Size = UDim2.new(0, 14, 0, 3)
+        accent.Position = UDim2.new(0.5, -7, 1, -11)
+        accent.ZIndex = 11
+        applyCorner(accent, 2)
+        movable(b, b, function()
+            executeMacro(i)
+            b.BackgroundColor3 = THEME.DarkRed
+            st.Color = THEME.BrightRed
+            TweenService:Create(b, TweenInfo.new(0.22), { BackgroundColor3 = PANEL }):Play()
+            TweenService:Create(st, TweenInfo.new(0.22), { Color = LINE }):Play()
+        end)
+    end
+
+    --// Magnet panel (card)
+    local Panel = Instance.new("Frame")
+    Panel.Name = "BackdashMobilePanel"
+    Panel.Parent = ScreenGui
+    Panel.Size = UDim2.new(0, 176, 0, 100)
+    Panel.Position = UDim2.new(0, 132, 0.28, 0)
+    Panel.BackgroundColor3 = PANEL
+    Panel.BackgroundTransparency = 0.05
+    Panel.BorderSizePixel = 0
+    Panel.ZIndex = 10
+    applyCorner(Panel, 10)
+    local panelStroke = addStroke(Panel, LINE)
+
+    local function divider(y)
+        local d = Instance.new("Frame")
+        d.Parent = Panel
+        d.BackgroundColor3 = DIV
+        d.BorderSizePixel = 0
+        d.Size = UDim2.new(1, -20, 0, 1)
+        d.Position = UDim2.new(0, 10, 0, y)
+        d.ZIndex = 11
+    end
+    divider(30)
+    divider(65)
+
+    local function chip(text, w, x)
+        local c = Instance.new("TextButton")
+        c.Parent = Panel
+        c.Size = UDim2.new(0, w, 0, 20)
+        c.Position = UDim2.new(1, x, 0, 5)
+        c.BackgroundColor3 = CHIP
+        c.TextColor3 = THEME.MutedText
+        c.Font = Enum.Font.GothamMedium
+        c.TextSize = 11
+        c.Text = text
+        c.AutoButtonColor = false
+        c.BorderSizePixel = 0
+        c.ZIndex = 12
+        applyCorner(c, 6)
+        local cs = addStroke(c, LINE)
+        return c, cs
+    end
+
+    local Header = Instance.new("Frame")
+    Header.Parent = Panel
+    Header.BackgroundTransparency = 1
+    Header.Size = UDim2.new(1, -90, 0, 30)
+    Header.ZIndex = 11
+    local Title = Instance.new("TextLabel")
+    Title.Parent = Header
+    Title.BackgroundTransparency = 1
+    Title.Size = UDim2.new(1, -12, 1, 0)
+    Title.Position = UDim2.new(0, 12, 0, 0)
+    Title.Font = Enum.Font.GothamMedium
+    Title.TextSize = 11
+    Title.TextColor3 = HEAD
+    Title.TextXAlignment = Enum.TextXAlignment.Left
+    Title.Text = "BACKDASH"
+    Title.ZIndex = 12
+    movable(Header, Panel, nil)
+
+    local MoveChip, MoveStroke = chip("Move", 44, -80)
+    local CloseChip = chip("x", 24, -32)
+    MoveChip.MouseButton1Click:Connect(function()
+        editing = not editing
+        MoveChip.Text = editing and "Done" or "Move"
+        MoveChip.BackgroundColor3 = editing and THEME.Red or CHIP
+        MoveChip.TextColor3 = editing and WHITE or THEME.MutedText
+        MoveStroke.Color = editing and THEME.Red or LINE
+        for _, st in ipairs(strokes) do
+            st.Color = editing and THEME.Red or LINE
+        end
+        panelStroke.Color = editing and THEME.Red or LINE
+    end)
+    CloseChip.MouseButton1Click:Connect(function()
+        Settings.Magnet.Enabled = false
+        if _G.KAMUI_BackdashCleanup then
+            _G.KAMUI_BackdashCleanup()
+            return
+        end
+        if pullConnection then
+            pullConnection:Disconnect()
+            pullConnection = nil
+        end
+        pcall(function() ScreenGui:Destroy() end)
+        pcall(function() RestoreGui:Destroy() end)
+    end)
+
+    --// row 1: Magnet switch (same switch as the main menu)
+    local MLabel = Instance.new("TextLabel")
+    MLabel.Parent = Panel
+    MLabel.BackgroundTransparency = 1
+    MLabel.Size = UDim2.new(0, 90, 0, 34)
+    MLabel.Position = UDim2.new(0, 12, 0, 31)
+    MLabel.Font = Enum.Font.GothamMedium
+    MLabel.TextSize = 12
+    MLabel.TextColor3 = THEME.Text
+    MLabel.TextXAlignment = Enum.TextXAlignment.Left
+    MLabel.Text = "Magnet"
+    MLabel.ZIndex = 12
+    local MHit = Instance.new("TextButton")
+    MHit.Parent = Panel
+    MHit.BackgroundTransparency = 1
+    MHit.Text = ""
+    MHit.Size = UDim2.new(0, 70, 0, 34)
+    MHit.Position = UDim2.new(1, -70, 0, 31)
+    MHit.ZIndex = 12
+    local MTrack = Instance.new("Frame")
+    MTrack.Parent = MHit
+    MTrack.AnchorPoint = Vector2.new(1, 0.5)
+    MTrack.Position = UDim2.new(1, -12, 0.5, 0)
+    MTrack.Size = UDim2.new(0, 36, 0, 20)
+    MTrack.BorderSizePixel = 0
+    MTrack.ZIndex = 13
+    applyCorner(MTrack, 10)
+    local MKnob = Instance.new("Frame")
+    MKnob.Parent = MTrack
+    MKnob.Size = UDim2.new(0, 14, 0, 14)
+    MKnob.BorderSizePixel = 0
+    MKnob.ZIndex = 14
+    applyCorner(MKnob, 7)
+    local function syncMagnet()
+        local on = Settings.Magnet.Enabled
+        MTrack.BackgroundColor3 = on and THEME.Red or OFF_TRACK
+        MKnob.Position = on and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+        MKnob.BackgroundColor3 = on and WHITE or OFF_KNOB
+    end
+    MHit.MouseButton1Click:Connect(function()
+        Settings.Magnet.Enabled = not Settings.Magnet.Enabled
+        if not Settings.Magnet.Enabled and pullConnection then
+            pullConnection:Disconnect()
+            pullConnection = nil
+        end
+        syncMagnet()
+    end)
+    syncMagnet()
+
+    --// row 2: delay slider + typeable red readout (like the main menu sliders)
+    local SHit = Instance.new("TextButton")
+    SHit.Parent = Panel
+    SHit.BackgroundTransparency = 1
+    SHit.Text = ""
+    SHit.Size = UDim2.new(0, 106, 0, 34)
+    SHit.Position = UDim2.new(0, 4, 0, 66)
+    SHit.ZIndex = 12
+    local Track = Instance.new("Frame")
+    Track.Parent = SHit
+    Track.Position = UDim2.new(0, 8, 0.5, -2)
+    Track.Size = UDim2.new(1, -16, 0, 4)
+    Track.BackgroundColor3 = Color3.fromRGB(38, 38, 41)
+    Track.BorderSizePixel = 0
+    Track.ZIndex = 13
+    applyCorner(Track, 2)
+    local Fill = Instance.new("Frame")
+    Fill.Parent = Track
+    Fill.BackgroundColor3 = THEME.Red
+    Fill.BorderSizePixel = 0
+    Fill.Size = UDim2.new(0, 0, 1, 0)
+    Fill.ZIndex = 14
+    applyCorner(Fill, 2)
+    local Knob = Instance.new("Frame")
+    Knob.Parent = Track
+    Knob.Size = UDim2.new(0, 12, 0, 12)
+    Knob.BackgroundColor3 = WHITE
+    Knob.BorderSizePixel = 0
+    Knob.ZIndex = 15
+    applyCorner(Knob, 6)
+    local ValueBox = Instance.new("TextBox")
+    ValueBox.Parent = Panel
+    ValueBox.BackgroundTransparency = 1
+    ValueBox.Size = UDim2.new(0, 56, 0, 24)
+    ValueBox.Position = UDim2.new(1, -62, 0, 71)
+    ValueBox.Font = Enum.Font.RobotoMono
+    ValueBox.TextSize = 12
+    ValueBox.TextColor3 = THEME.BrightRed
+    ValueBox.TextXAlignment = Enum.TextXAlignment.Right
+    ValueBox.ClearTextOnFocus = false
+    ValueBox.BorderSizePixel = 0
+    ValueBox.ZIndex = 12
+
+    local function setDelay(v)
+        v = math.clamp(v, 0, 60)
+        v = math.floor(v * 100 + 0.5) / 100
+        Settings.Magnet.Delay = v
+        DelayBox.Text = string.format("%.2f", v)
+        ValueBox.Text = string.format("%.2f", v)
+        local a = math.clamp(v / SLIDER_MAX, 0, 1)
+        Fill.Size = UDim2.new(a, 0, 1, 0)
+        Knob.Position = UDim2.new(a, -6, 0.5, -6)
+    end
+    local sliding = false
+    local function fromInput(pos)
+        local a = math.clamp((pos.X - Track.AbsolutePosition.X) / math.max(Track.AbsoluteSize.X, 1), 0, 1)
+        setDelay(a * SLIDER_MAX)
+    end
+    SHit.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            sliding = true
+            fromInput(input.Position)
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    sliding = false
+                end
+            end)
+        end
+    end)
+    conns[#conns + 1] = UserInputService.InputChanged:Connect(function(input)
+        if sliding and (input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            fromInput(input.Position)
+        end
+    end)
+    ValueBox.FocusLost:Connect(function()
+        local v = tonumber((ValueBox.Text:gsub("%s+", "")))
+        setDelay(v or Settings.Magnet.Delay)
+    end)
+    setDelay(Settings.Magnet.Delay)
+end
