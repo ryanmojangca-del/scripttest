@@ -13,7 +13,11 @@ local localPlayer = Players.LocalPlayer
 -- Garou "twisted": land the 4th M1, then front dash into the opponent.
 -- Lee twisted (ported from the AHK macro): flick right 50 deg, 30 ms later dash,
 -- 110 ms after that flick left 70 deg (net 20 deg left). Flicks are instant snaps.
--- Press the button / key right after your 4th M1. Shift lock should be ON.
+-- Two ways to start it, same idea as the dash in the main menu:
+--   Touch mode ON  = manual: press the key / tap the button and it fires right away.
+--   Touch mode OFF = auto: it fires by itself after your 4th M1 (Auto delay, adjustable).
+-- Auto mode watches for the animation of your 4th M1 (FOURTH_M1_ANIM below).
+-- Shift lock should be ON.
 -- Tune the numbers in the window. Nothing here uses virtual keys or mouse.
 --============================================================
 local Settings = {
@@ -26,6 +30,8 @@ local Settings = {
     DashAt = 0,          -- dash fires this long after the first flick (0 = same moment)
     BackAt = 0.14,       -- second flick, seconds after the press (30 + 80 q-hold + 30)
     EndWait = 0.03,      -- cooldown before it can run again (AHK last Sleep 30)
+    TouchMode = true,    -- true = manual (key / tap button), false = auto after the 4th M1
+    AutoDelay = 0.15,    -- auto mode: seconds between the 4th M1 starting and the twist
     BackTap = false,     -- optional: walk backwards for a moment first
     BackTapTime = 0.05,
     RotateChar = true,   -- turn the character with the camera (works without shift lock)
@@ -41,6 +47,9 @@ if type(saved) == "table" and saved.Version == Settings.Version then
     end
 end
 _G.KAMUI_TrueTwistedSettings = Settings
+
+--// animation id of the 4th M1: auto mode fires when this animation starts
+local FOURTH_M1_ANIM = "13294471966"
 
 local DASH_PAYLOAD = { Dash = Enum.KeyCode.W, Key = Enum.KeyCode.Q, Goal = "KeyPress" }
 local FLICK_BIND = "KAMUI_TwistedFlick"
@@ -254,7 +263,56 @@ local function fmt(v)
     return string.format("%g", v)
 end
 
-local W, H = 270, 286
+--// mode helpers (filled in below once the window exists)
+local refreshMode
+local twistBtnRef
+local switchPainters = {}
+local function paintSwitches()
+    for _, paint in ipairs(switchPainters) do
+        paint(Settings.TouchMode)
+    end
+end
+--// the Touch mode switch (same look as the main menu switches); every copy stays in sync
+local function makeSwitch(parent, size, position, z)
+    local hit = mk("TextButton", {
+        Name = "TouchModeHit",
+        Text = "",
+        Size = size,
+        Position = position,
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        AutoButtonColor = false,
+        ZIndex = z,
+    }, parent)
+    local trackF = mk("Frame", {
+        Name = "Track",
+        Size = UDim2.fromOffset(36, 20),
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -12, 0.5, 0),
+        BorderSizePixel = 0,
+        ZIndex = z + 1,
+    }, hit)
+    applyCorner(trackF, 10)
+    local knob = mk("Frame", {
+        Name = "Knob",
+        Size = UDim2.fromOffset(14, 14),
+        BorderSizePixel = 0,
+        ZIndex = z + 2,
+    }, trackF)
+    applyCorner(knob, 7)
+    table.insert(switchPainters, function(on)
+        trackF.BackgroundColor3 = on and PAL.Red or PAL.OffTrack
+        knob.Position = on and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+        knob.BackgroundColor3 = on and PAL.White or PAL.OffKnob
+    end)
+    hit.MouseButton1Click:Connect(function()
+        Settings.TouchMode = not Settings.TouchMode
+        refreshMode()
+    end)
+    return hit
+end
+
+local W, H = 270, 354
 local main = mk("Frame", {
     Name = "Main",
     Size = UDim2.fromOffset(W, H),
@@ -394,13 +452,27 @@ mk("TextLabel", {
 mk("TextLabel", {
     Name = "PadLabel",
     Text = "True twisted",
-    Size = UDim2.new(1, -140, 1, 0),
-    Position = UDim2.fromOffset(52, 0),
+    Size = UDim2.new(1, -140, 0, 20),
+    Position = UDim2.fromOffset(52, 8),
     BackgroundTransparency = 1,
     Font = Enum.Font.GothamMedium,
     TextSize = 12,
     TextColor3 = PAL.Text,
     TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex = 4,
+}, pad)
+--// status line: manual / auto
+local padSub = mk("TextLabel", {
+    Name = "PadStatus",
+    Text = "",
+    Size = UDim2.new(1, -140, 0, 16),
+    Position = UDim2.fromOffset(52, 28),
+    BackgroundTransparency = 1,
+    Font = Enum.Font.Gotham,
+    TextSize = 11,
+    TextColor3 = PAL.Muted,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    TextTruncate = Enum.TextTruncate.AtEnd,
     ZIndex = 4,
 }, pad)
 local runButton = mk("TextButton", {
@@ -455,11 +527,11 @@ runButton.MouseButton1Click:Connect(function()
     task.spawn(executeTrueTwisted)
 end)
 
---// settings card: five rows of 34px
+--// settings card: seven rows of 34px
 local ROW_H = 34
 local card = mk("Frame", {
     Name = "Settings",
-    Size = UDim2.new(1, -24, 0, ROW_H * 5),
+    Size = UDim2.new(1, -24, 0, ROW_H * 7),
     Position = UDim2.fromOffset(12, 104),
     BackgroundColor3 = PAL.Panel,
     BorderSizePixel = 0,
@@ -572,11 +644,37 @@ local function numberRow(index, label, key, minV, maxV)
         end
         box.Text = fmt(Settings[key])
     end)
+    return row, box
 end
 numberRow(2, "Flick out (deg)", "Angle", 0, 180)
 numberRow(3, "Flick back (deg)", "BackAngle", 0, 360)
 numberRow(4, "Dash at (s)", "DashAt", 0, 1)
 numberRow(5, "Flick back at (s)", "BackAt", 0.02, 1)
+
+--// row 6: Touch mode  (ON = manual with the key / tap button, OFF = auto after the 4th M1)
+do
+    local row = makeRow(6, "Touch mode")
+    makeSwitch(row, UDim2.fromOffset(64, ROW_H), UDim2.new(1, -64, 0, 0), 6)
+end
+
+--// row 7: how long after the 4th M1 starts the auto twist fires
+local autoDelayRow = numberRow(7, "Auto delay (s)", "AutoDelay", 0, 2)
+
+--// dims the auto-only row in manual mode, updates the status line and the mobile button
+refreshMode = function()
+    paintSwitches()
+    local manual = Settings.TouchMode
+    for _, d in ipairs(autoDelayRow:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextBox") or d:IsA("TextButton") then
+            d.TextTransparency = manual and 0.55 or 0
+        end
+    end
+    keyButton.TextColor3 = manual and PAL.Text or PAL.Muted
+    padSub.Text = manual and "Manual: key or tap" or "Auto after 4th M1"
+    if twistBtnRef then
+        twistBtnRef.Visible = manual
+    end
+end
 
 --// key capture + keybind
 local waitingForKey = false
@@ -596,9 +694,48 @@ conns[#conns + 1] = UserInputService.InputBegan:Connect(function(input, processe
     if processed or input.UserInputType ~= Enum.UserInputType.Keyboard then
         return
     end
-    if Settings.Key and input.KeyCode == Settings.Key then
+    if Settings.TouchMode and Settings.Key and input.KeyCode == Settings.Key then
         task.spawn(executeTrueTwisted)
     end
+end)
+
+--// AUTO FIRE (Touch mode OFF): same idea as the dash in the main menu. It watches your
+--// animations; when your 4th M1 animation starts it waits "Auto delay" and fires.
+local function onAnimationPlayed(track)
+    if Settings.TouchMode or not Settings.Enabled then
+        return
+    end
+    local animation = track.Animation
+    local animId = animation and tostring(animation.AnimationId):match("%d+")
+    if animId == FOURTH_M1_ANIM then
+        task.spawn(function()
+            if Settings.AutoDelay > 0 then
+                task.wait(Settings.AutoDelay)
+            end
+            executeTrueTwisted()
+        end)
+    end
+end
+local animConn
+local function hookCharacter(char)
+    if animConn then
+        pcall(function()
+            animConn:Disconnect()
+        end)
+        animConn = nil
+    end
+    local humanoid = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 10)
+    if not humanoid then
+        return
+    end
+    animConn = humanoid.AnimationPlayed:Connect(onAnimationPlayed)
+    conns[#conns + 1] = animConn
+end
+if localPlayer.Character then
+    task.spawn(hookCharacter, localPlayer.Character)
+end
+conns[#conns + 1] = localPlayer.CharacterAdded:Connect(function(char)
+    task.spawn(hookCharacter, char)
 end)
 
 --// drag the window by its top bar
@@ -701,6 +838,8 @@ if _G.KAMUI_TwistedMobile then
         ZIndex = 10,
     }, gui)
     applyCorner(twistBtn, 12)
+    twistBtnRef = twistBtn
+    twistBtn.Visible = Settings.TouchMode
     local twistStroke = addStroke(twistBtn, PAL.Line, 1, 0)
     strokes[#strokes + 1] = twistStroke
     mk("TextLabel", {
@@ -744,7 +883,7 @@ if _G.KAMUI_TwistedMobile then
 
     local panel = mk("Frame", {
         Name = "TwistMobilePanel",
-        Size = UDim2.fromOffset(176, 66),
+        Size = UDim2.fromOffset(176, 98),
         Position = UDim2.new(0, 80, 0.28, 0),
         BackgroundColor3 = PAL.Panel,
         BackgroundTransparency = 0.05,
@@ -848,5 +987,29 @@ if _G.KAMUI_TwistedMobile then
         main.Visible = not main.Visible
         showBtn.Text = main.Visible and "Hide" or "Open"
     end)
+
+    --// touch mode row: manual (tap the button) or auto after the 4th M1
+    mk("Frame", {
+        Name = "Divider2",
+        Size = UDim2.new(1, -20, 0, 1),
+        Position = UDim2.new(0, 10, 0, 65),
+        BackgroundColor3 = PAL.Div,
+        BorderSizePixel = 0,
+        ZIndex = 11,
+    }, panel)
+    mk("TextLabel", {
+        Name = "TouchLabel",
+        Size = UDim2.new(0, 110, 0, 32),
+        Position = UDim2.new(0, 12, 0, 66),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = PAL.Text,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = "Touch mode",
+        ZIndex = 12,
+    }, panel)
+    makeSwitch(panel, UDim2.fromOffset(70, 32), UDim2.new(1, -70, 0, 66), 12)
 end
+refreshMode()
 print("KAMUI True twisted loaded")
