@@ -1,0 +1,889 @@
+--// Stand menu
+--//  * YOU are the stand. Pick a player from the list = they become your owner
+--//  * you instantly spawn on the chosen side (Left / Right) of them and follow them around
+--//  * switching the owner or the side moves you over automatically, click the owner again (or Release) to stop
+--//  * the owner can command the stand from chat:  .attack <name>   .stop   .left   .right   .hide   .show
+--//  * .awakening presses G (awakening), .annoy <name> follows the target's back and M1s them once a second
+--//  * .hide puts the stand lying under the map (it still follows and still attacks from underneath), .show brings it back
+--//  * .attack loops skills 1-4 on the target (keeps going through respawns) until .stop
+--//  * M1 punches keep going in between, so whenever skills are on cooldown you are still hitting
+--// Mobile friendly (touch drag, scales down on small screens). Hotkeys on PC: see TOGGLE_KEY / SWAP_KEY.
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+local TOGGLE_KEY = Enum.KeyCode.Z -- pause / resume following (set to nil to disable)
+local SWAP_KEY = Enum.KeyCode.X   -- swap left / right (set to nil to disable)
+local FILE = "Stand_Settings.json"
+local ATTACK_DIST = 3  -- studs behind the victim's back while attacking
+local HIDE_DEPTH = 6   -- studs under the target / owner while hidden (.hide)
+local ATTACK_TIME = 0  -- seconds before the stand returns on its own (0 = loop until .stop)
+local SKILL_DELAY = 0.35 -- seconds between skill presses (1 > 2 > 3 > 4 > 1 ...)
+local ANNOY_DELAY = 1   -- seconds between M1 punches in .annoy mode
+local M1_DELAY = 0.15    -- seconds between M1 punches
+local SKILL_LOCK = 0.3   -- M1 pauses this long after a skill press so it doesn't cancel the skill
+
+--// re-executing replaces the old copy
+if _G.Stand_Cleanup then
+    pcall(_G.Stand_Cleanup)
+end
+
+local State = {
+    owner = nil,      -- Player
+    active = false,   -- true while you are bound to the owner
+    side = "Right",   -- "Left" or "Right"
+    sideDist = 3,     -- studs to the side of the owner
+    height = 1.5,     -- studs above the owner's root part
+    behind = 1.5,     -- studs behind the owner (negative = in front)
+    smooth = 0.8,     -- 0 = snap instantly, closer to 1 = slower glide
+    bob = 0.3,        -- floating bob amount in studs
+    commands = true,  -- obey chat commands from the owner
+    hidden = false,   -- stand is lying under the map (.hide / .show)
+    mode = "follow",  -- "follow" or "attack"
+    victim = nil,     -- Player being attacked
+}
+local attackStart = 0
+
+--// saved settings (not the owner / summoned state)
+do
+    local ok, data = pcall(function()
+        if isfile and readfile and isfile(FILE) then
+            return HttpService:JSONDecode(readfile(FILE))
+        end
+    end)
+    if ok and type(data) == "table" then
+        if data.side == "Left" or data.side == "Right" then State.side = data.side end
+        if type(data.sideDist) == "number" then State.sideDist = math.clamp(data.sideDist, 0, 30) end
+        if type(data.height) == "number" then State.height = math.clamp(data.height, -10, 20) end
+        if type(data.behind) == "number" then State.behind = math.clamp(data.behind, -20, 20) end
+        if type(data.smooth) == "number" then State.smooth = math.clamp(data.smooth, 0, 0.95) end
+        if type(data.bob) == "number" then State.bob = math.clamp(data.bob, 0, 3) end
+        if type(data.commands) == "boolean" then State.commands = data.commands end
+    end
+end
+local savePending = false
+local function save()
+    if savePending or not writefile then
+        return
+    end
+    savePending = true
+    task.delay(0.5, function()
+        savePending = false
+        pcall(function()
+            writefile(FILE, HttpService:JSONEncode({
+                side = State.side, sideDist = State.sideDist, height = State.height,
+                behind = State.behind, smooth = State.smooth, bob = State.bob, commands = State.commands,
+            }))
+        end)
+    end)
+end
+
+local conns = {}
+local function connect(signal, fn)
+    local c = signal:Connect(fn)
+    conns[#conns + 1] = c
+    return c
+end
+
+----------------------------------------------------------------
+-- palette + small helpers
+----------------------------------------------------------------
+local BG, CARD, CHIP = Color3.fromRGB(6, 6, 7), Color3.fromRGB(13, 13, 14), Color3.fromRGB(20, 20, 22)
+local LINE, DIV, HEAD = Color3.fromRGB(36, 36, 38), Color3.fromRGB(26, 26, 28), Color3.fromRGB(105, 105, 108)
+local RED, BRIGHT, DARK = Color3.fromRGB(205, 18, 20), Color3.fromRGB(240, 30, 24), Color3.fromRGB(52, 8, 12)
+local TEXT, MUTED, OFFT = Color3.fromRGB(240, 236, 236), Color3.fromRGB(150, 145, 146), Color3.fromRGB(42, 42, 45)
+local FONT, FONTB = Enum.Font.GothamMedium, Enum.Font.GothamBold
+
+local function new(class, props, parent)
+    local o = Instance.new(class)
+    for k, v in pairs(props) do
+        o[k] = v
+    end
+    o.Parent = parent
+    return o
+end
+local function corner(o, r)
+    new("UICorner", { CornerRadius = UDim.new(0, r) }, o)
+end
+local function stroke(o, col, th)
+    return new("UIStroke", { Color = col, Thickness = th or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, o)
+end
+local function text(parent, str, x, y, w, h, size, col, font, align)
+    return new("TextLabel", {
+        BackgroundTransparency = 1, Position = UDim2.new(0, x, 0, y), Size = UDim2.new(0, w, 0, h),
+        Font = font or FONT, TextSize = size or 12, TextColor3 = col or TEXT, Text = str,
+        TextXAlignment = align or Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd,
+    }, parent)
+end
+
+----------------------------------------------------------------
+-- window
+----------------------------------------------------------------
+local okParent, parent = pcall(function()
+    return (gethui and gethui()) or game:GetService("CoreGui")
+end)
+if not okParent or not parent then
+    parent = LocalPlayer:WaitForChild("PlayerGui")
+end
+local gui = new("ScreenGui", {
+    Name = "StandMenu", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 100,
+}, parent)
+
+local W, H = 340, 590
+local main = new("Frame", {
+    Name = "Main", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+    Size = UDim2.new(0, W, 0, H), BackgroundColor3 = BG, BorderSizePixel = 0,
+}, gui)
+corner(main, 14)
+stroke(main, RED, 1.5)
+local scale = new("UIScale", {}, main)
+do
+    local cam = workspace.CurrentCamera
+    local function fit()
+        local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+        scale.Scale = math.clamp((vp.Y - 30) / (H + 20), 0.5, 1)
+    end
+    fit()
+    if cam then
+        connect(cam:GetPropertyChangedSignal("ViewportSize"), fit)
+    end
+end
+
+--// title bar (drag handle)
+local bar = new("Frame", { Name = "Bar", Size = UDim2.new(1, 0, 0, 40), BackgroundTransparency = 1 }, main)
+text(bar, "Stand", 16, 0, 200, 40, 13, BRIGHT, FONTB)
+local function chip(label, x, parentGui)
+    local b = new("TextButton", {
+        Text = label, Size = UDim2.new(0, 28, 0, 24), Position = UDim2.new(1, x, 0, 8), BackgroundColor3 = CHIP,
+        BorderSizePixel = 0, AutoButtonColor = false, Font = FONTB, TextSize = 13, TextColor3 = MUTED,
+    }, parentGui)
+    corner(b, 6)
+    stroke(b, LINE)
+    return b
+end
+local minBtn = chip("-", -72, bar)
+local closeBtn = chip("x", -40, bar)
+new("Frame", { Size = UDim2.new(1, -24, 0, 1), Position = UDim2.new(0, 12, 0, 40), BackgroundColor3 = DIV, BorderSizePixel = 0 }, main)
+
+do -- dragging
+    local dragging, startPos, startInput, last = false, nil, nil, nil
+    connect(bar.InputBegan, function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            startInput = input.Position
+            startPos = main.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+    connect(bar.InputChanged, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            last = input
+        end
+    end)
+    connect(UIS.InputChanged, function(input)
+        if dragging and input == last then
+            local d = input.Position - startInput
+            main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+end
+
+local body = new("Frame", { Name = "Body", Position = UDim2.new(0, 0, 0, 44), Size = UDim2.new(1, 0, 1, -44), BackgroundTransparency = 1 }, main)
+local statusLabel -- defined below
+
+local function heading(str, y)
+    text(body, string.upper(str), 18, y, 200, 14, 10, HEAD, FONTB)
+end
+local function card(y, h)
+    local c = new("Frame", { Position = UDim2.new(0, 12, 0, y), Size = UDim2.new(1, -24, 0, h), BackgroundColor3 = CARD, BorderSizePixel = 0 }, body)
+    corner(c, 10)
+    stroke(c, LINE)
+    return c
+end
+local function divider(parentCard, y)
+    new("Frame", { Position = UDim2.new(0, 10, 0, y), Size = UDim2.new(1, -20, 0, 1), BackgroundColor3 = DIV, BorderSizePixel = 0 }, parentCard)
+end
+
+----------------------------------------------------------------
+-- OWNER: search + player list
+----------------------------------------------------------------
+heading("Owner", 2)
+local listCard = card(18, 120)
+local search = new("TextBox", {
+    Position = UDim2.new(0, 8, 0, 6), Size = UDim2.new(1, -16, 0, 26), BackgroundColor3 = CHIP, BorderSizePixel = 0,
+    Font = FONT, TextSize = 12, TextColor3 = TEXT, PlaceholderText = "Search player...", PlaceholderColor3 = MUTED,
+    Text = "", ClearTextOnFocus = false, TextXAlignment = Enum.TextXAlignment.Left,
+}, listCard)
+corner(search, 7)
+stroke(search, LINE)
+new("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10) }, search)
+local list = new("ScrollingFrame", {
+    Position = UDim2.new(0, 6, 0, 38), Size = UDim2.new(1, -12, 1, -44), BackgroundTransparency = 1, BorderSizePixel = 0,
+    ScrollBarThickness = 3, ScrollBarImageColor3 = RED, CanvasSize = UDim2.new(0, 0, 0, 0),
+    AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollingDirection = Enum.ScrollingDirection.Y,
+}, listCard)
+new("UIListLayout", { Padding = UDim.new(0, 2), SortOrder = Enum.SortOrder.LayoutOrder }, list)
+local emptyLabel = text(listCard, "No other players in this server", 0, 60, 316, 20, 11, MUTED, FONT, Enum.TextXAlignment.Center)
+emptyLabel.Visible = false
+
+local rows = {}
+local snap = false -- next frame jumps straight to the stand position instead of gliding
+
+local function setStatus(str, isError)
+    if statusLabel then
+        statusLabel.Text = str
+        statusLabel.TextColor3 = isError and Color3.fromRGB(255, 120, 110) or MUTED
+    end
+end
+
+local refreshInfo = function() end -- assigned once the Stand card exists
+local setHidden = function() end   -- assigned further down
+local function styleRows()
+    for pl, r in pairs(rows) do
+        local on = pl == State.owner
+        r.btn.BackgroundTransparency = on and 0 or 1
+        r.bar.Visible = on
+        r.name.TextColor3 = on and BRIGHT or TEXT
+    end
+end
+local function selectOwner(p)
+    State.owner = p
+    State.active = p ~= nil
+    if not p then
+        setHidden(false)
+    end
+    State.mode = "follow"
+    State.victim = nil
+    snap = true
+    styleRows()
+    refreshInfo()
+    if p then
+        setStatus("Stand of " .. p.DisplayName .. " (" .. State.side .. ")")
+    else
+        setStatus("Pick an owner from the list")
+    end
+end
+
+local function rebuildList()
+    for _, r in pairs(rows) do
+        r.btn:Destroy()
+    end
+    table.clear(rows)
+    local q = string.lower(search.Text)
+    local players = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            if q == "" or string.find(string.lower(p.DisplayName), q, 1, true) or string.find(string.lower(p.Name), q, 1, true) then
+                players[#players + 1] = p
+            end
+        end
+    end
+    table.sort(players, function(a, b)
+        return string.lower(a.DisplayName) < string.lower(b.DisplayName)
+    end)
+    emptyLabel.Visible = #players == 0
+    for i, p in ipairs(players) do
+        local btn = new("TextButton", {
+            Size = UDim2.new(1, -6, 0, 30), BackgroundColor3 = CHIP, BackgroundTransparency = 1, BorderSizePixel = 0,
+            AutoButtonColor = false, Text = "", LayoutOrder = i,
+        }, list)
+        corner(btn, 6)
+        local barSel = new("Frame", { Size = UDim2.new(0, 3, 0, 16), Position = UDim2.new(0, 4, 0.5, -8), BackgroundColor3 = RED, BorderSizePixel = 0, Visible = false }, btn)
+        corner(barSel, 2)
+        local nameL = text(btn, p.DisplayName, 14, 0, 150, 30, 12, TEXT, FONT)
+        text(btn, "@" .. p.Name, 150, 0, 120, 30, 10, MUTED, Enum.Font.Gotham, Enum.TextXAlignment.Right)
+        rows[p] = { btn = btn, bar = barSel, name = nameL }
+        btn.MouseButton1Click:Connect(function()
+            selectOwner(State.owner ~= p and p or nil)
+        end)
+    end
+    styleRows()
+end
+connect(search:GetPropertyChangedSignal("Text"), rebuildList)
+
+----------------------------------------------------------------
+-- SIDE card (Left / Right)
+----------------------------------------------------------------
+heading("Side", 148)
+local sideCard = card(164, 42)
+local sideBtns = {}
+local function styleSide()
+    for name, b in pairs(sideBtns) do
+        local on = State.side == name
+        b.btn.BackgroundColor3 = on and DARK or CHIP
+        b.btn.TextColor3 = on and BRIGHT or MUTED
+        b.stroke.Color = on and RED or LINE
+    end
+end
+local function setSide(s, silent)
+    State.side = s
+    styleSide()
+    if not silent then
+        save()
+        if State.owner then
+            setStatus("Stand of " .. State.owner.DisplayName .. " (" .. s .. ")")
+        else
+            setStatus("Side: " .. s)
+        end
+    end
+end
+local function sideButton(name, pos)
+    local b = new("TextButton", {
+        Text = name, Position = pos, Size = UDim2.new(0.5, -12, 0, 26), BackgroundColor3 = CHIP, BorderSizePixel = 0,
+        AutoButtonColor = false, Font = FONTB, TextSize = 12, TextColor3 = MUTED,
+    }, sideCard)
+    corner(b, 7)
+    sideBtns[name] = { btn = b, stroke = stroke(b, LINE) }
+    b.MouseButton1Click:Connect(function()
+        setSide(name)
+    end)
+end
+sideButton("Left", UDim2.new(0, 8, 0, 8))
+sideButton("Right", UDim2.new(0.5, 4, 0, 8))
+styleSide()
+
+----------------------------------------------------------------
+-- STAND card
+----------------------------------------------------------------
+heading("Stand", 214)
+local standCard = card(230, 212)
+
+local function makeSwitch(parentCard, y, label, sub, onChanged)
+    text(parentCard, label, 12, y + 5, 220, 18, 12, TEXT, FONT)
+    text(parentCard, sub, 12, y + 23, 230, 14, 10, MUTED, Enum.Font.Gotham)
+    local hit = new("TextButton", {
+        Text = "", Size = UDim2.new(0, 64, 0, 42), Position = UDim2.new(1, -64, 0, y), BackgroundTransparency = 1, AutoButtonColor = false,
+    }, parentCard)
+    local track = new("Frame", {
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.new(0, 36, 0, 20),
+        BackgroundColor3 = OFFT, BorderSizePixel = 0,
+    }, hit)
+    corner(track, 10)
+    local knob = new("Frame", { Size = UDim2.new(0, 14, 0, 14), Position = UDim2.new(0, 3, 0.5, -7), BackgroundColor3 = Color3.fromRGB(189, 184, 184), BorderSizePixel = 0 }, track)
+    corner(knob, 7)
+    local on = false
+    local function set(v, silent)
+        on = v
+        track.BackgroundColor3 = on and RED or OFFT
+        knob.Position = on and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+        knob.BackgroundColor3 = on and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(189, 184, 184)
+        if not silent and onChanged then
+            onChanged(on)
+        end
+    end
+    hit.MouseButton1Click:Connect(function()
+        set(not on)
+    end)
+    return set
+end
+
+local function makeNumber(parentCard, y, label, key, minV, maxV, decimals)
+    text(parentCard, label, 12, y, 190, 34, 12, TEXT, FONT)
+    local box = new("TextBox", {
+        Size = UDim2.new(0, 74, 0, 24), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0, y + 17),
+        BackgroundColor3 = CHIP, BorderSizePixel = 0, Font = Enum.Font.RobotoMono, TextSize = 12, TextColor3 = BRIGHT,
+        ClearTextOnFocus = false, Text = string.format("%." .. decimals .. "f", State[key]),
+    }, parentCard)
+    corner(box, 6)
+    stroke(box, LINE)
+    box.FocusLost:Connect(function()
+        local v = tonumber((box.Text:gsub("%s+", "")))
+        if v then
+            State[key] = math.clamp(v, minV, maxV)
+            save()
+        end
+        box.Text = string.format("%." .. decimals .. "f", State[key])
+    end)
+    return box
+end
+
+local infoLabel = text(standCard, "No owner selected", 12, 0, 190, 42, 12, MUTED, FONT)
+local releaseBtn = new("TextButton", {
+    Text = "Release", Size = UDim2.new(0, 84, 0, 26), AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0, 21),
+    BackgroundColor3 = DARK, BorderSizePixel = 0, AutoButtonColor = false, Font = FONT, TextSize = 12, TextColor3 = TEXT,
+}, standCard)
+corner(releaseBtn, 7)
+stroke(releaseBtn, Color3.fromRGB(90, 18, 24))
+releaseBtn.MouseButton1Click:Connect(function()
+    selectOwner(nil)
+end)
+refreshInfo = function()
+    if State.owner then
+        infoLabel.Text = "Stand of " .. State.owner.DisplayName .. (State.active and "" or " (paused)")
+        infoLabel.TextColor3 = BRIGHT
+    else
+        infoLabel.Text = "No owner selected"
+        infoLabel.TextColor3 = MUTED
+    end
+end
+divider(standCard, 42)
+makeNumber(standCard, 42, "Side distance (studs)", "sideDist", 0, 30, 1)
+divider(standCard, 76)
+makeNumber(standCard, 76, "Height (studs)", "height", -10, 20, 1)
+divider(standCard, 110)
+makeNumber(standCard, 110, "Behind owner (studs)", "behind", -20, 20, 1)
+divider(standCard, 144)
+makeNumber(standCard, 144, "Smoothing (0 = snap)", "smooth", 0, 0.95, 2)
+divider(standCard, 178)
+makeNumber(standCard, 178, "Float bob (studs)", "bob", 0, 3, 2)
+
+----------------------------------------------------------------
+-- COMMANDS card
+----------------------------------------------------------------
+heading("Commands", 450)
+local cmdCard = card(466, 42)
+local setCmd = makeSwitch(cmdCard, 0, "Owner chat commands", ".attack .annoy <n>  .awakening  .stop  .hide", function(on)
+    State.commands = on
+    save()
+    setStatus(on and "Chat commands on" or "Chat commands off")
+end)
+
+statusLabel = text(main, "Pick an owner from the list", 16, H - 30, W - 32, 20, 11, MUTED, FONT)
+
+----------------------------------------------------------------
+-- minimize / close
+----------------------------------------------------------------
+local restore = new("TextButton", {
+    Name = "Restore", Text = "ST", Size = UDim2.new(0, 44, 0, 44), Position = UDim2.new(0, 16, 0.5, -22), BackgroundColor3 = CARD,
+    BorderSizePixel = 0, AutoButtonColor = false, Font = FONTB, TextSize = 14, TextColor3 = BRIGHT, Visible = false,
+}, gui)
+corner(restore, 12)
+stroke(restore, RED, 1.5)
+minBtn.MouseButton1Click:Connect(function()
+    main.Visible = false
+    restore.Visible = true
+end)
+restore.MouseButton1Click:Connect(function()
+    main.Visible = true
+    restore.Visible = false
+end)
+
+----------------------------------------------------------------
+-- logic: follow the owner on the chosen side
+----------------------------------------------------------------
+local VIM = nil
+pcall(function()
+    VIM = game:GetService("VirtualInputManager")
+end)
+local SKILL_KEYS = { Enum.KeyCode.One, Enum.KeyCode.Two, Enum.KeyCode.Three, Enum.KeyCode.Four }
+local skillIdx = 1
+
+-- presses hotbar key i (1-4); falls back to the i-th backpack tool if key simulation isn't available
+local function useSkill(i)
+    local ok = false
+    if VIM then
+        ok = pcall(function()
+            VIM:SendKeyEvent(true, SKILL_KEYS[i], false, game)
+            task.wait(0.05)
+            VIM:SendKeyEvent(false, SKILL_KEYS[i], false, game)
+        end)
+    end
+    if not ok then
+        local char = LocalPlayer.Character
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+        if hum and bp then
+            local tools = {}
+            for _, t in ipairs(bp:GetChildren()) do
+                if t:IsA("Tool") then
+                    tools[#tools + 1] = t
+                end
+            end
+            local t = tools[i]
+            if t then
+                pcall(function()
+                    hum:EquipTool(t)
+                end)
+                task.wait(0.05)
+                pcall(function()
+                    t:Activate()
+                end)
+            end
+        end
+    end
+end
+
+-- M1 punch = a quick left click
+local function useM1()
+    local ok = false
+    if VIM then
+        ok = pcall(function()
+            local m = UIS:GetMouseLocation()
+            VIM:SendMouseButtonEvent(m.X, m.Y, 0, true, game, 0)
+            task.wait(0.03)
+            VIM:SendMouseButtonEvent(m.X, m.Y, 0, false, game, 0)
+        end)
+    end
+    if not ok and mouse1click then
+        pcall(mouse1click)
+    end
+end
+
+-- awakening = press G
+local function useAwakening()
+    local ok = false
+    if VIM then
+        ok = pcall(function()
+            VIM:SendKeyEvent(true, Enum.KeyCode.G, false, game)
+            task.wait(0.05)
+            VIM:SendKeyEvent(false, Enum.KeyCode.G, false, game)
+        end)
+    end
+    return ok
+end
+
+-- Return true if hotbar skill i is on cooldown so it gets skipped and M1 covers the gap.
+-- I don't know the game's cooldown UI, so by default nothing is skipped (a press on a skill that is
+-- on cooldown just does nothing). If you find the cooldown indicator in the game's hotbar, check it here.
+local function skillOnCooldown(i)
+    return false
+end
+
+-- hide = lie under the map: no collision, lying flat, still following / attacking from underneath
+local hideStore = setmetatable({}, { __mode = "k" })
+local function enforceHidden(char, hum)
+    hum.PlatformStand = true
+    for _, d in ipairs(char:GetChildren()) do
+        if d:IsA("BasePart") then
+            if hideStore[d] == nil then
+                hideStore[d] = d.CanCollide
+            end
+            d.CanCollide = false
+        end
+    end
+end
+local function releaseHidden()
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    for part, was in pairs(hideStore) do
+        if part.Parent then
+            part.CanCollide = was
+        end
+        hideStore[part] = nil
+    end
+    if hum then
+        hum.PlatformStand = false
+    end
+end
+setHidden = function(on)
+    if State.hidden == on then
+        return
+    end
+    State.hidden = on
+    snap = true
+    if not on then
+        -- the stand jumps back above the floor first, collisions come back a moment later
+        task.delay(0.2, function()
+            if not State.hidden then
+                releaseHidden()
+            end
+        end)
+    end
+end
+
+local attackAcc = 0
+local m1Acc = 0
+local lockUntil = 0
+local function boundText()
+    return "Stand of " .. State.owner.DisplayName .. " (" .. State.side .. ")"
+end
+local function endAttack(msg)
+    State.mode = "follow"
+    State.victim = nil
+    snap = false
+    setStatus(msg or boundText())
+end
+
+connect(RunService.Heartbeat, function(dt)
+    if not State.active then
+        return
+    end
+    local owner = State.owner
+    if not owner or not owner.Parent then
+        selectOwner(nil)
+        setStatus("Owner left the game", true)
+        return
+    end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not (hrp and hum and hum.Health > 0) then
+        return
+    end
+
+    if State.hidden then
+        enforceHidden(char, hum)
+    end
+
+    local goal, smooth = nil, State.smooth
+    if State.mode == "attack" or State.mode == "annoy" then
+        local v = State.victim
+        if not v or not v.Parent then
+            endAttack("Target left, back to owner")
+            return
+        end
+        if ATTACK_TIME > 0 and os.clock() - attackStart > ATTACK_TIME then
+            endAttack("Attack finished, back to owner")
+            return
+        end
+        local vChar = v.Character
+        local vHrp = vChar and vChar:FindFirstChild("HumanoidRootPart")
+        local vHum = vChar and vChar:FindFirstChildOfClass("Humanoid")
+        if not vHrp or (vHum and vHum.Health <= 0) then
+            return -- target is dead / respawning: wait here, the loop resumes when they are back
+        end
+        -- stay right behind the victim's back (+Z = behind them), facing them, and keep tracking as they turn
+        if State.hidden then
+            -- hidden: lie directly under the target, face up at them
+            goal = CFrame.new(vHrp.Position - Vector3.new(0, HIDE_DEPTH, 0)) * vHrp.CFrame.Rotation * CFrame.Angles(math.rad(90), 0, 0)
+        else
+            local pos = (vHrp.CFrame * CFrame.new(0, 0, ATTACK_DIST)).Position
+            goal = CFrame.lookAt(pos, vHrp.Position)
+        end
+        smooth = math.min(State.smooth, 0.3)
+
+        local now = os.clock()
+
+        if State.mode == "annoy" then
+            -- .annoy: one M1 per second
+            m1Acc = m1Acc + dt
+            if m1Acc >= ANNOY_DELAY then
+                m1Acc = 0
+                task.spawn(useM1)
+            end
+        else
+            -- loop skills 1 > 2 > 3 > 4 on the target (skips any that are on cooldown)
+            attackAcc = attackAcc + dt
+            if attackAcc >= SKILL_DELAY then
+                attackAcc = 0
+                for _ = 1, 4 do
+                    local i = skillIdx
+                    skillIdx = i % 4 + 1
+                    if not skillOnCooldown(i) then
+                        task.spawn(useSkill, i)
+                        lockUntil = now + SKILL_LOCK
+                        break
+                    end
+                end
+            end
+
+            -- M1 punches fill the time between skills / while they are on cooldown
+            m1Acc = m1Acc + dt
+            if m1Acc >= M1_DELAY and now >= lockUntil then
+                m1Acc = 0
+                task.spawn(useM1)
+            end
+        end
+    else
+        local oChar = owner.Character
+        local oHrp = oChar and oChar:FindFirstChild("HumanoidRootPart")
+        if not oHrp then
+            return
+        end
+        local sign = State.side == "Right" and 1 or -1
+        local bob = math.sin(os.clock() * 2.5) * State.bob
+        -- local space: +X = owner's right, +Y = up, +Z = behind the owner
+        if State.hidden then
+            -- hidden: same side / behind spot, but lying under the floor
+            local pos = (oHrp.CFrame * CFrame.new(sign * State.sideDist, 0, State.behind)).Position
+            goal = CFrame.new(pos - Vector3.new(0, HIDE_DEPTH, 0)) * oHrp.CFrame.Rotation * CFrame.Angles(math.rad(90), 0, 0)
+        else
+            goal = oHrp.CFrame * CFrame.new(sign * State.sideDist, State.height + bob, State.behind)
+        end
+    end
+
+    local alpha = 1
+    if not snap and smooth > 0 then
+        alpha = 1 - smooth ^ (dt * 60)
+    end
+    snap = false
+
+    hrp.CFrame = hrp.CFrame:Lerp(goal, alpha)
+    hrp.AssemblyLinearVelocity = Vector3.zero
+    hrp.AssemblyAngularVelocity = Vector3.zero
+end)
+
+----------------------------------------------------------------
+-- logic: chat commands from the owner
+----------------------------------------------------------------
+local function findPlayer(q)
+    q = string.lower(q or "")
+    if q == "" then
+        return nil
+    end
+    local exact, prefix, partial
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p ~= State.owner then
+            local n, d = string.lower(p.Name), string.lower(p.DisplayName)
+            if n == q or d == q then
+                exact = exact or p
+            elseif string.sub(n, 1, #q) == q or string.sub(d, 1, #q) == q then
+                prefix = prefix or p
+            elseif string.find(n, q, 1, true) or string.find(d, q, 1, true) then
+                partial = partial or p
+            end
+        end
+    end
+    return exact or prefix or partial
+end
+
+local function handleCommand(msg)
+    if not State.commands or not State.owner or not State.active then
+        return
+    end
+    local cmd, arg = string.match(msg, "^%s*%.(%a+)%s*(.-)%s*$")
+    if not cmd then
+        return
+    end
+    cmd = string.lower(cmd)
+    if cmd == "attack" then
+        local v = findPlayer(arg)
+        if not v then
+            setStatus("No player matching '" .. arg .. "'", true)
+            return
+        end
+        State.mode = "attack"
+        State.victim = v
+        attackStart = os.clock()
+        attackAcc = 0
+        m1Acc = 0
+        lockUntil = 0
+        skillIdx = 1
+        setStatus("Attacking " .. v.DisplayName .. " (skills + M1)")
+    elseif cmd == "annoy" then
+        local v = findPlayer(arg)
+        if not v then
+            setStatus("No player matching '" .. arg .. "'", true)
+            return
+        end
+        State.mode = "annoy"
+        State.victim = v
+        attackStart = os.clock()
+        m1Acc = 0
+        setStatus("Annoying " .. v.DisplayName .. " (M1 every " .. ANNOY_DELAY .. "s)")
+    elseif cmd == "awakening" or cmd == "awaken" then
+        if useAwakening() then
+            setStatus("Awakening (G) pressed")
+        else
+            setStatus("Couldn't press G (key simulation unavailable)", true)
+        end
+    elseif cmd == "stop" or cmd == "return" or cmd == "follow" or cmd == "back" then
+        endAttack()
+    elseif cmd == "hide" then
+        setHidden(true)
+        setStatus("Stand hidden under the map")
+    elseif cmd == "show" or cmd == "unhide" then
+        setHidden(false)
+        setStatus(boundText())
+    elseif cmd == "left" then
+        setSide("Left")
+    elseif cmd == "right" then
+        setSide("Right")
+    end
+end
+
+local lastKey, lastT = "", 0
+local function onChat(plr, msg)
+    if plr ~= State.owner or type(msg) ~= "string" then
+        return
+    end
+    local key = plr.UserId .. msg
+    if key == lastKey and os.clock() - lastT < 0.5 then
+        return -- same message seen through both chat systems
+    end
+    lastKey, lastT = key, os.clock()
+    handleCommand(msg)
+end
+local function hookPlayer(p)
+    connect(p.Chatted, function(m)
+        onChat(p, m)
+    end)
+end
+for _, p in ipairs(Players:GetPlayers()) do
+    hookPlayer(p)
+end
+connect(Players.PlayerAdded, hookPlayer)
+pcall(function() -- new TextChatService chat
+    connect(game:GetService("TextChatService").MessageReceived, function(m)
+        local src = m.TextSource
+        local p = src and Players:GetPlayerByUserId(src.UserId)
+        if p then
+            onChat(p, m.Text)
+        end
+    end)
+end)
+
+-- if you respawn while summoned, jump straight back to the owner's side
+connect(LocalPlayer.CharacterAdded, function()
+    snap = true
+end)
+
+connect(Players.PlayerAdded, rebuildList)
+connect(Players.PlayerRemoving, function(p)
+    task.defer(function()
+        if State.owner == p then
+            selectOwner(nil)
+            setStatus("Owner left the game", true)
+        end
+        rebuildList()
+    end)
+end)
+
+connect(UIS.InputBegan, function(input, processed)
+    if processed then
+        return
+    end
+    if TOGGLE_KEY and input.KeyCode == TOGGLE_KEY then
+        if not State.owner then
+            setStatus("Pick an owner first", true)
+        elseif State.active then
+            State.active = false
+            refreshInfo()
+            setStatus("Stand paused")
+        else
+            State.active = true
+            snap = true
+            refreshInfo()
+            setStatus("Stand of " .. State.owner.DisplayName .. " (" .. State.side .. ")")
+        end
+    elseif SWAP_KEY and input.KeyCode == SWAP_KEY then
+        setSide(State.side == "Right" and "Left" or "Right")
+    end
+end)
+
+closeBtn.MouseButton1Click:Connect(function()
+    if _G.Stand_Cleanup then
+        _G.Stand_Cleanup()
+    end
+end)
+
+----------------------------------------------------------------
+-- start
+----------------------------------------------------------------
+setSide(State.side, true)
+setCmd(State.commands, true)
+rebuildList()
+
+_G.Stand_Cleanup = function()
+    State.active = false
+    pcall(function()
+        State.hidden = false
+        releaseHidden()
+    end)
+    for _, c in ipairs(conns) do
+        pcall(function()
+            c:Disconnect()
+        end)
+    end
+    pcall(function()
+        gui:Destroy()
+    end)
+    _G.Stand_Cleanup = nil
+end
