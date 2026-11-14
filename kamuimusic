@@ -9,489 +9,489 @@ local ScreenGui = context.ScreenGui
 
 --// MUSIC: integrated local player. Uses the same audio service and folder as the working player.
 _G.KAMUI_BuildMusic = function()
-if type(_G.KamuiMusicCleanup) == 'function' then pcall(_G.KamuiMusicCleanup) end
-local page = _G.KAMUI_MusicTab.Page
-local SoundService = game:GetService('SoundService')
-local requestFn = request or http_request or (syn and syn.request) or (http and http.request)
-local assetFn = getcustomasset or getsynasset
-local API = 'https://roblox-audio-proxy.vercel.app'
-local ROOT, MUSIC = '[MAMBO PROJECT]', '[MAMBO PROJECT]/Music'
-local alive, conns = true, {}
-local function connect(signal, fn)
-local c = signal:Connect(fn)
-table.insert(conns, c)
-return c
-end
-local C = {
-bg=Color3.fromRGB(13,13,14), panel=Color3.fromRGB(16,16,18), chip=Color3.fromRGB(26,26,28),
-line=Color3.fromRGB(40,40,43), red=Color3.fromRGB(205,18,20),
-bright=Color3.fromRGB(240,30,24), dark=Color3.fromRGB(52,16,19),
-text=Color3.fromRGB(240,236,236), muted=Color3.fromRGB(150,145,146)
-}
-local function make(class, props, parent)
-local o=Instance.new(class)
-for k,v in pairs(props or {}) do o[k]=v end
-o.Parent=parent
-return o
-end
-local function round(o,r) make('UICorner',{CornerRadius=UDim.new(0,r or 6)},o) end
-local function stroke(o) make('UIStroke',{Color=C.line,Thickness=1,ApplyStrokeMode=Enum.ApplyStrokeMode.Border},o) end
-local function frame(parent,x,y,w,h,col)
-return make('Frame',{Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),BackgroundColor3=col or C.panel,BorderSizePixel=0},parent)
-end
-local function label(parent,text,x,y,w,h,size,col,bold)
-return make('TextLabel',{Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),BackgroundTransparency=1,Text=text,Font=bold and Enum.Font.GothamBold or Enum.Font.Gotham,TextSize=size or 10,TextColor3=col or C.text,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},parent)
-end
-local function btn(parent,text,x,y,w,h,col)
-local b=make('TextButton',{Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),BackgroundColor3=col or C.chip,BorderSizePixel=0,AutoButtonColor=false,Text=text,Font=Enum.Font.GothamMedium,TextSize=10,TextColor3=C.text},parent)
-round(b,6)
-return b
-end
-local function clearButtons(container)
-for _,child in ipairs(container:GetChildren()) do if child:IsA('TextButton') then child:Destroy() end end
-end
--- Sound stays alive when switching tabs or hiding the window, but is destroyed with Kamui.
-local sound=make('Sound',{Name='KamuiMusicSound',Volume=0.75},SoundService)
-local musicSliderHeld=false
-local function cleanup()
-if not alive then return end
-alive=false
-if musicSliderHeld then _G.KAMUI_SliderHeld=false; musicSliderHeld=false end
-for _,c in ipairs(conns) do pcall(function() c:Disconnect() end) end
-pcall(function() sound:Stop(); sound:Destroy() end)
-end
-_G.KamuiMusicCleanup=cleanup
-connect(ScreenGui.Destroying,cleanup)
-local tabs=frame(page,0,0,366,28,C.bg); tabs.BackgroundTransparency=1
-local playlistBtn=btn(tabs,'',0,0,95,24,C.bg); playlistBtn.BackgroundTransparency=1
-local searchTabBtn=btn(tabs,'',110,0,135,24,C.bg); searchTabBtn.BackgroundTransparency=1
-local note=label(playlistBtn,'♪',4,0,16,23,12,C.bright,true)
-local playlistLabel=label(playlistBtn,'Playlist',22,0,70,23,10,C.text,true)
-local searchIcon=frame(searchTabBtn,2,3,16,17,C.bg); searchIcon.BackgroundTransparency=1
-local searchRing=frame(searchIcon,1,3,8,8,C.bg); searchRing.BackgroundTransparency=1; round(searchRing,4)
-local searchOutline=make('UIStroke',{Color=C.muted,Thickness=1},searchRing)
-local searchHandle=frame(searchIcon,8,11,6,1,C.muted); searchHandle.Rotation=45
-local searchLabel=label(searchTabBtn,'YouTube Search',23,0,110,23,10,C.muted,true)
-local underline=frame(tabs,3,25,69,2,C.red); round(underline,1)
-frame(tabs,0,27,366,1,C.line)
-local left=frame(page,0,33,146,229,C.panel); round(left,8); stroke(left)
-local right=frame(page,154,33,212,229,C.panel); round(right,8); stroke(right)
-local lib=frame(left,0,0,146,229,C.panel); lib.BackgroundTransparency=1
-local search=frame(left,0,0,146,229,C.panel); search.BackgroundTransparency=1; search.Visible=false
-label(lib,'YOUR PLAYLIST',9,6,93,20,8,C.muted,true)
-local reload=btn(lib,'↻',115,5,23,22,C.chip); reload.TextSize=17
--- Same refresh image as the Skills Colors reset button, with a text fallback.
-local refreshImage=make('ImageLabel',{Name='RefreshIcon',BackgroundTransparency=1,Position=UDim2.fromOffset(4,3),Size=UDim2.fromOffset(15,15),Image='',ImageColor3=C.text,Visible=false},reload)
-task.delay(2,function()
-if not alive then return end
-local id=tostring((_G.KAMUI_ProfileIcons or {}).Refresh or ''):match('%d+')
-if id and _G.KAMUI_SetImage then
-local ok=pcall(_G.KAMUI_SetImage,refreshImage,id)
-if ok then refreshImage.Visible=true; reload.Text='' end
-end
-end)
-frame(lib,9,33,128,1,C.line)
-local list=make('ScrollingFrame',{Position=UDim2.fromOffset(6,39),Size=UDim2.fromOffset(134,156),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=2,ScrollBarImageColor3=C.red,CanvasSize=UDim2.fromOffset(0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y},lib)
-make('UIListLayout',{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,3)},list)
-frame(lib,9,198,128,1,C.line)
-local count=label(lib,'0 songs',9,201,75,20,8,C.muted)
-local deleteBtn=btn(lib,'Delete',98,201,40,20,C.panel); deleteBtn.BackgroundTransparency=1; deleteBtn.TextColor3=C.muted; deleteBtn.TextSize=9
-label(search,'YOUTUBE SEARCH',9,6,128,20,8,C.muted,true)
--- Keep long search text inside a clipped viewport, separate from the Go button.
-local searchField=frame(search,8,28,93,25,C.chip); searchField.Name='SearchField'; searchField.ClipsDescendants=true
-round(searchField,5); stroke(searchField)
-local queryBox=make('TextBox',{Name='MusicSearchInput',Position=UDim2.fromOffset(0,0),Size=UDim2.fromOffset(93,25),BackgroundTransparency=1,BorderSizePixel=0,Text='',PlaceholderText='Search or URL',PlaceholderColor3=C.muted,TextColor3=C.text,Font=Enum.Font.Gotham,TextSize=9,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=false,ClearTextOnFocus=false},searchField)
-make('UIPadding',{PaddingLeft=UDim.new(0,6),PaddingRight=UDim.new(0,6)},queryBox)
-local searchOffset=0
-local function updateSearchViewport()
-local text=tostring(queryBox.Text or '')
-local function measure(value)
-local ok,size=pcall(function() return game:GetService('TextService'):GetTextSize(value,9,Enum.Font.Gotham,Vector2.new(100000,100)) end)
-if ok and size then return size.X end
-return #value*5
-end
-local contentWidth=math.max(93,math.ceil(measure(text))+12)
-local cursor=queryBox.CursorPosition or -1
-if cursor<1 then
-searchOffset=0
-else
-local caretX=6+measure(text:sub(1,cursor-1))
-if caretX-searchOffset>85 then searchOffset=caretX-85 end
-if caretX-searchOffset<8 then searchOffset=caretX-8 end
-searchOffset=math.clamp(searchOffset,0,math.max(0,contentWidth-93))
-end
-queryBox.Size=UDim2.fromOffset(contentWidth,25)
-queryBox.Position=UDim2.fromOffset(-math.floor(searchOffset),0)
-end
-connect(queryBox:GetPropertyChangedSignal('Text'),updateSearchViewport)
-connect(queryBox:GetPropertyChangedSignal('CursorPosition'),updateSearchViewport)
-connect(queryBox.Focused,updateSearchViewport)
-connect(queryBox.FocusLost,function() searchOffset=0; updateSearchViewport() end)
-updateSearchViewport()
-local goBtn=btn(search,'Go',105,28,33,25,C.dark); goBtn.TextSize=9
-label(search,'RESULTS',9,58,80,17,8,C.muted,true)
-local copyBtn=btn(search,'Copy',100,58,38,17,C.panel); copyBtn.BackgroundTransparency=1; copyBtn.TextColor3=C.muted; copyBtn.TextSize=8
-local results=make('ScrollingFrame',{Position=UDim2.fromOffset(6,77),Size=UDim2.fromOffset(134,112),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=2,ScrollBarImageColor3=C.red,CanvasSize=UDim2.fromOffset(0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y},search)
-make('UIListLayout',{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,3)},results)
-local download=btn(search,'Download selected',8,194,130,26,C.red); download.TextSize=9
-label(right,'NOW PLAYING',11,6,110,20,8,C.muted,true)
-local art=frame(right,11,29,57,57,C.dark); round(art,7); stroke(art)
-local artNote=label(art,'♪',0,0,57,57,28,C.bright,true); artNote.TextXAlignment=Enum.TextXAlignment.Center
-local track=label(right,'No song selected',78,34,123,22,11,C.text,true)
-local sub=label(right,'Select a song',78,55,123,18,9,C.muted)
-local elapsed=label(right,'0:00',11,97,55,15,8,C.muted)
-local duration=label(right,'0:00',156,97,45,15,8,C.muted); duration.TextXAlignment=Enum.TextXAlignment.Right
-local seek=frame(right,11,115,190,4,C.line); round(seek,2); seek.Active=true
-local seekFill=frame(seek,0,0,0,4,C.bright); round(seekFill,2)
-local knob=frame(seek,-3,-2,8,8,C.text); round(knob,4)
-local loopBtn=btn(right,'Loop',11,129,35,27,C.panel); loopBtn.BackgroundTransparency=1; loopBtn.TextSize=8; loopBtn.TextColor3=C.muted
-local prevBtn=btn(right,'|<',47,129,26,27,C.panel); prevBtn.BackgroundTransparency=1; prevBtn.TextSize=12
--- Draw the play and pause symbols from frames: no font glyph or external icon needed.
-local playBtn=btn(right,'',84,126,32,32,C.red)
-playBtn.Name='MusicPlayButton'
-local playCorner=playBtn:FindFirstChildOfClass('UICorner'); if playCorner then playCorner.CornerRadius=UDim.new(0,16) end
-local playGlyph=frame(playBtn,0,0,32,32,C.red); playGlyph.BackgroundTransparency=1; playGlyph.Name='PlayGlyph'
-for i=1,10 do
-local h=math.max(1,math.floor(14-(i-1)1.4))
-frame(playGlyph,11+i,math.floor((32-h)/2),1,h,C.text)
-end
-local pauseGlyph=frame(playBtn,0,0,32,32,C.red); pauseGlyph.BackgroundTransparency=1; pauseGlyph.Name='PauseGlyph'
-local pauseLeft=frame(pauseGlyph,11,9,3,14,C.text); round(pauseLeft,1)
-local pauseRight=frame(pauseGlyph,18,9,3,14,C.text); round(pauseRight,1)
-local function paintPlay(playing) playGlyph.Visible=not playing; pauseGlyph.Visible=playing end
-paintPlay(false)
-connect(playBtn.MouseEnter,function() TweenService:Create(playBtn,TweenInfo.new(0.15),{BackgroundColor3=C.bright}):Play() end)
-connect(playBtn.MouseLeave,function() TweenService:Create(playBtn,TweenInfo.new(0.15),{BackgroundColor3=C.red}):Play() end)
-local nextBtn=btn(right,'>|',127,129,26,27,C.panel); nextBtn.BackgroundTransparency=1; nextBtn.TextSize=12
-local shuffleBtn=btn(right,'Shuffle',157,129,45,27,C.panel); shuffleBtn.BackgroundTransparency=1; shuffleBtn.TextSize=8; shuffleBtn.TextColor3=C.muted
-frame(right,11,171,190,1,C.line)
-label(right,'VOLUME',11,180,50,16,8,C.muted,true)
-local volume=frame(right,61,188,58,4,C.line); volume.Active=true; round(volume,2)
-local volumeFill=frame(volume,0,0,43,4,C.red); round(volumeFill,2)
-local volumeText=label(right,'75%',127,180,29,17,8,C.muted)
--- Larger transparent hit targets, using the same no-window-drag convention as Kamui sliders.
-seek:SetAttribute('KamuiNoDrag',true); seekFill:SetAttribute('KamuiNoDrag',true); knob:SetAttribute('KamuiNoDrag',true)
-volume:SetAttribute('KamuiNoDrag',true); volumeFill:SetAttribute('KamuiNoDrag',true)
-local seekHit=btn(right,'',11,106,190,20,C.panel); seekHit.Name='MusicSeekHit'; seekHit.BackgroundTransparency=1; seekHit:SetAttribute('KamuiNoDrag',true)
-local volumeHit=btn(right,'',61,179,58,20,C.panel); volumeHit.Name='MusicVolumeHit'; volumeHit.BackgroundTransparency=1; volumeHit:SetAttribute('KamuiNoDrag',true)
-local speed=make('TextBox',{Position=UDim2.fromOffset(160,178),Size=UDim2.fromOffset(41,22),BackgroundColor3=C.chip,BorderSizePixel=0,Text='1.0',PlaceholderText='Speed',ClearTextOnFocus=false,TextColor3=C.text,Font=Enum.Font.Gotham,TextSize=9},right); round(speed,5)
-local status=label(right,'Local playback',11,202,190,23,8,C.muted)
-status.TextWrapped=true; status.TextTruncate=Enum.TextTruncate.None
-local function say(s,bad) if alive then status.Text=tostring(s); status.TextColor3=bad and C.bright or C.muted end end
-local function tab(which)
-local isList=which=='Playlist'
-lib.Visible=isList; search.Visible=not isList
-playlistLabel.TextColor3=isList and C.text or C.muted; note.TextColor3=isList and C.bright or C.muted
-searchLabel.TextColor3=isList and C.muted or C.text; searchOutline.Color=isList and C.muted or C.bright; searchHandle.BackgroundColor3=isList and C.muted or C.bright
-local target=UDim2.fromOffset(isList and 3 or 114,25)
-underline.Size=UDim2.fromOffset(isList and 69 or 103,2)
-TweenService:Create(underline,TweenInfo.new(0.18,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Position=target}):Play()
-end
-connect(playlistBtn.Activated,function() tab('Playlist') end)
-connect(searchTabBtn.Activated,function() tab('YouTube Search') end)
-local songs,selected,currentIndex={},nil,nil
-local selectedVideo,deleting,busy=nil,false,false
-local stopped,looping,shuffling=true,false,false
-local jobSerial=0
-local function startJob(seconds,message)
-jobSerial=jobSerial+1; local id=jobSerial; busy=true
-task.delay(seconds,function() if alive and busy and jobSerial==id then jobSerial=jobSerial+1; busy=false; say(message,true) end end)
-return id
-end
-local function jobActive(id) return alive and busy and jobSerial==id end
-local function ensureFolders()
-if type(isfolder)~='function' or type(makefolder)~='function' then return false,'Executor lacks folder support' end
-return pcall(function() if not isfolder(ROOT) then makefolder(ROOT) end; if not isfolder(MUSIC) then makefolder(MUSIC) end end)
-end
-local function basename(path)
-local last=0
-for i=1,#path do local c=path:byte(i); if c==47 or c==92 then last=i end end
-return path:sub(last+1)
-end
-local function displayName(path)
-local name=basename(path); local ext=name:sub(-4):lower()
-if ext=='.mp3' or ext=='.ogg' or ext=='.wav' then name=name:sub(1,-5) end
-if name:sub(1,5)=='YT - ' then name=name:sub(6) end
-return name
-end
-local function songRow(parent,title,caption,order,selectedRow)
-local row=btn(parent,'',0,0,134,40,selectedRow and C.dark or C.panel)
-row.Size=UDim2.new(1,0,0,40); row.LayoutOrder=order
-if not selectedRow then row.BackgroundTransparency=1 end
-local thumb=frame(row,6,8,24,24,selectedRow and Color3.fromRGB(81,23,28) or C.chip); round(thumb,4)
-local n=label(thumb,'♪',0,0,24,24,12,selectedRow and C.bright or C.muted,true); n.TextXAlignment=Enum.TextXAlignment.Center
-label(row,title,37,5,90,17,9,C.text,true)
-label(row,caption,37,22,90,13,8,C.muted)
-return row
-end
-local playIndex
-local function scan()
-local ok,err=ensureFolders(); if not ok then say('Folder error: '..tostring(err),true); return end
-if type(listfiles)~='function' then say('Executor lacks listfiles',true); return end
-local success,files=pcall(listfiles,MUSIC)
-if not success or type(files)~='table' then say('Could not scan music folder',true); return end
-local oldPath=selected and selected.path
-songs={}
-for _,path in ipairs(files) do
-if type(path)=='string' and (path:lower():sub(-4)=='.mp3' or path:lower():sub(-4)=='.ogg' or path:lower():sub(-4)=='.wav') then
-table.insert(songs,{path=path,name=displayName(path)})
-end
-end
-table.sort(songs,function(a,b) return a.name:lower()<b.name:lower() end)
-selected=nil; currentIndex=nil; clearButtons(list)
-for i,song in ipairs(songs) do
-if song.path==oldPath then selected=song; currentIndex=i end
-local row=songRow(list,song.name,'Saved audio',i,song.path==oldPath)
-row.Activated:Connect(function() playIndex(i) end)
-end
-count.Text=tostring(#songs)..(#songs==1 and ' song' or ' songs')
-return true
-end
-playIndex=function(i)
-if #songs==0 then say('Playlist is empty',true); return end
-i=((i-1)%#songs)+1; local song=songs[i]
-if type(assetFn)~='function' then say('Executor lacks getcustomasset',true); return end
-local ok,asset=pcall(assetFn,song.path)
-if not ok or type(asset)~='string' or asset=='' then say('Could not load this audio file',true); return end
-selected=song; currentIndex=i; deleting=false; deleteBtn.Text='Delete'
-sound:Stop(); sound.SoundId=asset; sound:Play(); stopped=false
-track.Text=song.name; sub.Text='Saved audio'; paintPlay(true); scan(); say('Playing '..song.name)
-end
-connect(reload.Activated,function() if scan() then say('Playlist reloaded') end end)
-connect(deleteBtn.Activated,function()
-if not selected then say('Select a song first',true); return end
-if not deleting then deleting=true; deleteBtn.Text='Confirm'; say('Click Confirm to delete',true); return end
-deleting=false; deleteBtn.Text='Delete'
-if type(delfile)~='function' then say('Executor lacks delfile',true); return end
-local ok,err=pcall(delfile,selected.path)
-if not ok then say('Delete failed: '..tostring(err),true); return end
-sound:Stop(); sound.SoundId=''; stopped=true; selected=nil; currentIndex=nil
-track.Text='No song selected'; sub.Text='Select a song'; paintPlay(false); scan(); say('Song deleted')
-end)
-connect(prevBtn.Activated,function() playIndex((currentIndex or 1)-1) end)
-connect(nextBtn.Activated,function() playIndex((currentIndex or 0)+1) end)
-connect(playBtn.Activated,function()
-if sound.SoundId=='' then if currentIndex then playIndex(currentIndex) else say('Select a song first',true) end; return end
-if sound.IsPlaying then sound:Pause(); paintPlay(false) else if stopped then sound:Play() else sound:Resume() end; stopped=false; paintPlay(true) end
-end)
-connect(loopBtn.Activated,function() looping=not looping; sound.Looped=looping; loopBtn.TextColor3=looping and C.bright or C.muted end)
-connect(shuffleBtn.Activated,function() shuffling=not shuffling; shuffleBtn.TextColor3=shuffling and C.bright or C.muted end)
-connect(sound.Ended,function() if not looping and #songs>0 then playIndex(shuffling and math.random(1,#songs) or (currentIndex or 0)+1) end end)
-connect(speed.FocusLost,function()
-local v=tonumber(speed.Text); if not v then speed.Text=tostring(sound.PlaybackSpeed); say('Speed must be a number',true); return end
-sound.PlaybackSpeed=math.clamp(v,0.25,4); speed.Text=tostring(sound.PlaybackSpeed)
-end)
-local function setVolume(x)
-if volume.AbsoluteSize.X<=0 then return end
-local v=math.clamp((x-volume.AbsolutePosition.X)/volume.AbsoluteSize.X,0,1)
-sound.Volume=v; volumeFill.Size=UDim2.new(v,0,1,0); volumeText.Text=tostring(math.floor(v100+0.5))..'%'
-end
-local seeking,adjusting=false,false
-local function seekAt(x)
-if sound.TimeLength>0 and seek.AbsoluteSize.X>0 then sound.TimePosition=math.clamp((x-seek.AbsolutePosition.X)/seek.AbsoluteSize.X,0,1)*sound.TimeLength end
-end
-connect(seekHit.InputBegan,function(input)
-if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
-seeking=true; musicSliderHeld=true; _G.KAMUI_SliderHeld=true; seekAt(input.Position.X)
-end
-end)
-connect(volumeHit.InputBegan,function(input)
-if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
-adjusting=true; musicSliderHeld=true; _G.KAMUI_SliderHeld=true; setVolume(input.Position.X)
-end
-end)
-connect(UIS.InputChanged,function(input) if input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch then if seeking then seekAt(input.Position.X) end; if adjusting then setVolume(input.Position.X) end end end)
-connect(UIS.InputEnded,function(input)
-if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
-seeking=false; adjusting=false
-if musicSliderHeld then musicSliderHeld=false; _G.KAMUI_SliderHeld=false end
-end
-end)
-local function fmt(t) t=math.max(0,math.floor(t or 0)); return string.format('%d:%02d',math.floor(t/60),t%60) end
-connect(RunService.Heartbeat,function()
-local len=sound.TimeLength; local f=len>0 and math.clamp(sound.TimePosition/len,0,1) or 0
-seekFill.Size=UDim2.new(f,0,1,0); knob.Position=UDim2.new(f,-3,0,-2)
-elapsed.Text=fmt(sound.TimePosition); duration.Text=fmt(len)
-end)
-
--- Search and HTTP logic retained from the working standalone player.
-local function httpGet(url)
-    if type(requestFn) ~= 'function' then return nil,'Executor lacks HTTP request support' end
-    local ok, response = pcall(requestFn,{Url=url,Method='GET'})
-    if not ok then return nil,tostring(response) end
-    -- Real returns a string on a request error, not a response table.
-    if type(response) == 'string' then return nil,response end
-    if type(response) ~= 'table' then return nil,'Invalid HTTP response ('..type(response)..')' end
-    local code = response.StatusCode or response.Status or response.status_code
-    if tonumber(code) ~= 200 then return nil,'HTTP '..tostring(code or '?')..' '..tostring(response.StatusMessage or '') end
-    local body = response.Body or response.body
-    if type(body) ~= 'string' then return nil,'Empty response' end
-    return body
-end
-local function json(text)
-    local ok, value=pcall(function() return HttpService:JSONDecode(text) end)
-    if ok and type(value)=='table' then return value end
-    return nil
-end
--- Search only: start with Real's request. If it stalls, also try HttpGet.
--- The first valid search response wins; late responses are ignored.
-local function searchHttpGet(url, job)
-    local state = {data=nil, done=0, errors={}}
-    local function finish(method, body, err)
-        if not jobActive(job) or state.data then return end
-        local decoded = body and json(body)
-        local videos = decoded and (decoded.videos or decoded.results or decoded.items)
-        if type(videos) == 'table' then
-            decoded.videos = videos
-            state.data = decoded
-        else
-            state.done = state.done + 1
-            table.insert(state.errors, method..': '..tostring(err or (decoded and (decoded.error or decoded.message)) or 'invalid search response'))
-        end
+    if type(_G.KamuiMusicCleanup) == 'function' then pcall(_G.KamuiMusicCleanup) end
+    local page = _G.KAMUI_MusicTab.Page
+    local SoundService = game:GetService('SoundService')
+    local requestFn = request or http_request or (syn and syn.request) or (http and http.request)
+    local assetFn = getcustomasset or getsynasset
+    local API = 'https://roblox-audio-proxy.vercel.app'
+    local ROOT, MUSIC = '[MAMBO PROJECT]', '[MAMBO PROJECT]/Music'
+    local alive, conns = true, {}
+    local function connect(signal, fn)
+        local c = signal:Connect(fn)
+        table.insert(conns, c)
+        return c
     end
-    task.spawn(function()
-        local body, err = httpGet(url)
-        finish('request', body, err)
-    end)
-    task.delay(3, function()
-        if not jobActive(job) or state.data then return end
-        say('Still searching; trying HttpGet…')
-        local ok, body = pcall(function() return game:HttpGet(url, true) end)
-        if ok and type(body) == 'string' and body ~= '' then
-            finish('HttpGet', body, nil)
-        else
-            finish('HttpGet', nil, ok and 'empty response' or tostring(body))
-        end
-    end)
-    local start = os.clock()
-    while jobActive(job) and not state.data and state.done < 2 and os.clock()-start < 85 do
-        task.wait(0.1)
-    end
-    if state.data then return state.data end
-    if #state.errors > 0 then return nil, table.concat(state.errors, ' | ') end
-    return nil, 'Both connection methods timed out'
-end
--- Clean text robustly, including control characters inside pasted input.
--- Avoid relying on a pattern capture for text that comes from a TextBox.
-local function cleanInput(value)
-    if type(value) ~= 'string' then return '' end
-    value = value:gsub('[%c]+', ' ')
-    value = value:gsub('^%s+', '')
-    value = value:gsub('%s+$', '')
-    return value
-end
--- Normalize common YouTube share URLs to one watch URL understood by the proxy.
-local function normalizeYT(input)
-    local url=cleanInput(input)
-    if url=='' then return nil end
-    -- Check exact YouTube host/path prefixes using plain string operations.
-    -- Keep the original link intact for the same proxy the original player uses.
-    local lower=url:lower()
-    if lower:sub(1,7)~='http://' and lower:sub(1,8)~='https://' then
-        url='https://'..url
-        lower='https://'..lower
-    end
-    local prefixes={
-        'https://www.youtube.com/watch?', 'http://www.youtube.com/watch?',
-        'https://youtube.com/watch?', 'http://youtube.com/watch?',
-        'https://m.youtube.com/watch?', 'http://m.youtube.com/watch?',
-        'https://music.youtube.com/watch?', 'http://music.youtube.com/watch?',
-        'https://youtu.be/', 'http://youtu.be/',
-        'https://www.youtube.com/shorts/', 'https://youtube.com/shorts/',
-        'https://m.youtube.com/shorts/', 'https://www.youtube.com/live/',
-        'https://youtube.com/live/', 'https://m.youtube.com/live/'
+    local C = {
+        bg=Color3.fromRGB(13,13,14), panel=Color3.fromRGB(16,16,18), chip=Color3.fromRGB(26,26,28),
+        line=Color3.fromRGB(40,40,43), red=Color3.fromRGB(205,18,20),
+        bright=Color3.fromRGB(240,30,24), dark=Color3.fromRGB(52,16,19),
+        text=Color3.fromRGB(240,236,236), muted=Color3.fromRGB(150,145,146)
     }
-    for i = 1, #prefixes do
-        local prefix = prefixes[i]
-        if lower:sub(1,#prefix)==prefix and #lower>#prefix then return url end
+    local function make(class, props, parent)
+        local o=Instance.new(class)
+        for k,v in pairs(props or {}) do o[k]=v end
+        o.Parent=parent
+        return o
     end
-    return nil
-end
-local function validYT(url) return normalizeYT(url) ~= nil end
-local function searchNow()
-    local q=cleanInput(queryBox.Text)
-    if q=='' then say('Enter a search term or URL',true); return end
-    local normalized=normalizeYT(q)
-    if normalized then selectedVideo={url=normalized}; queryBox.Text=normalized; say('Link selected; press Download'); return end
-    if busy then say('A request is already running',true); return end
-    local job=startJob(90,'Search timed out; check connection')
-    say('Searching...')
-    task.spawn(function()
-        local ok,failure=pcall(function()
-            local data,err=searchHttpGet(API..'/api/search?q='..HttpService:UrlEncode(q),job)
-            if not jobActive(job) then return end
-            busy=false
-            if not data or data.success~=true or type(data.videos)~='table' then say('Search failed: '..tostring(err or (data and data.error) or 'invalid response'),true); return end
-            clearButtons(results); selectedVideo=nil
-            local shown=0
-            for i,v in ipairs(data.videos) do
-                if type(v)=='table' and type(v.url)=='string' and v.url~='' then
-                    local title=tostring(v.title or 'Untitled')
-                    local row=songRow(results,title,'YouTube result',i,false)
-                    row.Activated:Connect(function()
-                        selectedVideo={url=v.url,title=title}; queryBox.Text=v.url
-                        for _,child in ipairs(results:GetChildren()) do if child:IsA('TextButton') then child.BackgroundTransparency=1 end end
-                        row.BackgroundColor3=C.chip; row.BackgroundTransparency=0
-                        say('Selected: '..title)
-                    end)
-                    shown=shown+1
+    local function round(o,r) make('UICorner',{CornerRadius=UDim.new(0,r or 6)},o) end
+    local function stroke(o) make('UIStroke',{Color=C.line,Thickness=1,ApplyStrokeMode=Enum.ApplyStrokeMode.Border},o) end
+    local function frame(parent,x,y,w,h,col)
+        return make('Frame',{Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),BackgroundColor3=col or C.panel,BorderSizePixel=0},parent)
+    end
+    local function label(parent,text,x,y,w,h,size,col,bold)
+        return make('TextLabel',{Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),BackgroundTransparency=1,Text=text,Font=bold and Enum.Font.GothamBold or Enum.Font.Gotham,TextSize=size or 10,TextColor3=col or C.text,TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd},parent)
+    end
+    local function btn(parent,text,x,y,w,h,col)
+        local b=make('TextButton',{Position=UDim2.fromOffset(x,y),Size=UDim2.fromOffset(w,h),BackgroundColor3=col or C.chip,BorderSizePixel=0,AutoButtonColor=false,Text=text,Font=Enum.Font.GothamMedium,TextSize=10,TextColor3=C.text},parent)
+        round(b,6)
+        return b
+    end
+    local function clearButtons(container)
+        for _,child in ipairs(container:GetChildren()) do if child:IsA('TextButton') then child:Destroy() end end
+    end
+    -- Sound stays alive when switching tabs or hiding the window, but is destroyed with Kamui.
+    local sound=make('Sound',{Name='KamuiMusicSound',Volume=0.75},SoundService)
+    local musicSliderHeld=false
+    local function cleanup()
+        if not alive then return end
+        alive=false
+        if musicSliderHeld then _G.KAMUI_SliderHeld=false; musicSliderHeld=false end
+        for _,c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+        pcall(function() sound:Stop(); sound:Destroy() end)
+    end
+    _G.KamuiMusicCleanup=cleanup
+    connect(ScreenGui.Destroying,cleanup)
+    local tabs=frame(page,0,0,366,28,C.bg); tabs.BackgroundTransparency=1
+    local playlistBtn=btn(tabs,'',0,0,95,24,C.bg); playlistBtn.BackgroundTransparency=1
+    local searchTabBtn=btn(tabs,'',110,0,135,24,C.bg); searchTabBtn.BackgroundTransparency=1
+    local note=label(playlistBtn,'♪',4,0,16,23,12,C.bright,true)
+    local playlistLabel=label(playlistBtn,'Playlist',22,0,70,23,10,C.text,true)
+    local searchIcon=frame(searchTabBtn,2,3,16,17,C.bg); searchIcon.BackgroundTransparency=1
+    local searchRing=frame(searchIcon,1,3,8,8,C.bg); searchRing.BackgroundTransparency=1; round(searchRing,4)
+    local searchOutline=make('UIStroke',{Color=C.muted,Thickness=1},searchRing)
+    local searchHandle=frame(searchIcon,8,11,6,1,C.muted); searchHandle.Rotation=45
+    local searchLabel=label(searchTabBtn,'YouTube Search',23,0,110,23,10,C.muted,true)
+    local underline=frame(tabs,3,25,69,2,C.red); round(underline,1)
+    frame(tabs,0,27,366,1,C.line)
+    local left=frame(page,0,33,146,229,C.panel); round(left,8); stroke(left)
+    local right=frame(page,154,33,212,229,C.panel); round(right,8); stroke(right)
+    local lib=frame(left,0,0,146,229,C.panel); lib.BackgroundTransparency=1
+    local search=frame(left,0,0,146,229,C.panel); search.BackgroundTransparency=1; search.Visible=false
+    label(lib,'YOUR PLAYLIST',9,6,93,20,8,C.muted,true)
+    local reload=btn(lib,'↻',115,5,23,22,C.chip); reload.TextSize=17
+    -- Same refresh image as the Skills Colors reset button, with a text fallback.
+    local refreshImage=make('ImageLabel',{Name='RefreshIcon',BackgroundTransparency=1,Position=UDim2.fromOffset(4,3),Size=UDim2.fromOffset(15,15),Image='',ImageColor3=C.text,Visible=false},reload)
+    task.delay(2,function()
+        if not alive then return end
+        local id=tostring((_G.KAMUI_ProfileIcons or {}).Refresh or ''):match('%d+')
+        if id and _G.KAMUI_SetImage then
+            local ok=pcall(_G.KAMUI_SetImage,refreshImage,id)
+            if ok then refreshImage.Visible=true; reload.Text='' end
+        end
+    end)
+    frame(lib,9,33,128,1,C.line)
+    local list=make('ScrollingFrame',{Position=UDim2.fromOffset(6,39),Size=UDim2.fromOffset(134,156),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=2,ScrollBarImageColor3=C.red,CanvasSize=UDim2.fromOffset(0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y},lib)
+    make('UIListLayout',{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,3)},list)
+    frame(lib,9,198,128,1,C.line)
+    local count=label(lib,'0 songs',9,201,75,20,8,C.muted)
+    local deleteBtn=btn(lib,'Delete',98,201,40,20,C.panel); deleteBtn.BackgroundTransparency=1; deleteBtn.TextColor3=C.muted; deleteBtn.TextSize=9
+    label(search,'YOUTUBE SEARCH',9,6,128,20,8,C.muted,true)
+    -- Keep long search text inside a clipped viewport, separate from the Go button.
+    local searchField=frame(search,8,28,93,25,C.chip); searchField.Name='SearchField'; searchField.ClipsDescendants=true
+    round(searchField,5); stroke(searchField)
+    local queryBox=make('TextBox',{Name='MusicSearchInput',Position=UDim2.fromOffset(0,0),Size=UDim2.fromOffset(93,25),BackgroundTransparency=1,BorderSizePixel=0,Text='',PlaceholderText='Search or URL',PlaceholderColor3=C.muted,TextColor3=C.text,Font=Enum.Font.Gotham,TextSize=9,TextXAlignment=Enum.TextXAlignment.Left,TextWrapped=false,ClearTextOnFocus=false},searchField)
+    make('UIPadding',{PaddingLeft=UDim.new(0,6),PaddingRight=UDim.new(0,6)},queryBox)
+    local searchOffset=0
+    local function updateSearchViewport()
+        local text=tostring(queryBox.Text or '')
+        local function measure(value)
+            local ok,size=pcall(function() return game:GetService('TextService'):GetTextSize(value,9,Enum.Font.Gotham,Vector2.new(100000,100)) end)
+            if ok and size then return size.X end
+            return #value*5
+        end
+        local contentWidth=math.max(93,math.ceil(measure(text))+12)
+        local cursor=queryBox.CursorPosition or -1
+        if cursor<1 then
+            searchOffset=0
+        else
+            local caretX=6+measure(text:sub(1,cursor-1))
+            if caretX-searchOffset>85 then searchOffset=caretX-85 end
+            if caretX-searchOffset<8 then searchOffset=caretX-8 end
+            searchOffset=math.clamp(searchOffset,0,math.max(0,contentWidth-93))
+        end
+        queryBox.Size=UDim2.fromOffset(contentWidth,25)
+        queryBox.Position=UDim2.fromOffset(-math.floor(searchOffset),0)
+    end
+    connect(queryBox:GetPropertyChangedSignal('Text'),updateSearchViewport)
+    connect(queryBox:GetPropertyChangedSignal('CursorPosition'),updateSearchViewport)
+    connect(queryBox.Focused,updateSearchViewport)
+    connect(queryBox.FocusLost,function() searchOffset=0; updateSearchViewport() end)
+    updateSearchViewport()
+    local goBtn=btn(search,'Go',105,28,33,25,C.dark); goBtn.TextSize=9
+    label(search,'RESULTS',9,58,80,17,8,C.muted,true)
+    local copyBtn=btn(search,'Copy',100,58,38,17,C.panel); copyBtn.BackgroundTransparency=1; copyBtn.TextColor3=C.muted; copyBtn.TextSize=8
+    local results=make('ScrollingFrame',{Position=UDim2.fromOffset(6,77),Size=UDim2.fromOffset(134,112),BackgroundTransparency=1,BorderSizePixel=0,ScrollBarThickness=2,ScrollBarImageColor3=C.red,CanvasSize=UDim2.fromOffset(0,0),AutomaticCanvasSize=Enum.AutomaticSize.Y},search)
+    make('UIListLayout',{SortOrder=Enum.SortOrder.LayoutOrder,Padding=UDim.new(0,3)},results)
+    local download=btn(search,'Download selected',8,194,130,26,C.red); download.TextSize=9
+    label(right,'NOW PLAYING',11,6,110,20,8,C.muted,true)
+    local art=frame(right,11,29,57,57,C.dark); round(art,7); stroke(art)
+    local artNote=label(art,'♪',0,0,57,57,28,C.bright,true); artNote.TextXAlignment=Enum.TextXAlignment.Center
+    local track=label(right,'No song selected',78,34,123,22,11,C.text,true)
+    local sub=label(right,'Select a song',78,55,123,18,9,C.muted)
+    local elapsed=label(right,'0:00',11,97,55,15,8,C.muted)
+    local duration=label(right,'0:00',156,97,45,15,8,C.muted); duration.TextXAlignment=Enum.TextXAlignment.Right
+    local seek=frame(right,11,115,190,4,C.line); round(seek,2); seek.Active=true
+    local seekFill=frame(seek,0,0,0,4,C.bright); round(seekFill,2)
+    local knob=frame(seek,-3,-2,8,8,C.text); round(knob,4)
+    local loopBtn=btn(right,'Loop',11,129,35,27,C.panel); loopBtn.BackgroundTransparency=1; loopBtn.TextSize=8; loopBtn.TextColor3=C.muted
+    local prevBtn=btn(right,'|<',47,129,26,27,C.panel); prevBtn.BackgroundTransparency=1; prevBtn.TextSize=12
+    -- Draw the play and pause symbols from frames: no font glyph or external icon needed.
+    local playBtn=btn(right,'',84,126,32,32,C.red)
+    playBtn.Name='MusicPlayButton'
+    local playCorner=playBtn:FindFirstChildOfClass('UICorner'); if playCorner then playCorner.CornerRadius=UDim.new(0,16) end
+    local playGlyph=frame(playBtn,0,0,32,32,C.red); playGlyph.BackgroundTransparency=1; playGlyph.Name='PlayGlyph'
+    for i=1,10 do
+        local h=math.max(1,math.floor(14-(i-1)*1.4))
+        frame(playGlyph,11+i,math.floor((32-h)/2),1,h,C.text)
+    end
+    local pauseGlyph=frame(playBtn,0,0,32,32,C.red); pauseGlyph.BackgroundTransparency=1; pauseGlyph.Name='PauseGlyph'
+    local pauseLeft=frame(pauseGlyph,11,9,3,14,C.text); round(pauseLeft,1)
+    local pauseRight=frame(pauseGlyph,18,9,3,14,C.text); round(pauseRight,1)
+    local function paintPlay(playing) playGlyph.Visible=not playing; pauseGlyph.Visible=playing end
+    paintPlay(false)
+    connect(playBtn.MouseEnter,function() TweenService:Create(playBtn,TweenInfo.new(0.15),{BackgroundColor3=C.bright}):Play() end)
+    connect(playBtn.MouseLeave,function() TweenService:Create(playBtn,TweenInfo.new(0.15),{BackgroundColor3=C.red}):Play() end)
+    local nextBtn=btn(right,'>|',127,129,26,27,C.panel); nextBtn.BackgroundTransparency=1; nextBtn.TextSize=12
+    local shuffleBtn=btn(right,'Shuffle',157,129,45,27,C.panel); shuffleBtn.BackgroundTransparency=1; shuffleBtn.TextSize=8; shuffleBtn.TextColor3=C.muted
+    frame(right,11,171,190,1,C.line)
+    label(right,'VOLUME',11,180,50,16,8,C.muted,true)
+    local volume=frame(right,61,188,58,4,C.line); volume.Active=true; round(volume,2)
+    local volumeFill=frame(volume,0,0,43,4,C.red); round(volumeFill,2)
+    local volumeText=label(right,'75%',127,180,29,17,8,C.muted)
+    -- Larger transparent hit targets, using the same no-window-drag convention as Kamui sliders.
+    seek:SetAttribute('KamuiNoDrag',true); seekFill:SetAttribute('KamuiNoDrag',true); knob:SetAttribute('KamuiNoDrag',true)
+    volume:SetAttribute('KamuiNoDrag',true); volumeFill:SetAttribute('KamuiNoDrag',true)
+    local seekHit=btn(right,'',11,106,190,20,C.panel); seekHit.Name='MusicSeekHit'; seekHit.BackgroundTransparency=1; seekHit:SetAttribute('KamuiNoDrag',true)
+    local volumeHit=btn(right,'',61,179,58,20,C.panel); volumeHit.Name='MusicVolumeHit'; volumeHit.BackgroundTransparency=1; volumeHit:SetAttribute('KamuiNoDrag',true)
+    local speed=make('TextBox',{Position=UDim2.fromOffset(160,178),Size=UDim2.fromOffset(41,22),BackgroundColor3=C.chip,BorderSizePixel=0,Text='1.0',PlaceholderText='Speed',ClearTextOnFocus=false,TextColor3=C.text,Font=Enum.Font.Gotham,TextSize=9},right); round(speed,5)
+    local status=label(right,'Local playback',11,202,190,23,8,C.muted)
+    status.TextWrapped=true; status.TextTruncate=Enum.TextTruncate.None
+    local function say(s,bad) if alive then status.Text=tostring(s); status.TextColor3=bad and C.bright or C.muted end end
+    local function tab(which)
+        local isList=which=='Playlist'
+        lib.Visible=isList; search.Visible=not isList
+        playlistLabel.TextColor3=isList and C.text or C.muted; note.TextColor3=isList and C.bright or C.muted
+        searchLabel.TextColor3=isList and C.muted or C.text; searchOutline.Color=isList and C.muted or C.bright; searchHandle.BackgroundColor3=isList and C.muted or C.bright
+        local target=UDim2.fromOffset(isList and 3 or 114,25)
+        underline.Size=UDim2.fromOffset(isList and 69 or 103,2)
+        TweenService:Create(underline,TweenInfo.new(0.18,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{Position=target}):Play()
+    end
+    connect(playlistBtn.Activated,function() tab('Playlist') end)
+    connect(searchTabBtn.Activated,function() tab('YouTube Search') end)
+    local songs,selected,currentIndex={},nil,nil
+    local selectedVideo,deleting,busy=nil,false,false
+    local stopped,looping,shuffling=true,false,false
+    local jobSerial=0
+    local function startJob(seconds,message)
+        jobSerial=jobSerial+1; local id=jobSerial; busy=true
+        task.delay(seconds,function() if alive and busy and jobSerial==id then jobSerial=jobSerial+1; busy=false; say(message,true) end end)
+        return id
+    end
+    local function jobActive(id) return alive and busy and jobSerial==id end
+    local function ensureFolders()
+        if type(isfolder)~='function' or type(makefolder)~='function' then return false,'Executor lacks folder support' end
+        return pcall(function() if not isfolder(ROOT) then makefolder(ROOT) end; if not isfolder(MUSIC) then makefolder(MUSIC) end end)
+    end
+    local function basename(path)
+        local last=0
+        for i=1,#path do local c=path:byte(i); if c==47 or c==92 then last=i end end
+        return path:sub(last+1)
+    end
+    local function displayName(path)
+        local name=basename(path); local ext=name:sub(-4):lower()
+        if ext=='.mp3' or ext=='.ogg' or ext=='.wav' then name=name:sub(1,-5) end
+        if name:sub(1,5)=='YT - ' then name=name:sub(6) end
+        return name
+    end
+    local function songRow(parent,title,caption,order,selectedRow)
+        local row=btn(parent,'',0,0,134,40,selectedRow and C.dark or C.panel)
+        row.Size=UDim2.new(1,0,0,40); row.LayoutOrder=order
+        if not selectedRow then row.BackgroundTransparency=1 end
+        local thumb=frame(row,6,8,24,24,selectedRow and Color3.fromRGB(81,23,28) or C.chip); round(thumb,4)
+        local n=label(thumb,'♪',0,0,24,24,12,selectedRow and C.bright or C.muted,true); n.TextXAlignment=Enum.TextXAlignment.Center
+        label(row,title,37,5,90,17,9,C.text,true)
+        label(row,caption,37,22,90,13,8,C.muted)
+        return row
+    end
+    local playIndex
+    local function scan()
+        local ok,err=ensureFolders(); if not ok then say('Folder error: '..tostring(err),true); return end
+        if type(listfiles)~='function' then say('Executor lacks listfiles',true); return end
+        local success,files=pcall(listfiles,MUSIC)
+        if not success or type(files)~='table' then say('Could not scan music folder',true); return end
+        local oldPath=selected and selected.path
+        songs={}
+        for _,path in ipairs(files) do
+            if type(path)=='string' and (path:lower():sub(-4)=='.mp3' or path:lower():sub(-4)=='.ogg' or path:lower():sub(-4)=='.wav') then
+                table.insert(songs,{path=path,name=displayName(path)})
+            end
+        end
+        table.sort(songs,function(a,b) return a.name:lower()<b.name:lower() end)
+        selected=nil; currentIndex=nil; clearButtons(list)
+        for i,song in ipairs(songs) do
+            if song.path==oldPath then selected=song; currentIndex=i end
+            local row=songRow(list,song.name,'Saved audio',i,song.path==oldPath)
+            row.Activated:Connect(function() playIndex(i) end)
+        end
+        count.Text=tostring(#songs)..(#songs==1 and ' song' or ' songs')
+        return true
+    end
+    playIndex=function(i)
+        if #songs==0 then say('Playlist is empty',true); return end
+        i=((i-1)%#songs)+1; local song=songs[i]
+        if type(assetFn)~='function' then say('Executor lacks getcustomasset',true); return end
+        local ok,asset=pcall(assetFn,song.path)
+        if not ok or type(asset)~='string' or asset=='' then say('Could not load this audio file',true); return end
+        selected=song; currentIndex=i; deleting=false; deleteBtn.Text='Delete'
+        sound:Stop(); sound.SoundId=asset; sound:Play(); stopped=false
+        track.Text=song.name; sub.Text='Saved audio'; paintPlay(true); scan(); say('Playing '..song.name)
+    end
+    connect(reload.Activated,function() if scan() then say('Playlist reloaded') end end)
+    connect(deleteBtn.Activated,function()
+        if not selected then say('Select a song first',true); return end
+        if not deleting then deleting=true; deleteBtn.Text='Confirm'; say('Click Confirm to delete',true); return end
+        deleting=false; deleteBtn.Text='Delete'
+        if type(delfile)~='function' then say('Executor lacks delfile',true); return end
+        local ok,err=pcall(delfile,selected.path)
+        if not ok then say('Delete failed: '..tostring(err),true); return end
+        sound:Stop(); sound.SoundId=''; stopped=true; selected=nil; currentIndex=nil
+        track.Text='No song selected'; sub.Text='Select a song'; paintPlay(false); scan(); say('Song deleted')
+    end)
+    connect(prevBtn.Activated,function() playIndex((currentIndex or 1)-1) end)
+    connect(nextBtn.Activated,function() playIndex((currentIndex or 0)+1) end)
+    connect(playBtn.Activated,function()
+        if sound.SoundId=='' then if currentIndex then playIndex(currentIndex) else say('Select a song first',true) end; return end
+        if sound.IsPlaying then sound:Pause(); paintPlay(false) else if stopped then sound:Play() else sound:Resume() end; stopped=false; paintPlay(true) end
+    end)
+    connect(loopBtn.Activated,function() looping=not looping; sound.Looped=looping; loopBtn.TextColor3=looping and C.bright or C.muted end)
+    connect(shuffleBtn.Activated,function() shuffling=not shuffling; shuffleBtn.TextColor3=shuffling and C.bright or C.muted end)
+    connect(sound.Ended,function() if not looping and #songs>0 then playIndex(shuffling and math.random(1,#songs) or (currentIndex or 0)+1) end end)
+    connect(speed.FocusLost,function()
+        local v=tonumber(speed.Text); if not v then speed.Text=tostring(sound.PlaybackSpeed); say('Speed must be a number',true); return end
+        sound.PlaybackSpeed=math.clamp(v,0.25,4); speed.Text=tostring(sound.PlaybackSpeed)
+    end)
+    local function setVolume(x)
+        if volume.AbsoluteSize.X<=0 then return end
+        local v=math.clamp((x-volume.AbsolutePosition.X)/volume.AbsoluteSize.X,0,1)
+        sound.Volume=v; volumeFill.Size=UDim2.new(v,0,1,0); volumeText.Text=tostring(math.floor(v*100+0.5))..'%'
+    end
+    local seeking,adjusting=false,false
+    local function seekAt(x)
+        if sound.TimeLength>0 and seek.AbsoluteSize.X>0 then sound.TimePosition=math.clamp((x-seek.AbsolutePosition.X)/seek.AbsoluteSize.X,0,1)*sound.TimeLength end
+    end
+    connect(seekHit.InputBegan,function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+            seeking=true; musicSliderHeld=true; _G.KAMUI_SliderHeld=true; seekAt(input.Position.X)
+        end
+    end)
+    connect(volumeHit.InputBegan,function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+            adjusting=true; musicSliderHeld=true; _G.KAMUI_SliderHeld=true; setVolume(input.Position.X)
+        end
+    end)
+    connect(UIS.InputChanged,function(input) if input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch then if seeking then seekAt(input.Position.X) end; if adjusting then setVolume(input.Position.X) end end end)
+    connect(UIS.InputEnded,function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+            seeking=false; adjusting=false
+            if musicSliderHeld then musicSliderHeld=false; _G.KAMUI_SliderHeld=false end
+        end
+    end)
+    local function fmt(t) t=math.max(0,math.floor(t or 0)); return string.format('%d:%02d',math.floor(t/60),t%60) end
+    connect(RunService.Heartbeat,function()
+        local len=sound.TimeLength; local f=len>0 and math.clamp(sound.TimePosition/len,0,1) or 0
+        seekFill.Size=UDim2.new(f,0,1,0); knob.Position=UDim2.new(f,-3,0,-2)
+        elapsed.Text=fmt(sound.TimePosition); duration.Text=fmt(len)
+    end)
+
+    -- Search and HTTP logic retained from the working standalone player.
+    local function httpGet(url)
+        if type(requestFn) ~= 'function' then return nil,'Executor lacks HTTP request support' end
+        local ok, response = pcall(requestFn,{Url=url,Method='GET'})
+        if not ok then return nil,tostring(response) end
+        -- Real returns a string on a request error, not a response table.
+        if type(response) == 'string' then return nil,response end
+        if type(response) ~= 'table' then return nil,'Invalid HTTP response ('..type(response)..')' end
+        local code = response.StatusCode or response.Status or response.status_code
+        if tonumber(code) ~= 200 then return nil,'HTTP '..tostring(code or '?')..' '..tostring(response.StatusMessage or '') end
+        local body = response.Body or response.body
+        if type(body) ~= 'string' then return nil,'Empty response' end
+        return body
+    end
+    local function json(text)
+        local ok, value=pcall(function() return HttpService:JSONDecode(text) end)
+        if ok and type(value)=='table' then return value end
+        return nil
+    end
+    -- Search only: start with Real's request. If it stalls, also try HttpGet.
+    -- The first valid search response wins; late responses are ignored.
+    local function searchHttpGet(url, job)
+        local state = {data=nil, done=0, errors={}}
+        local function finish(method, body, err)
+            if not jobActive(job) or state.data then return end
+            local decoded = body and json(body)
+            local videos = decoded and (decoded.videos or decoded.results or decoded.items)
+            if type(videos) == 'table' then
+                decoded.videos = videos
+                state.data = decoded
+            else
+                state.done = state.done + 1
+                table.insert(state.errors, method..': '..tostring(err or (decoded and (decoded.error or decoded.message)) or 'invalid search response'))
+            end
+        end
+        task.spawn(function()
+            local body, err = httpGet(url)
+            finish('request', body, err)
+        end)
+        task.delay(3, function()
+            if not jobActive(job) or state.data then return end
+            say('Still searching; trying HttpGet…')
+            local ok, body = pcall(function() return game:HttpGet(url, true) end)
+            if ok and type(body) == 'string' and body ~= '' then
+                finish('HttpGet', body, nil)
+            else
+                finish('HttpGet', nil, ok and 'empty response' or tostring(body))
+            end
+        end)
+        local start = os.clock()
+        while jobActive(job) and not state.data and state.done < 2 and os.clock()-start < 85 do
+            task.wait(0.1)
+        end
+        if state.data then return state.data end
+        if #state.errors > 0 then return nil, table.concat(state.errors, ' | ') end
+        return nil, 'Both connection methods timed out'
+    end
+    -- Clean text robustly, including control characters inside pasted input.
+    -- Avoid relying on a pattern capture for text that comes from a TextBox.
+    local function cleanInput(value)
+        if type(value) ~= 'string' then return '' end
+        value = value:gsub('[%c]+', ' ')
+        value = value:gsub('^%s+', '')
+        value = value:gsub('%s+$', '')
+        return value
+    end
+    -- Normalize common YouTube share URLs to one watch URL understood by the proxy.
+    local function normalizeYT(input)
+        local url=cleanInput(input)
+        if url=='' then return nil end
+        -- Check exact YouTube host/path prefixes using plain string operations.
+        -- Keep the original link intact for the same proxy the original player uses.
+        local lower=url:lower()
+        if lower:sub(1,7)~='http://' and lower:sub(1,8)~='https://' then
+            url='https://'..url
+            lower='https://'..lower
+        end
+        local prefixes={
+            'https://www.youtube.com/watch?', 'http://www.youtube.com/watch?',
+            'https://youtube.com/watch?', 'http://youtube.com/watch?',
+            'https://m.youtube.com/watch?', 'http://m.youtube.com/watch?',
+            'https://music.youtube.com/watch?', 'http://music.youtube.com/watch?',
+            'https://youtu.be/', 'http://youtu.be/',
+            'https://www.youtube.com/shorts/', 'https://youtube.com/shorts/',
+            'https://m.youtube.com/shorts/', 'https://www.youtube.com/live/',
+            'https://youtube.com/live/', 'https://m.youtube.com/live/'
+        }
+        for i = 1, #prefixes do
+            local prefix = prefixes[i]
+            if lower:sub(1,#prefix)==prefix and #lower>#prefix then return url end
+        end
+        return nil
+    end
+    local function validYT(url) return normalizeYT(url) ~= nil end
+    local function searchNow()
+        local q=cleanInput(queryBox.Text)
+        if q=='' then say('Enter a search term or URL',true); return end
+        local normalized=normalizeYT(q)
+        if normalized then selectedVideo={url=normalized}; queryBox.Text=normalized; say('Link selected; press Download'); return end
+        if busy then say('A request is already running',true); return end
+        local job=startJob(90,'Search timed out; check connection')
+        say('Searching...')
+        task.spawn(function()
+            local ok,failure=pcall(function()
+                local data,err=searchHttpGet(API..'/api/search?q='..HttpService:UrlEncode(q),job)
+                if not jobActive(job) then return end
+                busy=false
+                if not data or data.success~=true or type(data.videos)~='table' then say('Search failed: '..tostring(err or (data and data.error) or 'invalid response'),true); return end
+                clearButtons(results); selectedVideo=nil
+                local shown=0
+                for i,v in ipairs(data.videos) do
+                    if type(v)=='table' and type(v.url)=='string' and v.url~='' then
+                        local title=tostring(v.title or 'Untitled')
+                        local row=songRow(results,title,'YouTube result',i,false)
+                        row.Activated:Connect(function()
+                            selectedVideo={url=v.url,title=title}; queryBox.Text=v.url
+                            for _,child in ipairs(results:GetChildren()) do if child:IsA('TextButton') then child.BackgroundTransparency=1 end end
+                            row.BackgroundColor3=C.chip; row.BackgroundTransparency=0
+                            say('Selected: '..title)
+                        end)
+                        shown=shown+1
+                    end
                 end
-            end
-            if shown==0 then say('No results with links returned',true) else say('Select a result to download') end
+                if shown==0 then say('No results with links returned',true) else say('Select a result to download') end
+            end)
+            if not ok then busy=false; say('Search error: '..tostring(failure),true) end
         end)
-        if not ok then busy=false; say('Search error: '..tostring(failure),true) end
+    end
+    connect(goBtn.Activated,searchNow)
+    connect(queryBox.FocusLost,function(enter) if enter then searchNow() end end)
+    connect(copyBtn.Activated,function()
+        local link=normalizeYT(queryBox.Text)
+        if not link then say('Select a YouTube link first',true); return end
+        if type(setclipboard)~='function' then say('Executor lacks clipboard support',true); return end
+        local ok=pcall(setclipboard,link); say(ok and 'Link copied' or 'Clipboard failed',not ok)
     end)
-end
-connect(goBtn.Activated,searchNow)
-connect(queryBox.FocusLost,function(enter) if enter then searchNow() end end)
-connect(copyBtn.Activated,function()
-    local link=normalizeYT(queryBox.Text)
-    if not link then say('Select a YouTube link first',true); return end
-    if type(setclipboard)~='function' then say('Executor lacks clipboard support',true); return end
-    local ok=pcall(setclipboard,link); say(ok and 'Link copied' or 'Clipboard failed',not ok)
-end)
--- Preserve titles, replacing only characters Windows cannot use in a filename.
-local function safeName(s)
-    s=tostring(s or 'audio'):gsub('[%c/\\:*?"<>|]','_'):gsub('^%s+',''):gsub('%s+$',''):sub(1,100)
-    if s=='' or s=='.' or s=='..' then s='audio' end
-    return s
-end
-connect(download.Activated,function()
-    local link=normalizeYT(queryBox.Text)
-    if not link then say('Select a result or paste a YouTube link',true); return end
-    if busy then say('A request is already running',true); return end
-    if type(writefile)~='function' or type(isfile)~='function' then say('Executor lacks file support',true); return end
-    local ok,err=ensureFolders(); if not ok then say('Folder error: '..tostring(err),true); return end
-    local chosenTitle=(selectedVideo and normalizeYT(selectedVideo.url)==link and selectedVideo.title) or nil
-    local job=startJob(75,'Download timed out; try again')
-    say('Contacting audio service...')
-    task.spawn(function()
-        local success,problem=pcall(function()
-            local body,why=httpGet(API..'/api/play?url='..HttpService:UrlEncode(link))
-            if not jobActive(job) then return end
-            local data=body and json(body)
-            if not data or data.success~=true or type(data.url)~='string' or not (data.url:sub(1,8)=='https://' or data.url:sub(1,7)=='http://') then busy=false; say('Audio service failed: '..tostring(why or (data and (data.error or data.message)) or 'invalid response'),true); return end
-            chosenTitle=chosenTitle or (type(data.title)=='string' and data.title) or 'YouTube audio'
-            say('Downloading audio...')
-            local audio,audioErr=httpGet(data.url)
-            if not jobActive(job) then return end
-            if not audio or #audio<1000 then busy=false; say('Audio download failed: '..tostring(audioErr or 'invalid file'),true); return end
-            local name=safeName(chosenTitle); local path=MUSIC..'/'..name..'.mp3'; local n=2
-            local fileOk,exists=pcall(isfile,path)
-            if not fileOk then busy=false; say('File check failed: '..tostring(exists),true); return end
-            while exists do
-                path=MUSIC..'/'..name..' ('..n..').mp3'; n=n+1
-                fileOk,exists=pcall(isfile,path)
+    -- Preserve titles, replacing only characters Windows cannot use in a filename.
+    local function safeName(s)
+        s=tostring(s or 'audio'):gsub('[%c/\\:*?"<>|]','_'):gsub('^%s+',''):gsub('%s+$',''):sub(1,100)
+        if s=='' or s=='.' or s=='..' then s='audio' end
+        return s
+    end
+    connect(download.Activated,function()
+        local link=normalizeYT(queryBox.Text)
+        if not link then say('Select a result or paste a YouTube link',true); return end
+        if busy then say('A request is already running',true); return end
+        if type(writefile)~='function' or type(isfile)~='function' then say('Executor lacks file support',true); return end
+        local ok,err=ensureFolders(); if not ok then say('Folder error: '..tostring(err),true); return end
+        local chosenTitle=(selectedVideo and normalizeYT(selectedVideo.url)==link and selectedVideo.title) or nil
+        local job=startJob(75,'Download timed out; try again')
+        say('Contacting audio service...')
+        task.spawn(function()
+            local success,problem=pcall(function()
+                local body,why=httpGet(API..'/api/play?url='..HttpService:UrlEncode(link))
+                if not jobActive(job) then return end
+                local data=body and json(body)
+                if not data or data.success~=true or type(data.url)~='string' or not (data.url:sub(1,8)=='https://' or data.url:sub(1,7)=='http://') then busy=false; say('Audio service failed: '..tostring(why or (data and (data.error or data.message)) or 'invalid response'),true); return end
+                chosenTitle=chosenTitle or (type(data.title)=='string' and data.title) or 'YouTube audio'
+                say('Downloading audio...')
+                local audio,audioErr=httpGet(data.url)
+                if not jobActive(job) then return end
+                if not audio or #audio<1000 then busy=false; say('Audio download failed: '..tostring(audioErr or 'invalid file'),true); return end
+                local name=safeName(chosenTitle); local path=MUSIC..'/'..name..'.mp3'; local n=2
+                local fileOk,exists=pcall(isfile,path)
                 if not fileOk then busy=false; say('File check failed: '..tostring(exists),true); return end
-            end
-            local wrote,writeErr=pcall(writefile,path,audio); busy=false
-            if not wrote then say('Save failed: '..tostring(writeErr),true); return end
-            scan(); tab('Playlist'); say('Downloaded: '..basename(path))
+                while exists do
+                    path=MUSIC..'/'..name..' ('..n..').mp3'; n=n+1
+                    fileOk,exists=pcall(isfile,path)
+                    if not fileOk then busy=false; say('File check failed: '..tostring(exists),true); return end
+                end
+                local wrote,writeErr=pcall(writefile,path,audio); busy=false
+                if not wrote then say('Save failed: '..tostring(writeErr),true); return end
+                scan(); tab('Playlist'); say('Downloaded: '..basename(path))
+            end)
+            if not success then busy=false; say('Download error: '..tostring(problem),true) end
         end)
-        if not success then busy=false; say('Download error: '..tostring(problem),true) end
     end)
-end)
-scan()
+    scan()
 end
 -- Return success or failure to the main window so it can show a retry message.
 local ok, err = pcall(_G.KAMUI_BuildMusic)
