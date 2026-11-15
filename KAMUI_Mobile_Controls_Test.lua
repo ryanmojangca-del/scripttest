@@ -12011,8 +12011,6 @@ _G.KAMUI_BuildCombat = function(UI)
         local assistCard = UI.card(page, "Side dash assist")
         -- Keep the card at the standard layer so it cannot cover its own controls.
         local mobileButton, mobileDot, mobileStroke, mobileLabel
-        -- Session-only calibration: positions are recorded from real user taps.
-        local touchStage, joyPos, dashPos = nil, nil, nil
         local function refreshAssistMobile()
             if not mobileButton then return end
             mobileButton.Visible = SA.Mobile
@@ -12152,10 +12150,6 @@ _G.KAMUI_BuildCombat = function(UI)
             return SA.Mobile
         end, function(v)
             SA.Mobile = v
-            if not v then
-                touchStage, joyPos, dashPos = nil, nil, nil
-                if mobileLabel then mobileLabel.Text = "Side dash" end
-            end
             refreshAssistMobile()
         end, assistCard)
         -- Keep the draggable action button visible when the main GUI is hidden.
@@ -12197,6 +12191,127 @@ _G.KAMUI_BuildCombat = function(UI)
         mobileLabel.Text = "Side dash"
         refreshAssistMobile()
 
+        -- Local-only Side Dash diagnostic. Visible only after pressing its mobile button.
+        -- No player names, chat, or network requests are collected.
+        local diagPanel, diagBody, diagRows, diagToken, diagAwaitTouch = nil, nil, {}, 0, false
+        local function diagValue(fn)
+            local ok, value = pcall(fn)
+            if not ok or value == nil then return "?" end
+            local okName, name = pcall(function() return value.Name end)
+            if okName and name then return tostring(name) end
+            return tostring(value)
+        end
+        local function diagHud()
+            local pg = player:FindFirstChildOfClass("PlayerGui")
+            if not pg then return "TouchGui=?; buttons=?" end
+            local touch = pg:FindFirstChild("TouchGui", true)
+            local touchState = touch and (touch:IsA("ScreenGui") and tostring(touch.Enabled) or "found") or "missing"
+            local found, visible = 0, 0
+            for _, obj in ipairs(pg:GetDescendants()) do
+                if obj:IsA("GuiButton") then
+                    local name = string.lower(obj.Name)
+                    if name:find("dash", 1, true) or name:find("jump", 1, true)
+                        or name:find("block", 1, true) or name:find("attack", 1, true)
+                        or name:find("punch", 1, true) or name == "m1" then
+                        found = found + 1
+                        local shown, p = true, obj
+                        while p and p ~= pg do
+                            if p:IsA("GuiObject") and not p.Visible then shown = false; break end
+                            if p:IsA("ScreenGui") and not p.Enabled then shown = false; break end
+                            p = p.Parent
+                        end
+                        if shown then visible = visible + 1 end
+                    end
+                end
+            end
+            return "TouchGui=" .. touchState .. "; named buttons=" .. visible .. "/" .. found
+        end
+        local function diagRender()
+            if not diagBody or not diagBody.Parent then return end
+            local lines = {
+                "Side Dash test — no data is sent anywhere",
+                "Touch=" .. diagValue(function() return UIS.TouchEnabled end)
+                    .. "  Keyboard=" .. diagValue(function() return UIS.KeyboardEnabled end),
+            }
+            for _, name in ipairs({"Before", "Key down", "After dash", "After restore", "Next touch"}) do
+                if diagRows[name] then
+                    lines[#lines + 1] = name .. ": " .. diagRows[name]
+                end
+            end
+            lines[#lines + 1] = "After dashing, tap empty space and screenshot this panel."
+            diagBody.Text = table.concat(lines, "\n")
+        end
+        local function diagSnap(name, token)
+            if token ~= diagToken or not isCurrent() then return end
+            local last = diagValue(function() return UIS:GetLastInputType() end)
+            local preferred = diagValue(function() return UIS.PreferredInput end)
+            local ok, hud = pcall(diagHud)
+            diagRows[name] = "last=" .. last .. "  preferred=" .. preferred .. "\n  " .. (ok and hud or "HUD unavailable")
+            diagRender()
+        end
+        local function diagBegin()
+            diagToken = diagToken + 1
+            diagAwaitTouch = false
+            diagRows = {}
+            if not diagPanel or not diagPanel.Parent then
+                diagPanel = Instance.new("Frame")
+                diagPanel.Name = "SideDashInputDiagnostic"
+                diagPanel.Size = UDim2.new(0, 320, 0, 215)
+                diagPanel.Position = UDim2.new(0.03, 0, 0.1, 0)
+                diagPanel.BackgroundColor3 = Color3.fromRGB(18, 18, 21)
+                diagPanel.BorderSizePixel = 0
+                diagPanel.Active = true
+                diagPanel.Draggable = true
+                diagPanel.ZIndex = 100
+                diagPanel.Parent = RestoreGui
+                UI.corner(diagPanel, 8)
+                local outline = Instance.new("UIStroke")
+                outline.Color = THEME.Red
+                outline.Thickness = 1
+                outline.Parent = diagPanel
+                local close = Instance.new("TextButton")
+                close.Name = "Close"
+                close.Size = UDim2.new(0, 27, 0, 24)
+                close.Position = UDim2.new(1, -30, 0, 3)
+                close.BackgroundColor3 = Color3.fromRGB(52, 15, 21)
+                close.TextColor3 = Color3.fromRGB(255, 255, 255)
+                close.Font = Enum.Font.Gotham
+                close.TextSize = 13
+                close.Text = "X"
+                close.ZIndex = 102
+                close.Parent = diagPanel
+                UI.corner(close, 5)
+                close.MouseButton1Click:Connect(function() diagPanel.Visible = false end)
+                local scroll = Instance.new("ScrollingFrame")
+                scroll.Name = "StatusScroll"
+                scroll.Position = UDim2.new(0, 10, 0, 8)
+                scroll.Size = UDim2.new(1, -44, 1, -16)
+                scroll.BackgroundTransparency = 1
+                scroll.BorderSizePixel = 0
+                scroll.ScrollBarThickness = 3
+                scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+                scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+                scroll.ZIndex = 101
+                scroll.Parent = diagPanel
+                diagBody = Instance.new("TextLabel")
+                diagBody.Name = "Status"
+                diagBody.Size = UDim2.new(1, -5, 0, 0)
+                diagBody.AutomaticSize = Enum.AutomaticSize.Y
+                diagBody.BackgroundTransparency = 1
+                diagBody.TextColor3 = Color3.fromRGB(235, 235, 238)
+                diagBody.Font = Enum.Font.Gotham
+                diagBody.TextSize = 11
+                diagBody.TextXAlignment = Enum.TextXAlignment.Left
+                diagBody.TextYAlignment = Enum.TextYAlignment.Top
+                diagBody.TextWrapped = true
+                diagBody.ZIndex = 101
+                diagBody.Parent = scroll
+            end
+            diagPanel.Visible = true
+            diagSnap("Before", diagToken)
+            return diagToken
+        end
+
         local function flat(v)
             return Vector3.new(v.X, 0, v.Z)
         end
@@ -12234,9 +12349,8 @@ _G.KAMUI_BuildCombat = function(UI)
             local a = m.RelativeTo == Enum.ActuatorRelativeTo.Attachment0 and m.Attachment0 or m.Attachment1
             return a and a.WorldCFrame:VectorToObjectSpace(v) or nil
         end
-        local function dashOnce(useMobileTouch)
+        local function dashOnce(fromMobile, debugToken)
             if not SA.Enabled or SA.Busy or not isCurrent() then return end
-            if useMobileTouch and (not SA.Mobile or not joyPos or not dashPos) then return end
             local char = player.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -12244,7 +12358,7 @@ _G.KAMUI_BuildCombat = function(UI)
             local target = closestTarget(root)
             if not target or not VirtualInputManager then return end
             -- Do not release or interfere with a Q key the player is already holding.
-            if not useMobileTouch and UIS:IsKeyDown(Enum.KeyCode.Q) then return end
+            if UIS:IsKeyDown(Enum.KeyCode.Q) then return end
             local targetHum = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
             local right = flat(target.CFrame.RightVector)
             if right.Magnitude < 0.01 then return end
@@ -12367,51 +12481,20 @@ _G.KAMUI_BuildCombat = function(UI)
             end
             SA.Busy = true
             _G.KAMUI_MarkScriptDash()
-            if useMobileTouch then
-                -- Experimental: use the user's calibrated joystick and dash locations.
-                -- Unlike the PC path, no virtual keyboard or mouse events are sent.
-                task.spawn(function()
-                    local viewport = cam.ViewportSize
-                    local jx, jy = math.floor(joyPos.X * viewport.X), math.floor(joyPos.Y * viewport.Y)
-                    local dx, dy = math.floor(dashPos.X * viewport.X), math.floor(dashPos.Y * viewport.Y)
-                    local shift = math.clamp(math.floor(viewport.X * 0.04), 20, 55)
-                    local movedX = math.clamp(jx + (useRight and shift or -shift), 1, viewport.X - 1)
-                    local joyDown, dashDown = false, false
-                    local ok, err = pcall(function()
-                        VirtualInputManager:SendTouchEvent(91, 0, jx, jy)
-                        joyDown = true
-                        task.wait(0.04)
-                        if not isCurrent() or not SA.Enabled or not SA.Busy or player.Character ~= char then return end
-                        VirtualInputManager:SendTouchEvent(91, 1, movedX, jy)
-                        task.wait(0.06)
-                        if not isCurrent() or not SA.Enabled or not SA.Busy or player.Character ~= char then return end
-                        VirtualInputManager:SendTouchEvent(92, 0, dx, dy)
-                        dashDown = true
-                        task.wait(0.05)
-                    end)
-                    if dashDown then pcall(function() VirtualInputManager:SendTouchEvent(92, 2, dx, dy) end) end
-                    if joyDown then pcall(function() VirtualInputManager:SendTouchEvent(91, 2, movedX, jy) end) end
-                    if not ok then
-                        warn("[KAMUI] mobile touch dash failed:", err)
-                        if mobileLabel then
-                            mobileLabel.Text = "Touch failed"
-                            task.delay(2, function()
-                                if mobileLabel and mobileLabel.Parent and not touchStage then mobileLabel.Text = "Side dash" end
-                            end)
-                        end
-                    end
-                end)
-            else
-            -- Original PC keyboard path, unchanged.
+            -- Trigger the normal client-side dash path instead of sending only
+            -- the remote (which can play the dash in place without its mover).
+            -- Keep a movement key the user was already holding untouched.
             local directionAlreadyDown = UIS:IsKeyDown(dashKey)
             local directionSent = directionAlreadyDown or pcall(function()
                 VirtualInputManager:SendKeyEvent(true, dashKey, false, game)
             end)
             if not directionSent then
+                if fromMobile then diagSnap("Key down", debugToken) end
                 releaseCamera()
                 SA.Busy = false
                 return
             end
+            if fromMobile then task.delay(0.02, function() diagSnap("Key down", debugToken) end) end
             task.spawn(function()
                 local qSent = false
                 task.wait(0.04)
@@ -12428,11 +12511,17 @@ _G.KAMUI_BuildCombat = function(UI)
                 if not directionAlreadyDown then
                     pcall(function() VirtualInputManager:SendKeyEvent(false, dashKey, false, game) end)
                 end
+                if fromMobile then
+                    task.delay(0.02, function() diagSnap("After dash", debugToken) end)
+                    task.delay(0.35, function() diagSnap("After restore", debugToken) end)
+                    task.delay(0.7, function()
+                        if debugToken == diagToken and isCurrent() then diagAwaitTouch = true end
+                    end)
+                end
                 if _G.KAMUI_RestoreTouchInput then
                     task.delay(0.1, _G.KAMUI_RestoreTouchInput, SA.Mobile)
                 end
             end)
-            end -- PC path
             local started = os.clock()
             local conn
             local function finishAssist()
@@ -12514,37 +12603,16 @@ _G.KAMUI_BuildCombat = function(UI)
             end)
         end
         mobileButton.MouseButton1Click:Connect(function()
-            if not isCurrent() or not SA.Mobile or not SA.Enabled then return end
-            if touchStage then
-                touchStage = nil
-                mobileLabel.Text = "Side dash"
-                return
-            end
-            if not joyPos or not dashPos then
-                touchStage = "joystick"
-                mobileLabel.Text = "Tap joystick"
-                return
-            end
-            dashOnce(true)
+            if not isCurrent() then return end
+            local token = diagBegin()
+            dashOnce(true, token)
         end)
         UIS.InputBegan:Connect(function(input, processed)
             if not isCurrent() then return end
-            if input.UserInputType == Enum.UserInputType.Touch and SA.Mobile and touchStage then
-                local camera = Workspace.CurrentCamera
-                local size = camera and camera.ViewportSize
-                if not size or size.X < 1 or size.Y < 1 then return end
-                local x = math.clamp(input.Position.X / size.X, 0, 1)
-                local y = math.clamp(input.Position.Y / size.Y, 0, 1)
-                if touchStage == "joystick" then
-                    joyPos = Vector2.new(x, y)
-                    touchStage = "dash"
-                    mobileLabel.Text = "Tap game dash"
-                else
-                    dashPos = Vector2.new(x, y)
-                    touchStage = nil
-                    mobileLabel.Text = "Side dash"
-                end
-                return
+            if input.UserInputType == Enum.UserInputType.Touch and diagAwaitTouch then
+                diagAwaitTouch = false
+                local token = diagToken
+                task.delay(0.05, function() diagSnap("Next touch", token) end)
             end
             if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
             if capturingKey then
