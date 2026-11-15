@@ -12474,17 +12474,14 @@ _G.KAMUI_BuildCombat = function(UI)
                         end)
                         finishAssist(); return
                     end
-                    -- Near the end of the pull, smoothly correct the position
-                    -- over 0.15s instead of snapping instantly. Follow the target's
-                    -- current orientation while preserving the player's height.
+                    -- After the short pull, instantly correct the position behind
+                    -- the target while preserving the player's height and rotation.
                     if os.clock() - pullStarted >= 0.10 then
                         if not smoothStartAt then
                             smoothStartAt = os.clock()
                             smoothStartPos = flat(root.Position)
                         end
-                        local t = math.clamp((os.clock() - smoothStartAt) / 0.15, 0, 1)
-                        local eased = t * t * (3 - 2 * t)
-                        local position = smoothStartPos:Lerp(behind, eased)
+                        local position = behind
                         local ok = pcall(function()
                             local current = root.Position
                             root.CFrame = root.CFrame + Vector3.new(position.X - current.X, 0, position.Z - current.Z)
@@ -12492,7 +12489,7 @@ _G.KAMUI_BuildCombat = function(UI)
                             root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
                             pullApplied = true
                         end)
-                        if not ok or t >= 1 then finishAssist() end
+                        finishAssist()
                         return
                     end
                     pcall(function()
