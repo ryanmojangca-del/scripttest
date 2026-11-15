@@ -2852,7 +2852,7 @@ do
         return nil
     end
 
-    conns[#conns + 1] = RunService.Heartbeat:Connect(function()
+    local function updateDashMultiplier()
         if not isCurrent() then
             return
         end
@@ -2896,6 +2896,19 @@ do
         st.last = scaled
         st.applied = true
         dash[prop] = scaled
+    end
+
+    -- Touch dashes are updated before physics to reduce the chance that the
+    -- mobile game's movement code overwrites the multiplier before simulation.
+    -- Keyboard/mouse input keeps the original Heartbeat behavior.
+    local function isTouchInput()
+        return UIS.TouchEnabled and UIS:GetLastInputType() == Enum.UserInputType.Touch
+    end
+    conns[#conns + 1] = RunService.PreSimulation:Connect(function()
+        if isTouchInput() then updateDashMultiplier() end
+    end)
+    conns[#conns + 1] = RunService.Heartbeat:Connect(function()
+        if not isTouchInput() then updateDashMultiplier() end
     end)
 end
 
