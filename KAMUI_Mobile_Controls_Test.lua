@@ -3117,6 +3117,46 @@ do
     conns[#conns + 1] = RunService.Heartbeat:Connect(function()
         if not isTouchWalkJump() then updateWalkJump() end
     end)
+
+    -- Mobile fallback: if the game ignores JumpPower, apply the selected
+    -- vertical speed once when a genuine humanoid jump begins. Never creates
+    -- jumps itself, and preserves the same blocker checks as WalkSpeed.
+    local jumpConn, pendingJump = nil, nil
+    local function hookMobileJump(char)
+        if jumpConn then jumpConn:Disconnect(); jumpConn = nil end
+        pendingJump = nil
+        task.spawn(function()
+            local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 10)
+            if not isCurrent() or player.Character ~= char or not hum or not hum:IsA("Humanoid") then return end
+            jumpConn = hum.StateChanged:Connect(function(_, newState)
+                if isCurrent() and player.Character == char and newState == Enum.HumanoidStateType.Jumping
+                    and isTouchWalkJump() and M.SJEnabled and not M.Blinking and not blocked(char)
+                    and math.abs(M.JumpPower - 50) > 0.001 then
+                    pendingJump = { char = char, hum = hum, started = os.clock() }
+                end
+            end)
+            conns[#conns + 1] = jumpConn
+        end)
+    end
+    if player.Character then hookMobileJump(player.Character) end
+    conns[#conns + 1] = player.CharacterAdded:Connect(hookMobileJump)
+    conns[#conns + 1] = RunService.PreSimulation:Connect(function()
+        local pending = pendingJump
+        if not pending then return end
+        pendingJump = nil -- one correction for each detected jump
+        if not isCurrent() or player.Character ~= pending.char or not isTouchWalkJump()
+            or not M.SJEnabled or M.Blinking or blocked(pending.char)
+            or pending.hum.Health <= 0 or os.clock() - pending.started > 0.15 then return end
+        local state = pending.hum:GetState()
+        if state ~= Enum.HumanoidStateType.Jumping and state ~= Enum.HumanoidStateType.Freefall then return end
+        local root = pending.char:FindFirstChild("HumanoidRootPart")
+        if root and not root.Anchored then
+            pcall(function()
+                local velocity = root.AssemblyLinearVelocity
+                root.AssemblyLinearVelocity = Vector3.new(velocity.X, math.max(0, M.JumpPower), velocity.Z)
+            end)
+        end
+    end)
 end
 
 --// BLINK (Movement tab) - freeze in place, then snap to the new position
