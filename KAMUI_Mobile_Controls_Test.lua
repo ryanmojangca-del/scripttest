@@ -12423,8 +12423,7 @@ _G.KAMUI_BuildCombat = function(UI)
             end)
             end -- original simulated-input path is PC/keybind only
             local started = os.clock()
-            local pullStarted = nil -- only the native mobile dash uses the end pull
-            local pullApplied = false
+            local mobileTeleported = false
             local conn
             local function finishAssist()
                 if conn then conn:Disconnect(); conn = nil end
@@ -12434,7 +12433,7 @@ _G.KAMUI_BuildCombat = function(UI)
             conn = RunService.Heartbeat:Connect(function(dt)
                 if not isCurrent() or not SA.Enabled or player.Character ~= char
                     or not root.Parent or not target.Parent or not targetHum or targetHum.Health <= 0
-                    or (not pullStarted and os.clock() - started > 1.2) then
+                    or os.clock() - started > 1.2 then
                     finishAssist(); return
                 end
                 local mover
@@ -12444,61 +12443,65 @@ _G.KAMUI_BuildCombat = function(UI)
                     mover = findMover(root)
                 end
                 if not mover then
-                    if not moverSeen then return end
-                    if not existingMover then finishAssist(); return end -- PC remains unchanged
-                    -- Mobile: begin the pull, then teleport during the pull on
-                    -- the next heartbeat. No synthetic input or attachment.
-                    pullStarted = pullStarted or os.clock()
-                    if os.clock() - pullStarted > 0.45 then
-                        -- Do not leave a strong residual pull after the short burst.
-                        if pullApplied then
-                            pcall(function()
-                                local velocity = root.AssemblyLinearVelocity
-                                root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
-                            end)
-                        end
-                        finishAssist(); return
-                    end
-                    local forward = flat(target.CFrame.LookVector)
-                    if forward.Magnitude < 0.01 then finishAssist(); return end
-                    local behind = flat(target.Position) - forward.Unit * 3.5
-                    local delta = behind - flat(root.Position)
-                    local distance = delta.Magnitude
-                    -- Avoid unexpectedly pulling over a large distance.
-                    if distance > 24 then finishAssist(); return end
-                    if distance <= 0.75 then
-                        pcall(function()
-                            local velocity = root.AssemblyLinearVelocity
-                            root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
-                        end)
-                        finishAssist(); return
-                    end
-                    -- Teleport on the heartbeat after pull velocity is applied,
-                    -- instead of waiting for the pull to finish.
-                    if pullApplied then
-                        local position = behind
-                        pcall(function()
-                            local current = root.Position
-                            root.CFrame = root.CFrame + Vector3.new(position.X - current.X, 0, position.Z - current.Z)
-                            local velocity = root.AssemblyLinearVelocity
-                            root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
-                            pullApplied = true
-                        end)
-                        finishAssist()
-                        return
-                    end
-                    pcall(function()
-                        local velocity = root.AssemblyLinearVelocity
-                        -- Short, fast burst, without teleporting or anchoring.
-                        local desired = delta.Unit * math.min(150, distance * 25)
-                        local alpha = 1 - math.exp(-40 * math.max(dt, 0))
-                        local nextVelocity = flat(velocity):Lerp(desired, alpha)
-                        root.AssemblyLinearVelocity = Vector3.new(nextVelocity.X, velocity.Y, nextVelocity.Z)
-                        pullApplied = true
-                    end)
+                    if moverSeen then finishAssist() end
                     return
                 end
                 moverSeen = true
+                -- Mobile only: start pulling toward the target's back while the
+                -- game's dash mover is still active, then teleport near the end.
+                -- This is a timing estimate, not a game-provided end signal.
+                if existingMover then
+                    local elapsed = os.clock() - started
+                    if mobileTeleported then
+                        pcall(function()
+                            local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
+                            local world = moverToWorld(mover, mover[prop])
+                            if world then
+                                local stopped = moverFromWorld(mover, Vector3.new(0, world.Y, 0))
+                                if stopped then mover[prop] = stopped end
+                            end
+                        end)
+                        return
+                    end
+                    if elapsed >= 0.12 then
+                        local forward = flat(target.CFrame.LookVector)
+                        if forward.Magnitude > 0.01 then
+                            local behind = flat(target.Position) - forward.Unit * 3.5
+                            local delta = behind - flat(root.Position)
+                            local distance = delta.Magnitude
+                            if distance <= 24 then
+                                if elapsed >= 0.20 then
+                                    local ok = pcall(function()
+                                        local position = root.Position
+                                        root.CFrame = root.CFrame + Vector3.new(behind.X - position.X, 0, behind.Z - position.Z)
+                                        local velocity = root.AssemblyLinearVelocity
+                                        root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
+                                        local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
+                                        local world = moverToWorld(mover, mover[prop])
+                                        if world then
+                                            local stopped = moverFromWorld(mover, Vector3.new(0, world.Y, 0))
+                                            if stopped then mover[prop] = stopped end
+                                        end
+                                    end)
+                                    if ok then mobileTeleported = true end
+                                    return
+                                elseif distance > 0.05 then
+                                    pcall(function()
+                                        local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
+                                        local world = moverToWorld(mover, mover[prop])
+                                        if not world then return end
+                                        local speed = flat(world).Magnitude
+                                        if speed < 0.1 then return end
+                                        local directed = delta.Unit * speed + Vector3.new(0, world.Y, 0)
+                                        local result = moverFromWorld(mover, directed)
+                                        if result then mover[prop] = result end
+                                    end)
+                                    return
+                                end
+                            end
+                        end
+                    end
+                end
                 local goal = (hook and (flat(target.Position) + hook.flank * 2.6 + hook.toward * 1.2))
                     or (curve and (flat(target.Position) + curve.back * 3.5) or destination())
                 if not goal then finishAssist(); return end
