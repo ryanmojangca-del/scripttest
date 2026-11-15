@@ -12425,6 +12425,7 @@ _G.KAMUI_BuildCombat = function(UI)
             local started = os.clock()
             local pullStarted = nil -- only the native mobile dash uses the end pull
             local pullApplied = false
+            local smoothStartAt, smoothStartPos = nil, nil
             local conn
             local function finishAssist()
                 if conn then conn:Disconnect(); conn = nil end
@@ -12446,11 +12447,10 @@ _G.KAMUI_BuildCombat = function(UI)
                 if not mover then
                     if not moverSeen then return end
                     if not existingMover then finishAssist(); return end -- PC remains unchanged
-                    -- Mobile: after the game's dash ends, briefly steer the real
-                    -- character toward a point behind the target. No CFrame snap,
-                    -- synthetic input, anchoring or permanent attachment.
+                    -- Mobile: pull first, then smoothly move toward the point
+                    -- behind the target. No synthetic input or permanent attachment.
                     pullStarted = pullStarted or os.clock()
-                    if os.clock() - pullStarted > 0.30 then
+                    if os.clock() - pullStarted > 0.45 then
                         -- Do not leave a strong residual pull after the short burst.
                         if pullApplied then
                             pcall(function()
@@ -12473,6 +12473,27 @@ _G.KAMUI_BuildCombat = function(UI)
                             root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
                         end)
                         finishAssist(); return
+                    end
+                    -- Near the end of the pull, smoothly correct the position
+                    -- over 0.15s instead of snapping instantly. Follow the target's
+                    -- current orientation while preserving the player's height.
+                    if os.clock() - pullStarted >= 0.10 then
+                        if not smoothStartAt then
+                            smoothStartAt = os.clock()
+                            smoothStartPos = flat(root.Position)
+                        end
+                        local t = math.clamp((os.clock() - smoothStartAt) / 0.15, 0, 1)
+                        local eased = t * t * (3 - 2 * t)
+                        local position = smoothStartPos:Lerp(behind, eased)
+                        local ok = pcall(function()
+                            local current = root.Position
+                            root.CFrame = root.CFrame + Vector3.new(position.X - current.X, 0, position.Z - current.Z)
+                            local velocity = root.AssemblyLinearVelocity
+                            root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
+                            pullApplied = true
+                        end)
+                        if not ok or t >= 1 then finishAssist() end
+                        return
                     end
                     pcall(function()
                         local velocity = root.AssemblyLinearVelocity
