@@ -17,6 +17,114 @@ local function isCurrent()
     return _G.SkidwareId == scriptId
 end
 
+
+--// TEMPORARY MOBILE BUTTON EVENT DIAGNOSTIC
+
+--// No network requests or simulated inputs.
+task.spawn(function()
+-- KAMUI integrated touch diagnostic; observes input, does not modify controls.
+-- Local display only: no data is transmitted and no inputs are simulated.
+local Players = game:GetService('Players')
+local UIS = game:GetService('UserInputService')
+local player = Players.LocalPlayer
+local pg = player:WaitForChild('PlayerGui')
+local core = game:GetService('CoreGui')
+for _, parent in ipairs({core, pg}) do
+    local prior = parent:FindFirstChild('KamuiRespawnTouchDiagnostic')
+    if prior then prior:Destroy() end
+end
+local gui = Instance.new('ScreenGui')
+gui.Name = 'KamuiRespawnTouchDiagnostic'
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 10000
+local parented = pcall(function() gui.Parent = core end)
+if not parented then gui.Parent = pg end
+local frame = Instance.new('Frame')
+frame.Size = UDim2.new(0, 440, 0, 230)
+frame.Position = UDim2.new(0, 12, 0, 120)
+frame.BackgroundColor3 = Color3.fromRGB(16,16,19)
+frame.BorderSizePixel = 0
+frame.Parent = gui
+local corner = Instance.new('UICorner', frame); corner.CornerRadius = UDim.new(0, 10)
+local stroke = Instance.new('UIStroke', frame); stroke.Color = Color3.fromRGB(196,21,40)
+local close = Instance.new('TextButton')
+close.Size = UDim2.new(0, 32, 0, 30); close.Position = UDim2.new(1, -36, 0, 4)
+close.Text = '×'; close.TextSize = 20; close.Font = Enum.Font.Gotham
+close.TextColor3 = Color3.new(1,1,1); close.BackgroundTransparency = 1; close.Parent = frame
+local text = Instance.new('TextLabel')
+text.Position = UDim2.new(0, 10, 0, 8); text.Size = UDim2.new(1, -50, 1, -16)
+text.TextColor3 = Color3.fromRGB(235,235,238); text.BackgroundTransparency = 1
+text.Font = Enum.Font.Code; text.TextSize = 12; text.TextXAlignment = Enum.TextXAlignment.Left
+text.TextYAlignment = Enum.TextYAlignment.Top; text.TextWrapped = true; text.Parent = frame
+local connections = {}
+local active = true
+local after = 'No character change yet'
+local guiEvents = {}
+local last = 'No touch recorded'
+local function snapshot()
+    local preferred = 'unavailable'
+    pcall(function() preferred = UIS.PreferredInput.Name end)
+    local touchGui = pg:FindFirstChild('TouchGui')
+    local touchState = touchGui and tostring(touchGui.Enabled) or 'missing'
+    return 'last=' .. UIS:GetLastInputType().Name .. ' preferred=' .. preferred .. ' TouchGui=' .. touchState
+end
+local before = snapshot()
+local function paint()
+    if not active then return end
+    text.Text = 'MOBILE TOUCH TEST (local only)\nBefore: ' .. before .. '\nCharacter change: ' .. after .. '\nLast touch: ' .. last .. '\nButton events (time / name / event):\n' .. table.concat(guiEvents, '\n') .. '\nTap Punch or Jump, then screenshot.'
+end
+-- Observe button events; do not intercept or synthesize input. This can show
+-- whether the visible PlayerGui button receives a touch and activates.
+local watched = setmetatable({}, {__mode = 'k'})
+local function recordButtonEvent(object, kind)
+    if not active then return end
+    guiEvents[#guiEvents + 1] = string.format('%.1f  %s  %s', os.clock(), object.Name, kind)
+    while #guiEvents > 4 do table.remove(guiEvents, 1) end
+    paint()
+end
+local function watchButton(object)
+    if not object:IsA('GuiButton') or object:IsDescendantOf(gui) or watched[object] then return end
+    watched[object] = true
+    connections[#connections+1] = object.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then recordButtonEvent(object, 'touch begin') end
+    end)
+    connections[#connections+1] = object.Activated:Connect(function(input)
+        recordButtonEvent(object, 'activated (' .. (input and input.UserInputType.Name or 'unknown') .. ')')
+    end)
+end
+for _, object in ipairs(pg:GetDescendants()) do watchButton(object) end
+connections[#connections+1] = pg.DescendantAdded:Connect(watchButton)
+connections[#connections+1] = player.CharacterAdded:Connect(function(char)
+    after = 'Character changed; waiting 2s'
+    paint()
+    task.delay(2, function()
+        if active and player.Character == char then after = snapshot(); paint() end
+    end)
+end)
+connections[#connections+1] = UIS.InputBegan:Connect(function(input, processed)
+    if input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local pos = input.Position
+    local names = {}
+    pcall(function()
+        local objects = pg:GetGuiObjectsAtPosition(pos.X, pos.Y)
+        for _, object in ipairs(objects) do
+            if not object:IsDescendantOf(gui) and #names < 3 then
+                names[#names+1] = object.Name
+            end
+        end
+    end)
+    last = 'processed=' .. tostring(processed) .. ' targets=' .. (#names > 0 and table.concat(names, ',') or 'none/other GUI') .. '\n  ' .. snapshot()
+    paint()
+end)
+close.Activated:Connect(function() gui:Destroy() end)
+gui.Destroying:Connect(function()
+    active = false
+    for _, c in ipairs(connections) do c:Disconnect() end
+end)
+paint()
+
+end)
+
 --// OPTIONAL DEBUG: run `_G.KAMUI_DebugInput = true` BEFORE executing the script to
 --// print every input-type change (Touch / Keyboard / MouseButton1 ...) in the console.
 if _G.KAMUI_DebugInput then
@@ -13251,107 +13359,4 @@ task.delay(3, function()
             pcall(_G.KAMUI_FetchModule, name)
         end)
     end
-end)
-
-
---// TEMPORARY LOCAL MOBILE TOUCH DIAGNOSTIC (EVENT OBSERVATION)
---// No network requests or simulated inputs.
-task.spawn(function()
--- KAMUI integrated touch diagnostic; observes input, does not modify controls.
--- Local display only: no data is transmitted and no inputs are simulated.
-local Players = game:GetService('Players')
-local UIS = game:GetService('UserInputService')
-local player = Players.LocalPlayer
-local pg = player:WaitForChild('PlayerGui')
-local prior = pg:FindFirstChild('KamuiRespawnTouchDiagnostic')
-if prior then prior:Destroy() end
-local gui = Instance.new('ScreenGui')
-gui.Name = 'KamuiRespawnTouchDiagnostic'
-gui.ResetOnSpawn = false
-gui.DisplayOrder = 10000
-gui.Parent = pg
-local frame = Instance.new('Frame')
-frame.Size = UDim2.new(0, 440, 0, 230)
-frame.Position = UDim2.new(0, 12, 0, 120)
-frame.BackgroundColor3 = Color3.fromRGB(16,16,19)
-frame.BorderSizePixel = 0
-frame.Parent = gui
-local corner = Instance.new('UICorner', frame); corner.CornerRadius = UDim.new(0, 10)
-local stroke = Instance.new('UIStroke', frame); stroke.Color = Color3.fromRGB(196,21,40)
-local close = Instance.new('TextButton')
-close.Size = UDim2.new(0, 32, 0, 30); close.Position = UDim2.new(1, -36, 0, 4)
-close.Text = '×'; close.TextSize = 20; close.Font = Enum.Font.Gotham
-close.TextColor3 = Color3.new(1,1,1); close.BackgroundTransparency = 1; close.Parent = frame
-local text = Instance.new('TextLabel')
-text.Position = UDim2.new(0, 10, 0, 8); text.Size = UDim2.new(1, -50, 1, -16)
-text.TextColor3 = Color3.fromRGB(235,235,238); text.BackgroundTransparency = 1
-text.Font = Enum.Font.Code; text.TextSize = 12; text.TextXAlignment = Enum.TextXAlignment.Left
-text.TextYAlignment = Enum.TextYAlignment.Top; text.TextWrapped = true; text.Parent = frame
-local connections = {}
-local active = true
-local after = 'No character change yet'
-local guiEvents = {}
-local last = 'No touch recorded'
-local function snapshot()
-    local preferred = 'unavailable'
-    pcall(function() preferred = UIS.PreferredInput.Name end)
-    local touchGui = pg:FindFirstChild('TouchGui')
-    local touchState = touchGui and tostring(touchGui.Enabled) or 'missing'
-    return 'last=' .. UIS:GetLastInputType().Name .. ' preferred=' .. preferred .. ' TouchGui=' .. touchState
-end
-local before = snapshot()
-local function paint()
-    if not active then return end
-    text.Text = 'MOBILE TOUCH TEST (local only)\nBefore: ' .. before .. '\nCharacter change: ' .. after .. '\nLast touch: ' .. last .. '\nButton events (time / name / event):\n' .. table.concat(guiEvents, '\n') .. '\nTap Punch or Jump, then screenshot.'
-end
--- Observe button events; do not intercept or synthesize input. This can show
--- whether the visible PlayerGui button receives a touch and activates.
-local watched = setmetatable({}, {__mode = 'k'})
-local function recordButtonEvent(object, kind)
-    if not active then return end
-    guiEvents[#guiEvents + 1] = string.format('%.1f  %s  %s', os.clock(), object.Name, kind)
-    while #guiEvents > 4 do table.remove(guiEvents, 1) end
-    paint()
-end
-local function watchButton(object)
-    if not object:IsA('GuiButton') or object:IsDescendantOf(gui) or watched[object] then return end
-    watched[object] = true
-    connections[#connections+1] = object.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch then recordButtonEvent(object, 'touch begin') end
-    end)
-    connections[#connections+1] = object.Activated:Connect(function(input)
-        recordButtonEvent(object, 'activated (' .. (input and input.UserInputType.Name or 'unknown') .. ')')
-    end)
-end
-for _, object in ipairs(pg:GetDescendants()) do watchButton(object) end
-connections[#connections+1] = pg.DescendantAdded:Connect(watchButton)
-connections[#connections+1] = player.CharacterAdded:Connect(function(char)
-    after = 'Character changed; waiting 2s'
-    paint()
-    task.delay(2, function()
-        if active and player.Character == char then after = snapshot(); paint() end
-    end)
-end)
-connections[#connections+1] = UIS.InputBegan:Connect(function(input, processed)
-    if input.UserInputType ~= Enum.UserInputType.Touch then return end
-    local pos = input.Position
-    local names = {}
-    pcall(function()
-        local objects = pg:GetGuiObjectsAtPosition(pos.X, pos.Y)
-        for _, object in ipairs(objects) do
-            if not object:IsDescendantOf(gui) and #names < 3 then
-                names[#names+1] = object.Name
-            end
-        end
-    end)
-    last = 'processed=' .. tostring(processed) .. ' targets=' .. (#names > 0 and table.concat(names, ',') or 'none/other GUI') .. '\n  ' .. snapshot()
-    paint()
-end)
-close.Activated:Connect(function() gui:Destroy() end)
-gui.Destroying:Connect(function()
-    active = false
-    for _, c in ipairs(connections) do c:Disconnect() end
-end)
-paint()
-
 end)
