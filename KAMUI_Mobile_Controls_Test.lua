@@ -12425,7 +12425,6 @@ _G.KAMUI_BuildCombat = function(UI)
             local started = os.clock()
             local pullStarted = nil -- only the native mobile dash uses the end pull
             local pullApplied = false
-            local smoothStartAt, smoothStartPos = nil, nil
             local conn
             local function finishAssist()
                 if conn then conn:Disconnect(); conn = nil end
@@ -12447,8 +12446,8 @@ _G.KAMUI_BuildCombat = function(UI)
                 if not mover then
                     if not moverSeen then return end
                     if not existingMover then finishAssist(); return end -- PC remains unchanged
-                    -- Mobile: pull first, then smoothly move toward the point
-                    -- behind the target. No synthetic input or permanent attachment.
+                    -- Mobile: begin the pull, then teleport during the pull on
+                    -- the next heartbeat. No synthetic input or attachment.
                     pullStarted = pullStarted or os.clock()
                     if os.clock() - pullStarted > 0.45 then
                         -- Do not leave a strong residual pull after the short burst.
@@ -12474,15 +12473,11 @@ _G.KAMUI_BuildCombat = function(UI)
                         end)
                         finishAssist(); return
                     end
-                    -- After the short pull, instantly correct the position behind
-                    -- the target while preserving the player's height and rotation.
-                    if os.clock() - pullStarted >= 0.10 then
-                        if not smoothStartAt then
-                            smoothStartAt = os.clock()
-                            smoothStartPos = flat(root.Position)
-                        end
+                    -- Teleport on the heartbeat after pull velocity is applied,
+                    -- instead of waiting for the pull to finish.
+                    if pullApplied then
                         local position = behind
-                        local ok = pcall(function()
+                        pcall(function()
                             local current = root.Position
                             root.CFrame = root.CFrame + Vector3.new(position.X - current.X, 0, position.Z - current.Z)
                             local velocity = root.AssemblyLinearVelocity
