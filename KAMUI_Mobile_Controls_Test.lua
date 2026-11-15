@@ -12006,7 +12006,7 @@ _G.KAMUI_BuildCombat = function(UI)
     --// Behind follows a C-shaped arc to a point behind the player.
     --// The camera turns sideways for the dash input; movement is not a teleport.
     do
-        local SA = { Enabled = false, Mode = "Side", Key = "H", Busy = false, Mobile = false, MobileDelayMs = 40 }
+        local SA = { Enabled = false, Mode = "Side", Key = "H", Busy = false, Mobile = false }
         CC.SideDashAssist = SA
         local assistCard = UI.card(page, "Side dash assist")
         -- Keep the card at the standard layer so it cannot cover its own controls.
@@ -12151,15 +12151,6 @@ _G.KAMUI_BuildCombat = function(UI)
         end, function(v)
             SA.Mobile = v
             refreshAssistMobile()
-        end, assistCard)
-        -- Direction-to-dash timing applies only to the on-screen mobile button.
-        -- 40 ms preserves the previous behavior; 5 ms steps, 0–150 ms.
-        sliderRow("Mobile delay", function()
-            return SA.MobileDelayMs
-        end, function(v)
-            SA.MobileDelayMs = math.clamp(math.floor(v / 5 + 0.5) * 5, 0, 150)
-        end, 0, 150, function(v)
-            return string.format("%d ms", v)
         end, assistCard)
         -- Keep the draggable action button visible when the main GUI is hidden.
         mobileButton = Instance.new("TextButton")
@@ -12429,11 +12420,9 @@ _G.KAMUI_BuildCombat = function(UI)
                 SA.Busy = false
                 return
             end
-            -- Capture the selected value at activation; PC stays fixed at 40 ms.
-            local inputDelay = fromMobile and (SA.MobileDelayMs / 1000) or 0.04
             task.spawn(function()
                 local qSent = false
-                task.wait(inputDelay)
+                task.wait(0.04)
                 if isCurrent() and SA.Enabled and SA.Busy and player.Character == char
                     and not UIS:IsKeyDown(Enum.KeyCode.Q) and faceCameraSideways() then
                     qSent = pcall(function()
