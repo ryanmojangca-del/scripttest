@@ -12424,6 +12424,7 @@ _G.KAMUI_BuildCombat = function(UI)
             end -- original simulated-input path is PC/keybind only
             local started = os.clock()
             local pullStarted = nil -- only the native mobile dash uses the end pull
+            local pullApplied = false
             local conn
             local function finishAssist()
                 if conn then conn:Disconnect(); conn = nil end
@@ -12449,14 +12450,23 @@ _G.KAMUI_BuildCombat = function(UI)
                     -- character toward a point behind the target. No CFrame snap,
                     -- synthetic input, anchoring or permanent attachment.
                     pullStarted = pullStarted or os.clock()
-                    if os.clock() - pullStarted > 0.45 then finishAssist(); return end
+                    if os.clock() - pullStarted > 0.30 then
+                        -- Do not leave a strong residual pull after the short burst.
+                        if pullApplied then
+                            pcall(function()
+                                local velocity = root.AssemblyLinearVelocity
+                                root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
+                            end)
+                        end
+                        finishAssist(); return
+                    end
                     local forward = flat(target.CFrame.LookVector)
                     if forward.Magnitude < 0.01 then finishAssist(); return end
                     local behind = flat(target.Position) - forward.Unit * 3.5
                     local delta = behind - flat(root.Position)
                     local distance = delta.Magnitude
                     -- Avoid unexpectedly pulling over a large distance.
-                    if distance > 18 then finishAssist(); return end
+                    if distance > 24 then finishAssist(); return end
                     if distance <= 0.75 then
                         pcall(function()
                             local velocity = root.AssemblyLinearVelocity
@@ -12466,10 +12476,12 @@ _G.KAMUI_BuildCombat = function(UI)
                     end
                     pcall(function()
                         local velocity = root.AssemblyLinearVelocity
-                        local desired = delta.Unit * math.min(35, distance * 8)
-                        local alpha = 1 - math.exp(-12 * math.max(dt, 0))
+                        -- Short, fast burst, without teleporting or anchoring.
+                        local desired = delta.Unit * math.min(150, distance * 25)
+                        local alpha = 1 - math.exp(-40 * math.max(dt, 0))
                         local nextVelocity = flat(velocity):Lerp(desired, alpha)
                         root.AssemblyLinearVelocity = Vector3.new(nextVelocity.X, velocity.Y, nextVelocity.Z)
+                        pullApplied = true
                     end)
                     return
                 end
