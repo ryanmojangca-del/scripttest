@@ -12029,12 +12029,16 @@ _G.KAMUI_BuildCombat = function(UI)
     --// Behind follows a C-shaped arc to a point behind the player.
     --// The camera turns sideways for the dash input; movement is not a teleport.
     do
-        local SA = { Enabled = false, Mode = "Side", Key = "H", Busy = false, Mobile = false }
+        local SA = { Enabled = false, Mode = "Side", Key = "H", Busy = false, Mobile = false,
+            MobileTurnDelayMs = 0, MobileFaceDelayMs = 0, MobileTurnOffset = 0,
+            MobileAccuracy = 0.75, MobileGapOffset = 0, MobileSmoothness = 0, MobilePredictionMs = 0 }
         CC.SideDashAssist = SA
         local assistCard = UI.card(page, "Side dash assist")
         -- Keep the card at the standard layer so it cannot cover its own controls.
         local mobileButton, mobileDot, mobileStroke, mobileLabel
+        local mobileTuningRows = {}
         local function refreshAssistMobile()
+            for _, row in ipairs(mobileTuningRows) do row.Visible = SA.Mobile end
             if not mobileButton then return end
             -- Mobile uses the game's own dash button; do not show the old key-simulating button.
             mobileButton.Visible = false
@@ -12176,7 +12180,28 @@ _G.KAMUI_BuildCombat = function(UI)
             SA.Mobile = v
             refreshAssistMobile()
         end, assistCard)
-        -- Keep the draggable action button visible when the main GUI is hidden.
+        -- Mobile-only adjustments. Defaults preserve the existing native-dash path.
+        -- Each value is captured when a dash starts; re-executing resets defaults.
+        local function mobileSlider(name, field, minValue, maxValue, step, format)
+            local row = sliderRow(name, function() return SA[field] end, function(v)
+                SA[field] = math.clamp(math.floor(v / step + 0.5) * step, minValue, maxValue)
+            end, minValue, maxValue, format, assistCard)
+            row.Visible = SA.Mobile
+            mobileTuningRows[#mobileTuningRows + 1] = row
+        end
+        local ms = function(v) return string.format("%d ms", v) end
+        mobileSlider("Turn delay", "MobileTurnDelayMs", 0, 300, 5, ms)
+        mobileSlider("Face-lock delay", "MobileFaceDelayMs", 0, 300, 5, ms)
+        mobileSlider("Turn point offset", "MobileTurnOffset", -25, 25, 1,
+            function(v) return string.format("%+d%%", v) end)
+        mobileSlider("Accuracy radius", "MobileAccuracy", 0.25, 2, 0.05,
+            function(v) return string.format("%.2f st", v) end)
+        mobileSlider("Dash gap offset", "MobileGapOffset", -2, 3, 0.1,
+            function(v) return string.format("%+.1f st", v) end)
+        mobileSlider("Smoothness", "MobileSmoothness", 0, 100, 1,
+            function(v) return string.format("%d%%", v) end)
+        mobileSlider("Prediction", "MobilePredictionMs", 0, 300, 5, ms)
+        -- Keep the original mobile-button object hidden in this native-dash version.
         mobileButton = Instance.new("TextButton")
         mobileButton.Name = "SideDashAssistButton"
         mobileButton:SetAttribute("KamuiSkinned", true)
@@ -12265,23 +12290,36 @@ _G.KAMUI_BuildCombat = function(UI)
             elseif findMover(root) then return end
             local target = closestTarget(root)
             if not target or (not existingMover and not VirtualInputManager) then return end
+            local mobile = existingMover ~= nil
+            local turnDelay = mobile and SA.MobileTurnDelayMs / 1000 or 0
+            local faceDelay = mobile and SA.MobileFaceDelayMs / 1000 or 0
+            local turnOffset = mobile and SA.MobileTurnOffset / 100 or 0
+            local arrivalRadius = mobile and SA.MobileAccuracy or 0.75
+            local gapOffset = mobile and SA.MobileGapOffset or 0
+            local smoothness = mobile and SA.MobileSmoothness or 0
+            local prediction = mobile and SA.MobilePredictionMs / 1000 or 0
+            local function targetPosition()
+                if prediction == 0 then return target.Position end
+                local velocity = target.AssemblyLinearVelocity
+                return target.Position + Vector3.new(velocity.X, 0, velocity.Z) * prediction
+            end
             -- Do not release or interfere with a Q key the player is already holding.
             if not existingMover and UIS:IsKeyDown(Enum.KeyCode.Q) then return end
             local targetHum = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
             local right = flat(target.CFrame.RightVector)
             if right.Magnitude < 0.01 then return end
             right = right.Unit
-            local sideSign = flat(root.Position - target.Position):Dot(right) < 0 and -1 or 1
+            local sideSign = flat(root.Position - targetPosition()):Dot(right) < 0 and -1 or 1
             local chosenMode = SA.Mode
             local function destination()
                 if chosenMode == "Behind" then
                     local forward = flat(target.CFrame.LookVector)
                     if forward.Magnitude < 0.01 then return nil end
-                    return target.Position - forward.Unit * 3.5
+                    return targetPosition() - forward.Unit * (3.5 + gapOffset)
                 end
                 local side = flat(target.CFrame.RightVector)
                 if side.Magnitude < 0.01 then return nil end
-                return target.Position + side.Unit * (3.5 * sideSign)
+                return targetPosition() + side.Unit * ((3.5 + gapOffset) * sideSign)
             end
             local dest = destination()
             local cam = Workspace.CurrentCamera
@@ -12295,13 +12333,13 @@ _G.KAMUI_BuildCombat = function(UI)
             local curve, hook
             local delta = sideGoal - startPos
             if chosenMode == "Side" then
-                local toward = flat(target.Position - root.Position)
+                local toward = flat(targetPosition() - root.Position)
                 if toward.Magnitude < 0.1 then return end
                 toward = toward.Unit
                 local flank = Vector3.new(-toward.Z, 0, toward.X)
                 if flank:Dot(right * sideSign) < 0 then flank = -flank end
                 -- First travel beyond the nearest flank, then curl back inward.
-                local entry = flat(target.Position) + flank * 5 + toward * 1.2
+                local entry = flat(targetPosition()) + flank * (5 + gapOffset) + toward * 1.2
                 local toEntry = entry - startPos
                 if toEntry.Magnitude < 0.1 then return end
                 hook = {
@@ -12315,8 +12353,8 @@ _G.KAMUI_BuildCombat = function(UI)
                 delta = toEntry
             end
             if chosenMode == "Behind" then
-                local radial = flat(root.Position - target.Position)
-                local back = flat(dest - target.Position)
+                local radial = flat(root.Position - targetPosition())
+                local back = flat(dest - targetPosition())
                 if radial.Magnitude < 0.1 or back.Magnitude < 0.1 then return end
                 local startAngle = math.atan2(radial.Z, radial.X)
                 local endAngle = math.atan2(back.Z, back.X)
@@ -12362,17 +12400,20 @@ _G.KAMUI_BuildCombat = function(UI)
                 return true
             end
             if not existingMover and not faceCameraSideways() then return end
+            -- Mobile delay is measured from when its dash mover was detected.
+            local detectedAt = os.clock()
             -- Mobile has already started its dash; PC still faces sideways before input.
             local moverSeen = existingMover ~= nil
             local cameraBinding = "KAMUI_SideAssistCamera_" .. tostring(scriptId)
             pcall(function()
                 RunService:BindToRenderStep(cameraBinding, Enum.RenderPriority.Camera.Value + 1, function()
                     if not isCurrent() or not SA.Enabled or not SA.Busy then return end
+                    if mobile and os.clock() - detectedAt < faceDelay then return end
                     if (chosenMode == "Behind" or chosenMode == "Side") and moverSeen then
                         pcall(function()
                             if cam.Parent and Workspace.CurrentCamera == cam and target.Parent then
                                 local pos = cam.CFrame.Position
-                                local focus = target.Position
+                                local focus = targetPosition()
                                 if (focus - pos).Magnitude > 0.01 then
                                     cam.CFrame = CFrame.lookAt(pos, focus)
                                 end
@@ -12446,26 +12487,27 @@ _G.KAMUI_BuildCombat = function(UI)
                     return
                 end
                 moverSeen = true
-                local goal = (hook and (flat(target.Position) + hook.flank * 2.6 + hook.toward * 1.2))
-                    or (curve and (flat(target.Position) + curve.back * 3.5) or destination())
+                if mobile and os.clock() - detectedAt < turnDelay then return end
+                local goal = (hook and (flat(targetPosition()) + hook.flank * (2.6 + gapOffset) + hook.toward * 1.2))
+                    or (curve and (flat(targetPosition()) + curve.back * (3.5 + gapOffset)) or destination())
                 if not goal then finishAssist(); return end
                 local remaining = flat(goal - root.Position)
-                local arrived = remaining.Magnitude <= 0.75
+                local arrived = remaining.Magnitude <= arrivalRadius
                 local steer = remaining
                 if hook and not arrived then
-                    local entry = flat(target.Position) + hook.flank * 5 + hook.toward * 1.2
+                    local entry = flat(targetPosition()) + hook.flank * (5 + gapOffset) + hook.toward * 1.2
                     local toEntry = entry - flat(root.Position)
                     local travelled = (flat(root.Position) - hook.start):Dot(hook.initialDirection)
                     hook.progress = math.max(hook.progress,
                         math.clamp(travelled / math.max(hook.entryDistance, 0.1), 0, 1))
                     -- Progress-based steering begins outward and hooks back in
                     -- during the latter part of the game's normal side dash.
-                    local blend = math.clamp((hook.progress - 0.45) / 0.35, 0, 1)
+                    local blend = math.clamp((hook.progress - math.clamp(0.45 + turnOffset, 0, 0.98)) / 0.35, 0, 1)
                     if toEntry.Magnitude > 0.05 then
                         steer = toEntry.Unit * (1 - blend) + remaining.Unit * blend
                     end
                 elseif curve and not arrived then
-                    local radial = flat(root.Position - target.Position)
+                    local radial = flat(root.Position - targetPosition())
                     if radial.Magnitude > 0.1 then
                         local angle = math.atan2(radial.Z, radial.X)
                         local step = (angle - curve.lastAngle + math.pi) % (2 * math.pi) - math.pi
@@ -12475,12 +12517,12 @@ _G.KAMUI_BuildCombat = function(UI)
                         local unit = radial.Unit
                         local tangent = Vector3.new(-unit.Z, 0, unit.X) * curve.direction
                         -- Hold the orbit and gradually converge to the behind position.
-                        local wantedRadius = curve.radius + (3.5 - curve.radius) * progress
+                        local wantedRadius = curve.radius + ((3.5 + gapOffset) - curve.radius) * progress
                         local correction = math.clamp((wantedRadius - radial.Magnitude)
                             / math.max(radial.Magnitude, 3) * 1.4, -0.8, 0.8)
                         local arcSteer = tangent + unit * correction
                         -- Only aim at the endpoint at the end of the arc.
-                        local blend = math.clamp((progress - 0.88) / 0.12, 0, 1)
+                        local blend = math.clamp((progress - math.clamp(0.88 + turnOffset, 0, 0.98)) / 0.12, 0, 1)
                         steer = arcSteer * (1 - blend) + remaining.Unit * blend
                     end
                 end
@@ -12498,7 +12540,16 @@ _G.KAMUI_BuildCombat = function(UI)
                         -- Keep the game's dash speed; only redirect its mover.
                         local capped = (chosenMode == "Behind" or chosenMode == "Side") and speed
                             or math.min(speed, steer.Magnitude / math.max(dt, 1/120))
-                        v = steer.Unit * capped + Vector3.new(0, world.Y, 0)
+                        local direction = steer.Unit
+                        if mobile and smoothness > 0 and speed > 0.1 then
+                            -- Time-based blending prevents frame-rate-dependent turning.
+                            local current = flat(world).Unit
+                            local tau = smoothness / 100 * 0.25
+                            local alpha = 1 - math.exp(-dt / math.max(tau, 0.001))
+                            local mixed = current:Lerp(direction, alpha)
+                            if mixed.Magnitude > 0.001 then direction = mixed.Unit end
+                        end
+                        v = direction * capped + Vector3.new(0, world.Y, 0)
                     else
                         return
                     end
