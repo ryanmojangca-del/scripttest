@@ -3076,7 +3076,7 @@ do
     --// WALKSPEED / JUMP HEIGHT: while enabled, holds Humanoid.WalkSpeed and JumpPower at the slider values.
     --// Same hands-off rule as No fatigue (blocked states). Turning it off puts back the normal 16 / 50 once.
     local wasOn = false
-    conns[#conns + 1] = RunService.Heartbeat:Connect(function()
+    local function updateWalkJump()
         if not isCurrent() then
             return
         end
@@ -3105,6 +3105,17 @@ do
                 hum.JumpPower = 50
             end)
         end
+    end
+    -- For touch input, set properties before physics. Keep the original
+    -- Heartbeat timing for keyboard/mouse and preserve all blocker checks.
+    local function isTouchWalkJump()
+        return UIS.TouchEnabled and UIS:GetLastInputType() == Enum.UserInputType.Touch
+    end
+    conns[#conns + 1] = RunService.PreSimulation:Connect(function()
+        if isTouchWalkJump() then updateWalkJump() end
+    end)
+    conns[#conns + 1] = RunService.Heartbeat:Connect(function()
+        if not isTouchWalkJump() then updateWalkJump() end
     end)
 end
 
