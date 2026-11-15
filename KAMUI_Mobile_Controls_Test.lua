@@ -12013,7 +12013,8 @@ _G.KAMUI_BuildCombat = function(UI)
         local mobileButton, mobileDot, mobileStroke, mobileLabel
         local function refreshAssistMobile()
             if not mobileButton then return end
-            mobileButton.Visible = SA.Mobile
+            -- Mobile uses the game's own dash button; do not show the old key-simulating button.
+            mobileButton.Visible = false
             mobileDot.BackgroundColor3 = SA.Enabled and THEME.BrightRed or Color3.fromRGB(70, 70, 74)
             mobileLabel.TextColor3 = SA.Enabled and THEME.Text or THEME.MutedText
             mobileStroke.Color = SA.Enabled and THEME.Red or Color3.fromRGB(58, 10, 15)
@@ -12146,7 +12147,7 @@ _G.KAMUI_BuildCombat = function(UI)
             key.Text = "Press key..."
         end)
 
-        toggleRow("Mobile mode", "Shows a Side dash button on screen", function()
+        toggleRow("Mobile mode", "Guides your normal mobile dash", function()
             return SA.Mobile
         end, function(v)
             SA.Mobile = v
@@ -12228,63 +12229,21 @@ _G.KAMUI_BuildCombat = function(UI)
             local a = m.RelativeTo == Enum.ActuatorRelativeTo.Attachment0 and m.Attachment0 or m.Attachment1
             return a and a.WorldCFrame:VectorToObjectSpace(v) or nil
         end
-        -- Snapshot only game buttons that are visible immediately before a mobile
-        -- dash, along with their visible GUI ancestors. Do not keep forcing a HUD
-        -- state indefinitely; the game remains responsible for later changes.
-        local function captureTouchControls()
-            local pg = player:FindFirstChildOfClass("PlayerGui")
-            if not pg then return nil end
-            local saved, seen = {}, {}
-            for _, button in ipairs(pg:GetDescendants()) do
-                if button:IsA("GuiButton") then
-                    local name = string.lower(button.Name)
-                    if name:find("dash", 1, true) or name:find("jump", 1, true)
-                        or name:find("block", 1, true) or name:find("attack", 1, true)
-                        or name:find("punch", 1, true) or name == "m1" then
-                        local chain, node, visible = {}, button, true
-                        while node and node ~= pg do
-                            if node:IsA("GuiObject") then
-                                if not node.Visible then visible = false; break end
-                                chain[#chain + 1] = node
-                            elseif node:IsA("ScreenGui") and not node.Enabled then
-                                visible = false; break
-                            end
-                            node = node.Parent
-                        end
-                        if visible and node == pg then
-                            for _, object in ipairs(chain) do
-                                if not seen[object] then
-                                    seen[object] = true
-                                    saved[#saved + 1] = object
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-            return saved
-        end
-        local function restoreTouchControls(saved, char)
-            if not saved or not isCurrent() or not SA.Enabled or not SA.Mobile
-                or player.Character ~= char then return end
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if not hum or hum.Health <= 0 then return end
-            for _, object in ipairs(saved) do
-                pcall(function()
-                    if object.Parent and not object.Visible then object.Visible = true end
-                end)
-            end
-        end
-        local function dashOnce(fromMobile)
+        -- With a mover, the user's mobile dash is already in progress; do not synthesize keys.
+        -- Without one, keep the original PC keybind behavior.
+        local function dashOnce(existingMover)
             if not SA.Enabled or SA.Busy or not isCurrent() then return end
             local char = player.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if not root or not hum or hum.Health <= 0 or findMover(root) then return end
+            if not root or not hum or hum.Health <= 0 then return end
+            if existingMover then
+                if existingMover.Parent ~= root then return end
+            elseif findMover(root) then return end
             local target = closestTarget(root)
-            if not target or not VirtualInputManager then return end
+            if not target or (not existingMover and not VirtualInputManager) then return end
             -- Do not release or interfere with a Q key the player is already holding.
-            if UIS:IsKeyDown(Enum.KeyCode.Q) then return end
+            if not existingMover and UIS:IsKeyDown(Enum.KeyCode.Q) then return end
             local targetHum = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
             local right = flat(target.CFrame.RightVector)
             if right.Magnitude < 0.01 then return end
@@ -12379,10 +12338,9 @@ _G.KAMUI_BuildCombat = function(UI)
                 cam.CFrame = CFrame.lookAt(pos, pos + look)
                 return true
             end
-            if not faceCameraSideways() then return end
-            -- Face sideways for the input, then lock onto the target until
-            -- the Side or Behind dash mover finishes.
-            local moverSeen = false
+            if not existingMover and not faceCameraSideways() then return end
+            -- Mobile has already started its dash; PC still faces sideways before input.
+            local moverSeen = existingMover ~= nil
             local cameraBinding = "KAMUI_SideAssistCamera_" .. tostring(scriptId)
             pcall(function()
                 RunService:BindToRenderStep(cameraBinding, Enum.RenderPriority.Camera.Value + 1, function()
@@ -12406,7 +12364,7 @@ _G.KAMUI_BuildCombat = function(UI)
                 pcall(function() RunService:UnbindFromRenderStep(cameraBinding) end)
             end
             SA.Busy = true
-            local savedMobileControls = fromMobile and captureTouchControls() or nil
+            if not existingMover then
             _G.KAMUI_MarkScriptDash()
             -- Trigger the normal client-side dash path instead of sending only
             -- the remote (which can play the dash in place without its mover).
@@ -12439,12 +12397,8 @@ _G.KAMUI_BuildCombat = function(UI)
                 if _G.KAMUI_RestoreTouchInput then
                     task.delay(0.1, _G.KAMUI_RestoreTouchInput, SA.Mobile)
                 end
-                if savedMobileControls then
-                    for _, delay in ipairs({ 0.12, 0.35, 0.8 }) do
-                        task.delay(delay, function() restoreTouchControls(savedMobileControls, char) end)
-                    end
-                end
             end)
+            end -- original simulated-input path is PC/keybind only
             local started = os.clock()
             local conn
             local function finishAssist()
@@ -12458,7 +12412,12 @@ _G.KAMUI_BuildCombat = function(UI)
                     or os.clock() - started > 1.2 then
                     finishAssist(); return
                 end
-                local mover = findMover(root)
+                local mover
+                if existingMover then
+                    mover = existingMover.Parent == root and existingMover or nil
+                else
+                    mover = findMover(root)
+                end
                 if not mover then
                     if moverSeen then finishAssist() end
                     return
@@ -12525,8 +12484,27 @@ _G.KAMUI_BuildCombat = function(UI)
                 end)
             end)
         end
-        mobileButton.MouseButton1Click:Connect(function()
-            dashOnce(true)
+        -- Observe the normal game dash on touch devices. No virtual keyboard/mouse
+        -- input or synthetic touch is sent by this mobile path.
+        local observedMover
+        local nativeDashConn
+        nativeDashConn = RunService.Heartbeat:Connect(function()
+            if not isCurrent() or not page.Parent then
+                nativeDashConn:Disconnect()
+                return
+            end
+            if not (SA.Enabled and SA.Mobile and UIS.TouchEnabled) then
+                observedMover = nil
+                return
+            end
+            local char = player.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local mover = root and findMover(root) or nil
+            if mover == observedMover then return end
+            observedMover = mover
+            if mover and not SA.Busy and (os.clock() - (_G.KAMUI_ScriptDashAt or -math.huge)) > 0.8 then
+                dashOnce(mover)
+            end
         end)
         UIS.InputBegan:Connect(function(input, processed)
             if not isCurrent() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
@@ -13273,85 +13251,4 @@ task.delay(3, function()
             pcall(_G.KAMUI_FetchModule, name)
         end)
     end
-end)
-
-
---// TEMPORARY LOCAL MOBILE TOUCH DIAGNOSTIC
---// No network calls, simulated inputs or control modifications.
-task.spawn(function()
--- KAMUI integrated touch diagnostic.
--- Local display only: no data is transmitted and no inputs are simulated.
-local Players = game:GetService('Players')
-local UIS = game:GetService('UserInputService')
-local player = Players.LocalPlayer
-local pg = player:WaitForChild('PlayerGui')
-local prior = pg:FindFirstChild('KamuiRespawnTouchDiagnostic')
-if prior then prior:Destroy() end
-local gui = Instance.new('ScreenGui')
-gui.Name = 'KamuiRespawnTouchDiagnostic'
-gui.ResetOnSpawn = false
-gui.DisplayOrder = 10000
-gui.Parent = pg
-local frame = Instance.new('Frame')
-frame.Size = UDim2.new(0, 440, 0, 176)
-frame.Position = UDim2.new(0, 12, 0, 120)
-frame.BackgroundColor3 = Color3.fromRGB(16,16,19)
-frame.BorderSizePixel = 0
-frame.Parent = gui
-local corner = Instance.new('UICorner', frame); corner.CornerRadius = UDim.new(0, 10)
-local stroke = Instance.new('UIStroke', frame); stroke.Color = Color3.fromRGB(196,21,40)
-local close = Instance.new('TextButton')
-close.Size = UDim2.new(0, 32, 0, 30); close.Position = UDim2.new(1, -36, 0, 4)
-close.Text = '×'; close.TextSize = 20; close.Font = Enum.Font.Gotham
-close.TextColor3 = Color3.new(1,1,1); close.BackgroundTransparency = 1; close.Parent = frame
-local text = Instance.new('TextLabel')
-text.Position = UDim2.new(0, 10, 0, 8); text.Size = UDim2.new(1, -50, 1, -16)
-text.TextColor3 = Color3.fromRGB(235,235,238); text.BackgroundTransparency = 1
-text.Font = Enum.Font.Code; text.TextSize = 14; text.TextXAlignment = Enum.TextXAlignment.Left
-text.TextYAlignment = Enum.TextYAlignment.Top; text.TextWrapped = true; text.Parent = frame
-local connections = {}
-local active = true
-local after = 'No character change yet'
-local last = 'No touch recorded'
-local function snapshot()
-    local preferred = 'unavailable'
-    pcall(function() preferred = UIS.PreferredInput.Name end)
-    local touchGui = pg:FindFirstChild('TouchGui')
-    local touchState = touchGui and tostring(touchGui.Enabled) or 'missing'
-    return 'last=' .. UIS:GetLastInputType().Name .. ' preferred=' .. preferred .. ' TouchGui=' .. touchState
-end
-local before = snapshot()
-local function paint()
-    if not active then return end
-    text.Text = 'MOBILE TOUCH TEST (local only)\nBefore: ' .. before .. '\nCharacter change: ' .. after .. '\nLast touch: ' .. last .. '\nTap a broken button, then screenshot.'
-end
-connections[#connections+1] = player.CharacterAdded:Connect(function(char)
-    after = 'Character changed; waiting 2s'
-    paint()
-    task.delay(2, function()
-        if active and player.Character == char then after = snapshot(); paint() end
-    end)
-end)
-connections[#connections+1] = UIS.InputBegan:Connect(function(input, processed)
-    if input.UserInputType ~= Enum.UserInputType.Touch then return end
-    local pos = input.Position
-    local names = {}
-    pcall(function()
-        local objects = pg:GetGuiObjectsAtPosition(pos.X, pos.Y)
-        for _, object in ipairs(objects) do
-            if not object:IsDescendantOf(gui) and #names < 3 then
-                names[#names+1] = object.Name
-            end
-        end
-    end)
-    last = 'processed=' .. tostring(processed) .. ' targets=' .. (#names > 0 and table.concat(names, ',') or 'none/other GUI') .. '\n  ' .. snapshot()
-    paint()
-end)
-close.Activated:Connect(function() gui:Destroy() end)
-gui.Destroying:Connect(function()
-    active = false
-    for _, c in ipairs(connections) do c:Disconnect() end
-end)
-paint()
-
 end)
