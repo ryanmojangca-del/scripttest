@@ -12013,7 +12013,8 @@ _G.KAMUI_BuildCombat = function(UI)
         local mobileButton, mobileDot, mobileStroke, mobileLabel
         local function refreshAssistMobile()
             if not mobileButton then return end
-            mobileButton.Visible = SA.Mobile
+            -- Mobile uses the game's own dash button; do not show the old key-simulating button.
+            mobileButton.Visible = false
             mobileDot.BackgroundColor3 = SA.Enabled and THEME.BrightRed or Color3.fromRGB(70, 70, 74)
             mobileLabel.TextColor3 = SA.Enabled and THEME.Text or THEME.MutedText
             mobileStroke.Color = SA.Enabled and THEME.Red or Color3.fromRGB(58, 10, 15)
@@ -12146,7 +12147,7 @@ _G.KAMUI_BuildCombat = function(UI)
             key.Text = "Press key..."
         end)
 
-        toggleRow("Mobile mode", "Shows a Side dash button on screen", function()
+        toggleRow("Mobile mode", "Guides your normal mobile dash", function()
             return SA.Mobile
         end, function(v)
             SA.Mobile = v
@@ -12228,16 +12229,21 @@ _G.KAMUI_BuildCombat = function(UI)
             local a = m.RelativeTo == Enum.ActuatorRelativeTo.Attachment0 and m.Attachment0 or m.Attachment1
             return a and a.WorldCFrame:VectorToObjectSpace(v) or nil
         end
-        local function dashOnce()
+        -- With a mover, the user's mobile dash is already in progress; do not synthesize keys.
+        -- Without one, keep the original PC keybind behavior.
+        local function dashOnce(existingMover)
             if not SA.Enabled or SA.Busy or not isCurrent() then return end
             local char = player.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if not root or not hum or hum.Health <= 0 or findMover(root) then return end
+            if not root or not hum or hum.Health <= 0 then return end
+            if existingMover then
+                if existingMover.Parent ~= root then return end
+            elseif findMover(root) then return end
             local target = closestTarget(root)
-            if not target or not VirtualInputManager then return end
+            if not target or (not existingMover and not VirtualInputManager) then return end
             -- Do not release or interfere with a Q key the player is already holding.
-            if UIS:IsKeyDown(Enum.KeyCode.Q) then return end
+            if not existingMover and UIS:IsKeyDown(Enum.KeyCode.Q) then return end
             local targetHum = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
             local right = flat(target.CFrame.RightVector)
             if right.Magnitude < 0.01 then return end
@@ -12332,10 +12338,9 @@ _G.KAMUI_BuildCombat = function(UI)
                 cam.CFrame = CFrame.lookAt(pos, pos + look)
                 return true
             end
-            if not faceCameraSideways() then return end
-            -- Face sideways for the input, then lock onto the target until
-            -- the Side or Behind dash mover finishes.
-            local moverSeen = false
+            if not existingMover and not faceCameraSideways() then return end
+            -- Mobile has already started its dash; PC still faces sideways before input.
+            local moverSeen = existingMover ~= nil
             local cameraBinding = "KAMUI_SideAssistCamera_" .. tostring(scriptId)
             pcall(function()
                 RunService:BindToRenderStep(cameraBinding, Enum.RenderPriority.Camera.Value + 1, function()
@@ -12359,6 +12364,7 @@ _G.KAMUI_BuildCombat = function(UI)
                 pcall(function() RunService:UnbindFromRenderStep(cameraBinding) end)
             end
             SA.Busy = true
+            if not existingMover then
             _G.KAMUI_MarkScriptDash()
             -- Trigger the normal client-side dash path instead of sending only
             -- the remote (which can play the dash in place without its mover).
@@ -12392,6 +12398,7 @@ _G.KAMUI_BuildCombat = function(UI)
                     task.delay(0.1, _G.KAMUI_RestoreTouchInput, SA.Mobile)
                 end
             end)
+            end -- original simulated-input path is PC/keybind only
             local started = os.clock()
             local conn
             local function finishAssist()
@@ -12405,7 +12412,12 @@ _G.KAMUI_BuildCombat = function(UI)
                     or os.clock() - started > 1.2 then
                     finishAssist(); return
                 end
-                local mover = findMover(root)
+                local mover
+                if existingMover then
+                    mover = existingMover.Parent == root and existingMover or nil
+                else
+                    mover = findMover(root)
+                end
                 if not mover then
                     if moverSeen then finishAssist() end
                     return
@@ -12472,8 +12484,27 @@ _G.KAMUI_BuildCombat = function(UI)
                 end)
             end)
         end
-        mobileButton.MouseButton1Click:Connect(function()
-            dashOnce()
+        -- Observe the normal game dash on touch devices. No virtual keyboard/mouse
+        -- input or synthetic touch is sent by this mobile path.
+        local observedMover
+        local nativeDashConn
+        nativeDashConn = RunService.Heartbeat:Connect(function()
+            if not isCurrent() or not page.Parent then
+                nativeDashConn:Disconnect()
+                return
+            end
+            if not (SA.Enabled and SA.Mobile and UIS.TouchEnabled) then
+                observedMover = nil
+                return
+            end
+            local char = player.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local mover = root and findMover(root) or nil
+            if mover == observedMover then return end
+            observedMover = mover
+            if mover and not SA.Busy and (os.clock() - (_G.KAMUI_ScriptDashAt or -math.huge)) > 0.8 then
+                dashOnce(mover)
+            end
         end)
         UIS.InputBegan:Connect(function(input, processed)
             if not isCurrent() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
