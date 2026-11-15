@@ -3192,7 +3192,12 @@ do
                     local module = scripts and scripts:FindFirstChild("PlayerModule")
                     if not module then return end
                     local controls = require(module):GetControls()
-                    if controls then controls:Enable() end
+                    if controls then
+                        -- Rebuild the standard input controller after the character swap.
+                        -- A second Enable alone can be a no-op if it is already enabled.
+                        pcall(function() controls:Disable() end)
+                        pcall(function() controls:Enable() end)
+                    end
                 end)
             end)
         end
