@@ -12231,7 +12231,7 @@ _G.KAMUI_BuildCombat = function(UI)
         end
         -- With a mover, the user's mobile dash is already in progress; do not synthesize keys.
         -- Without one, keep the original PC keybind behavior.
-        local function dashOnce(existingMover)
+        local function dashOnce(existingMover, initialDt)
             if not SA.Enabled or SA.Busy or not isCurrent() then return end
             local char = player.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
@@ -12406,7 +12406,7 @@ _G.KAMUI_BuildCombat = function(UI)
                 releaseCamera()
                 SA.Busy = false
             end
-            conn = RunService.Heartbeat:Connect(function(dt)
+            local function steerStep(dt)
                 if not isCurrent() or not SA.Enabled or player.Character ~= char
                     or not root.Parent or not target.Parent or not targetHum or targetHum.Health <= 0
                     or os.clock() - started > 1.2 then
@@ -12482,13 +12482,17 @@ _G.KAMUI_BuildCombat = function(UI)
                     local result = moverFromWorld(mover, v)
                     if result then mover[prop] = result end
                 end)
-            end)
+            end
+            conn = RunService.Heartbeat:Connect(steerStep)
+            -- A native mobile dash has already started: steer in this same
+            -- detection frame rather than waiting for the next heartbeat.
+            if existingMover then steerStep(initialDt or 1/60) end
         end
         -- Observe the normal game dash on touch devices. No virtual keyboard/mouse
         -- input or synthetic touch is sent by this mobile path.
         local observedMover
         local nativeDashConn
-        nativeDashConn = RunService.Heartbeat:Connect(function()
+        nativeDashConn = RunService.Heartbeat:Connect(function(dt)
             if not isCurrent() or not page.Parent then
                 nativeDashConn:Disconnect()
                 return
@@ -12503,7 +12507,7 @@ _G.KAMUI_BuildCombat = function(UI)
             if mover == observedMover then return end
             observedMover = mover
             if mover and not SA.Busy and (os.clock() - (_G.KAMUI_ScriptDashAt or -math.huge)) > 0.8 then
-                dashOnce(mover)
+                dashOnce(mover, dt)
             end
         end)
         UIS.InputBegan:Connect(function(input, processed)
