@@ -12011,10 +12011,11 @@ _G.KAMUI_BuildCombat = function(UI)
         local assistCard = UI.card(page, "Side dash assist")
         -- Keep the card at the standard layer so it cannot cover its own controls.
         local mobileButton, mobileDot, mobileStroke, mobileLabel
+        -- Session-only calibration: positions are recorded from real user taps.
+        local touchStage, joyPos, dashPos = nil, nil, nil
         local function refreshAssistMobile()
             if not mobileButton then return end
-            -- Mobile uses the game's own dash button; do not show the old key-simulating button.
-            mobileButton.Visible = false
+            mobileButton.Visible = SA.Mobile
             mobileDot.BackgroundColor3 = SA.Enabled and THEME.BrightRed or Color3.fromRGB(70, 70, 74)
             mobileLabel.TextColor3 = SA.Enabled and THEME.Text or THEME.MutedText
             mobileStroke.Color = SA.Enabled and THEME.Red or Color3.fromRGB(58, 10, 15)
@@ -12147,10 +12148,14 @@ _G.KAMUI_BuildCombat = function(UI)
             key.Text = "Press key..."
         end)
 
-        toggleRow("Mobile mode", "Guides your normal mobile dash", function()
+        toggleRow("Mobile mode", "Shows a Side dash button on screen", function()
             return SA.Mobile
         end, function(v)
             SA.Mobile = v
+            if not v then
+                touchStage, joyPos, dashPos = nil, nil, nil
+                if mobileLabel then mobileLabel.Text = "Side dash" end
+            end
             refreshAssistMobile()
         end, assistCard)
         -- Keep the draggable action button visible when the main GUI is hidden.
@@ -12229,21 +12234,17 @@ _G.KAMUI_BuildCombat = function(UI)
             local a = m.RelativeTo == Enum.ActuatorRelativeTo.Attachment0 and m.Attachment0 or m.Attachment1
             return a and a.WorldCFrame:VectorToObjectSpace(v) or nil
         end
-        -- With a mover, the user's mobile dash is already in progress; do not synthesize keys.
-        -- Without one, keep the original PC keybind behavior.
-        local function dashOnce(existingMover, initialDt)
+        local function dashOnce(useMobileTouch)
             if not SA.Enabled or SA.Busy or not isCurrent() then return end
+            if useMobileTouch and (not SA.Mobile or not joyPos or not dashPos) then return end
             local char = player.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if not root or not hum or hum.Health <= 0 then return end
-            if existingMover then
-                if existingMover.Parent ~= root then return end
-            elseif findMover(root) then return end
+            if not root or not hum or hum.Health <= 0 or findMover(root) then return end
             local target = closestTarget(root)
-            if not target or (not existingMover and not VirtualInputManager) then return end
+            if not target or not VirtualInputManager then return end
             -- Do not release or interfere with a Q key the player is already holding.
-            if not existingMover and UIS:IsKeyDown(Enum.KeyCode.Q) then return end
+            if not useMobileTouch and UIS:IsKeyDown(Enum.KeyCode.Q) then return end
             local targetHum = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
             local right = flat(target.CFrame.RightVector)
             if right.Magnitude < 0.01 then return end
@@ -12338,9 +12339,10 @@ _G.KAMUI_BuildCombat = function(UI)
                 cam.CFrame = CFrame.lookAt(pos, pos + look)
                 return true
             end
-            if not existingMover and not faceCameraSideways() then return end
-            -- Mobile has already started its dash; PC still faces sideways before input.
-            local moverSeen = existingMover ~= nil
+            if not faceCameraSideways() then return end
+            -- Face sideways for the input, then lock onto the target until
+            -- the Side or Behind dash mover finishes.
+            local moverSeen = false
             local cameraBinding = "KAMUI_SideAssistCamera_" .. tostring(scriptId)
             pcall(function()
                 RunService:BindToRenderStep(cameraBinding, Enum.RenderPriority.Camera.Value + 1, function()
@@ -12364,11 +12366,43 @@ _G.KAMUI_BuildCombat = function(UI)
                 pcall(function() RunService:UnbindFromRenderStep(cameraBinding) end)
             end
             SA.Busy = true
-            if not existingMover then
             _G.KAMUI_MarkScriptDash()
-            -- Trigger the normal client-side dash path instead of sending only
-            -- the remote (which can play the dash in place without its mover).
-            -- Keep a movement key the user was already holding untouched.
+            if useMobileTouch then
+                -- Experimental: use the user's calibrated joystick and dash locations.
+                -- Unlike the PC path, no virtual keyboard or mouse events are sent.
+                task.spawn(function()
+                    local viewport = cam.ViewportSize
+                    local jx, jy = math.floor(joyPos.X * viewport.X), math.floor(joyPos.Y * viewport.Y)
+                    local dx, dy = math.floor(dashPos.X * viewport.X), math.floor(dashPos.Y * viewport.Y)
+                    local shift = math.clamp(math.floor(viewport.X * 0.04), 20, 55)
+                    local movedX = math.clamp(jx + (useRight and shift or -shift), 1, viewport.X - 1)
+                    local joyDown, dashDown = false, false
+                    local ok, err = pcall(function()
+                        VirtualInputManager:SendTouchEvent(91, 0, jx, jy)
+                        joyDown = true
+                        task.wait(0.04)
+                        if not isCurrent() or not SA.Enabled or not SA.Busy or player.Character ~= char then return end
+                        VirtualInputManager:SendTouchEvent(91, 1, movedX, jy)
+                        task.wait(0.06)
+                        if not isCurrent() or not SA.Enabled or not SA.Busy or player.Character ~= char then return end
+                        VirtualInputManager:SendTouchEvent(92, 0, dx, dy)
+                        dashDown = true
+                        task.wait(0.05)
+                    end)
+                    if dashDown then pcall(function() VirtualInputManager:SendTouchEvent(92, 2, dx, dy) end) end
+                    if joyDown then pcall(function() VirtualInputManager:SendTouchEvent(91, 2, movedX, jy) end) end
+                    if not ok then
+                        warn("[KAMUI] mobile touch dash failed:", err)
+                        if mobileLabel then
+                            mobileLabel.Text = "Touch failed"
+                            task.delay(2, function()
+                                if mobileLabel and mobileLabel.Parent and not touchStage then mobileLabel.Text = "Side dash" end
+                            end)
+                        end
+                    end
+                end)
+            else
+            -- Original PC keyboard path, unchanged.
             local directionAlreadyDown = UIS:IsKeyDown(dashKey)
             local directionSent = directionAlreadyDown or pcall(function()
                 VirtualInputManager:SendKeyEvent(true, dashKey, false, game)
@@ -12398,7 +12432,7 @@ _G.KAMUI_BuildCombat = function(UI)
                     task.delay(0.1, _G.KAMUI_RestoreTouchInput, SA.Mobile)
                 end
             end)
-            end -- original simulated-input path is PC/keybind only
+            end -- PC path
             local started = os.clock()
             local conn
             local function finishAssist()
@@ -12406,18 +12440,13 @@ _G.KAMUI_BuildCombat = function(UI)
                 releaseCamera()
                 SA.Busy = false
             end
-            local function steerStep(dt)
+            conn = RunService.Heartbeat:Connect(function(dt)
                 if not isCurrent() or not SA.Enabled or player.Character ~= char
                     or not root.Parent or not target.Parent or not targetHum or targetHum.Health <= 0
                     or os.clock() - started > 1.2 then
                     finishAssist(); return
                 end
-                local mover
-                if existingMover then
-                    mover = existingMover.Parent == root and existingMover or nil
-                else
-                    mover = findMover(root)
-                end
+                local mover = findMover(root)
                 if not mover then
                     if moverSeen then finishAssist() end
                     return
@@ -12482,36 +12511,42 @@ _G.KAMUI_BuildCombat = function(UI)
                     local result = moverFromWorld(mover, v)
                     if result then mover[prop] = result end
                 end)
-            end
-            conn = RunService.Heartbeat:Connect(steerStep)
-            -- A native mobile dash has already started: steer in this same
-            -- detection frame rather than waiting for the next heartbeat.
-            if existingMover then steerStep(initialDt or 1/60) end
+            end)
         end
-        -- Observe the normal game dash on touch devices. No virtual keyboard/mouse
-        -- input or synthetic touch is sent by this mobile path.
-        local observedMover
-        local nativeDashConn
-        nativeDashConn = RunService.Heartbeat:Connect(function(dt)
-            if not isCurrent() or not page.Parent then
-                nativeDashConn:Disconnect()
+        mobileButton.MouseButton1Click:Connect(function()
+            if not isCurrent() or not SA.Mobile or not SA.Enabled then return end
+            if touchStage then
+                touchStage = nil
+                mobileLabel.Text = "Side dash"
                 return
             end
-            if not (SA.Enabled and SA.Mobile and UIS.TouchEnabled) then
-                observedMover = nil
+            if not joyPos or not dashPos then
+                touchStage = "joystick"
+                mobileLabel.Text = "Tap joystick"
                 return
             end
-            local char = player.Character
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-            local mover = root and findMover(root) or nil
-            if mover == observedMover then return end
-            observedMover = mover
-            if mover and not SA.Busy and (os.clock() - (_G.KAMUI_ScriptDashAt or -math.huge)) > 0.8 then
-                dashOnce(mover, dt)
-            end
+            dashOnce(true)
         end)
         UIS.InputBegan:Connect(function(input, processed)
-            if not isCurrent() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            if not isCurrent() then return end
+            if input.UserInputType == Enum.UserInputType.Touch and SA.Mobile and touchStage then
+                local camera = Workspace.CurrentCamera
+                local size = camera and camera.ViewportSize
+                if not size or size.X < 1 or size.Y < 1 then return end
+                local x = math.clamp(input.Position.X / size.X, 0, 1)
+                local y = math.clamp(input.Position.Y / size.Y, 0, 1)
+                if touchStage == "joystick" then
+                    joyPos = Vector2.new(x, y)
+                    touchStage = "dash"
+                    mobileLabel.Text = "Tap game dash"
+                else
+                    dashPos = Vector2.new(x, y)
+                    touchStage = nil
+                    mobileLabel.Text = "Side dash"
+                end
+                return
+            end
+            if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
             if capturingKey then
                 capturingKey = false
                 if input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode ~= Enum.KeyCode.Unknown then
