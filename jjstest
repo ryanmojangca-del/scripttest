@@ -7242,6 +7242,7 @@ do
     CC.ChainSpeed = 1.0 -- fake-dash speed multiplier; 1x is the original timing
     CC.ChainTarget = nil
     CC.ChainSynthetic = false
+    CC.ChainMobilePaint = nil
     CC.AutoBFMode = "Vessel"
     CC.AutoBF = false -- timed second press for selected character
     CC.SwitcherBFDelay = 0.65 -- starting estimates; adjustable, not guaranteed
@@ -7478,6 +7479,7 @@ _G.KAMUI_BuildCombat = function(UI)
         local vessel = CC.AutoBFMode == "Vessel"
         if chainModeRow then chainModeRow.Visible = vessel end
         if vesselBFDelayRow then vesselBFDelayRow.Visible = vessel end
+        if CC.ChainMobilePaint then CC.ChainMobilePaint() end
         for _, row in ipairs(switcherRows) do row.Visible = CC.AutoBFMode == "Switcher" end
         for _, row in ipairs(chainRows) do row.Visible = vessel and CC.ChainMode end
     end
@@ -7622,7 +7624,7 @@ _G.KAMUI_BuildCombat = function(UI)
     vesselBFDelayRow.Visible = CC.AutoBFMode == "Vessel"
     vesselBFDelayRow.Name = "VesselBFDelayRow"
 
-    chainModeRow, chainModePaint = toggleRow("Chain mode", "Press 3 once: attempt up to four Black Flashes", function()
+    chainModeRow, chainModePaint = toggleRow("Chain mode", "PC: press 3; mobile: tap Chain button", function()
         return CC.ChainMode
     end, function(v)
         CC.ChainMode = v and true or false
@@ -10686,6 +10688,16 @@ _G.KAMUI_BuildCombat = function(UI)
         local CAS = game:GetService("ContextActionService")
         local actionName = "KAMUI_Chain3_" .. tostring(scriptId)
         local chainBusy = false
+        local nativeChainInput
+        local function releaseChainInput()
+            local own = nativeChainInput
+            if not own then return end
+            nativeChainInput = nil
+            pcall(function()
+                if own.binding then own.binding:Fire(false) else own.action:Fire(false) end
+            end)
+            if own.binding then pcall(function() own.binding:Destroy() end) end
+        end
         local function chainLog(text)
             print("[KAMUI Chain] " .. text)
             if _G.KAMUI_ParkourDiagnostic then _G.KAMUI_ParkourDiagnostic("Chain: " .. text) end
@@ -10787,6 +10799,9 @@ _G.KAMUI_BuildCombat = function(UI)
                 end
                 local function runCycle()
                     observedHits = 0
+                    if UIS.TouchEnabled and not UIS.KeyboardEnabled and CC.FeintMode then
+                        return false, "mobile Chain: turn Feint mode off; mobile feint input is not supported"
+                    end
                     if not char or not root or not hum or hum.Health <= 0 or not getMove(char) then
                         return false, "select Vessel with Divergent Fist"
                     end
@@ -10977,16 +10992,56 @@ _G.KAMUI_BuildCombat = function(UI)
                         -- The original physical 3 press was intercepted. Release its
                         -- virtual key state rather than waiting for the user to let go,
                         -- so the game's next key-down can be sent at dash end.
-                        if UIS:IsKeyDown(Enum.KeyCode.Three) then
+                        local phone = UIS.TouchEnabled and not UIS.KeyboardEnabled
+                        if not phone and UIS:IsKeyDown(Enum.KeyCode.Three) then
                             pcall(function()
                                 VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Three, false, game)
                             end)
                         end
                         local function sendThree()
-                            local ok = pcall(function() VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Three, false, game) end)
-                            if not ok then return false end
+                            if not phone then
+                                local ok = pcall(function() VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Three, false, game) end)
+                                if not ok then return false end
+                                task.wait(0.04)
+                                pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Three, false, game) end)
+                                return true
+                            end
+                            if nativeChainInput then chainLog("mobile Skill 3 already in use"); return false end
+                            local storage = game:GetService("ReplicatedStorage")
+                            local keybind = storage:FindFirstChild("Keybind")
+                            local combat = keybind and keybind:FindFirstChild("Combat")
+                            local action = combat and combat:FindFirstChild("Skill 3")
+                            if not action or not action:IsA("InputAction") then
+                                chainLog("mobile Skill 3 action not found"); return false
+                            end
+                            local typeOk, isBool = pcall(function() return action.Type == Enum.InputActionType.Bool end)
+                            local stateOk, state = pcall(function() return action:GetState() end)
+                            if not typeOk or not isBool or not stateOk or state == true then
+                                chainLog("mobile Skill 3 unavailable or manually held"); return false
+                            end
+                            local binding
+                            local made, err = pcall(function()
+                                binding = Instance.new("InputBinding")
+                                binding.Name = "KAMUI_MobileChainBF"
+                                binding.Type = Enum.InputBindingType.Scriptable
+                                binding.Parent = action
+                            end)
+                            local sent = false
+                            if made then sent, err = pcall(function() binding:Fire(true) end) end
+                            if sent then
+                                nativeChainInput = {action = action, binding = binding}
+                            else
+                                if binding then pcall(function() binding:Destroy() end) end
+                                local ok, legacyErr = pcall(function() action:Fire(true) end)
+                                if not ok then
+                                    chainLog("mobile Skill 3 failed: " .. tostring(err) .. "; legacy: " .. tostring(legacyErr))
+                                    return false
+                                end
+                                nativeChainInput = {action = action}
+                            end
+                            local own = nativeChainInput
                             task.wait(0.04)
-                            pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Three, false, game) end)
+                            if nativeChainInput == own then releaseChainInput() end
                             return true
                         end
                         if dashEndedAt then
@@ -11050,6 +11105,7 @@ _G.KAMUI_BuildCombat = function(UI)
                                 return false, "Divergent Fist is on cooldown; press 3 again when ready"
                             end
                             if CC.FeintMode and observedHits >= 2 then
+                                    if phone then return false, "mobile Chain: Feint mode is not supported" end
                                     chainLog("two hits observed; sending feint 3 + R")
                                     CC.ChainSynthetic = true
                                     local started = sendThree()
@@ -11105,8 +11161,41 @@ _G.KAMUI_BuildCombat = function(UI)
             if state == Enum.UserInputState.Begin then beginChain() end
             return Enum.ContextActionResult.Sink
         end, false, Enum.ContextActionPriority.High.Value + 1000, Enum.KeyCode.Three)
+        -- A separate button starts the chain before the game skill is fired.
+        -- The mobile game's own skill button does not expose the PC key event.
+        local chainButton = Instance.new("TextButton")
+        chainButton.Name = "MobileChainButton"
+        chainButton:SetAttribute("KamuiSkinned", true)
+        chainButton.Size = UDim2.fromOffset(116, 36)
+        chainButton.Position = UDim2.new(0.68, 0, 0.32, 0)
+        chainButton.AnchorPoint = Vector2.new(0.5, 0.5)
+        chainButton.BackgroundColor3 = THEME.BackgroundLight
+        chainButton.TextColor3 = THEME.Text
+        chainButton.Font = Enum.Font.GothamMedium
+        chainButton.TextSize = 13
+        chainButton.Text = "Chain BF"
+        chainButton.Active, chainButton.Draggable = true, true
+        chainButton.ZIndex = 50
+        chainButton.Parent = RestoreGui
+        applyCorner(chainButton, 17)
+        UI.stroke(chainButton, THEME.Red)
+        local function paintMobileChain()
+            if chainButton.Parent then
+                chainButton.Visible = isCurrent() and UIS.TouchEnabled and not UIS.KeyboardEnabled
+                    and CC.AutoBFMode == "Vessel" and CC.ChainMode
+            end
+        end
+        CC.ChainMobilePaint = paintMobileChain
+        paintMobileChain()
+        chainButton.Activated:Connect(function()
+            if not isCurrent() or not chainButton.Visible or UIS:GetFocusedTextBox() then return end
+            beginChain()
+        end)
         local function cleanupChain()
             pcall(function() CAS:UnbindAction(actionName) end)
+            releaseChainInput()
+            if CC.ChainMobilePaint == paintMobileChain then CC.ChainMobilePaint = nil end
+            if chainButton.Parent then chainButton:Destroy() end
             CC.ChainMode = false
             CC.ChainEpoch = CC.ChainEpoch + 1
             CC.BFTrackToken = CC.BFTrackToken + 1
@@ -11756,7 +11845,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - BF DELAY V2", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE CHAIN BF", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
