@@ -8418,10 +8418,12 @@ _G.KAMUI_BuildCombat = function(UI)
         local qtePaint
         local seen = {}
         local mobileTarget, mobileOrigin, mobileDone = nil, nil, false
-        local mobileVisibilityConn, mobileGuiConn
+        local mobileVisibilityConn, mobileGuiConn, mobileButtonInputConn, mobileButtonClickConn
         local function clearMobile()
             if mobileVisibilityConn then mobileVisibilityConn:Disconnect(); mobileVisibilityConn = nil end
             if mobileGuiConn then mobileGuiConn:Disconnect(); mobileGuiConn = nil end
+            if mobileButtonInputConn then mobileButtonInputConn:Disconnect(); mobileButtonInputConn = nil end
+            if mobileButtonClickConn then mobileButtonClickConn:Disconnect(); mobileButtonClickConn = nil end
             mobileTarget, mobileOrigin, mobileDone = nil, nil, false
         end
         local function log(message)
@@ -8468,16 +8470,31 @@ _G.KAMUI_BuildCombat = function(UI)
             return false
         end
         local keys = { W = Enum.KeyCode.W, A = Enum.KeyCode.A, D = Enum.KeyCode.D }
+        local lastMobileStatus = nil
+        local function mobileStatus(message)
+            if message ~= lastMobileStatus then
+                lastMobileStatus = message
+                log("mobile " .. message)
+            end
+        end
         local function scanMobile(gui)
             local qteGui = gui:FindFirstChild("QTE")
             local target = qteGui and qteGui:FindFirstChild("QTE_MOBILE")
             if not target or not target:IsA("TextButton") then
                 if mobileTarget then clearMobile() end
+                mobileStatus(qteGui and "waiting for QTE_MOBILE TextButton" or "waiting for PlayerGui.QTE")
                 return
             end
             if target ~= mobileTarget then
                 clearMobile()
                 mobileTarget = target
+                log("mobile QTE_MOBILE found")
+                mobileButtonInputConn = target.InputBegan:Connect(function(input)
+                    log("mobile button InputBegan: " .. input.UserInputType.Name)
+                end)
+                mobileButtonClickConn = target.Activated:Connect(function()
+                    log("mobile button Activated")
+                end)
                 mobileVisibilityConn = target:GetPropertyChangedSignal("Visible"):Connect(function()
                     if not target.Visible then mobileDone, mobileOrigin = false, nil end
                 end)
@@ -8489,11 +8506,14 @@ _G.KAMUI_BuildCombat = function(UI)
             end
             if not visible(target, gui) or target.TextTransparency >= 1
                 or not target.Text:gsub("<[^>]->", ""):match("^%s*!%s*$") then
+                mobileStatus(string.format("waiting: visible=%s text=%s transparency=%.2f",
+                    tostring(visible(target, gui)), tostring(target.Text), target.TextTransparency))
                 mobileDone, mobileOrigin = false, nil
                 return
             end
+            mobileStatus("visible ! target detected")
             local pos, size = target.AbsolutePosition, target.AbsoluteSize
-            if size.X <= 0 or size.Y <= 0 then return end
+            if size.X <= 0 or size.Y <= 0 then mobileStatus("target has zero size"); return end
             -- The game may reuse the button at a new randomized position. A
             -- substantial move counts as a new prompt; tiny jitter does not.
             if mobileDone and mobileOrigin then
@@ -8501,6 +8521,7 @@ _G.KAMUI_BuildCombat = function(UI)
                 if (pos - mobileOrigin).Magnitude > threshold then mobileDone = false end
             end
             if mobileDone or held or os.clock() - lastPress < CC.QTESpeed then return end
+            log(string.format("mobile target bounds %.0f,%.0f %.0fx%.0f", pos.X, pos.Y, size.X, size.Y))
             mobileDone, mobileOrigin = true, pos
             lastPress = os.clock()
             -- On mobile a failed chance roll skips this target instead of
@@ -8533,6 +8554,12 @@ _G.KAMUI_BuildCombat = function(UI)
                 log("mobile touch failed: " .. tostring(err)); return
             end
             log(string.format("mobile target tap sent at %d,%d", own.x, own.y))
+            task.delay(0.15, function()
+                if isCurrent() and CC.AutoQTE then
+                    log("mobile 0.15s later: target=" .. tostring(target.Parent ~= nil)
+                        .. "; visible=" .. tostring(target.Parent ~= nil and visible(target, gui)))
+                end
+            end)
             task.delay(0.04, function()
                 if held == own and pressToken == token then release() end
             end)
@@ -8603,7 +8630,9 @@ _G.KAMUI_BuildCombat = function(UI)
             stop()
             seen = setmetatable({}, { __mode = "k" })
             if v then
-                log("ON; enter Final Judgement")
+                lastMobileStatus = nil
+                log("ON; touch=" .. tostring(UIS.TouchEnabled) .. "; keyboard=" .. tostring(UIS.KeyboardEnabled))
+                log("enter Final Judgement")
                 conn = RunService.Heartbeat:Connect(function()
                     local now = os.clock()
                     if now - lastScan < 0.05 then return end
@@ -12115,7 +12144,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE AUTO QTE", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - AUTO QTE DEBUG V2", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
@@ -12130,6 +12159,9 @@ do
     end
     local function log(text)
         if stopped or not isCurrent() then return end
+        -- This temporary build retains QTE messages for a focused test.
+        local entry = tostring(text)
+        if not entry:find("QTE:", 1, true) and not entry:find("Cleared.", 1, true) then return end
         -- SwingForce is updated every frame and buried the Auto BF messages.
         if tostring(text):find("Value SwingForce/", 1, true)
             or tostring(text):find("Value MovementForce/", 1, true) then return end
