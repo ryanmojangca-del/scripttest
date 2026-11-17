@@ -7190,6 +7190,8 @@ do
     CC.FOV = false     -- FOV Display: ring on the ground showing the range
     CC.Smooth = 0      -- Aimbot smoothing: 0 = instant snap, up to 0.95 = slow glide
     CC.Block = false   -- Auto block (off by default)
+    CC.BlockMobile = false -- use a calibrated touch button instead of keyboard F
+    CC.MobileBlockTarget = nil
     CC.BlockMode = nil
     CC.BlockHarutaDelay = nil
     CC.BlockEpoch = 0
@@ -8421,6 +8423,99 @@ _G.KAMUI_BuildCombat = function(UI)
             _G.KAMUI_BlockRelease()
         end
     end, blockCard)
+    -- Mobile mode is separate from PC block. Tap Select, then tap the actual
+    -- in-game shield once; no screen coordinates are hard-coded.
+    local mobileSelectRow = mk("Frame", { BackgroundTransparency = 1, BorderSizePixel = 0 }, nil)
+    local mobileSelectButton
+    local calibrating, readyAt = false, 0
+    local targetDestroyConn
+    local function mobileNotice(text)
+        if _G.KAMUI_ParkourDiagnostic then _G.KAMUI_ParkourDiagnostic("Block mobile: " .. text) end
+        pcall(function()
+            game:GetService("StarterGui"):SetCore("SendNotification", {Title = "KAMUI Auto block", Text = text, Duration = 5})
+        end)
+    end
+    toggleRow("Mobile mode", "Use your selected in-game block button", function()
+        return CC.BlockMobile
+    end, function(v)
+        if _G.KAMUI_BlockRelease then _G.KAMUI_BlockRelease() end
+        CC.BlockEpoch = CC.BlockEpoch + 1
+        CC.BlockMobile = v
+        calibrating = false
+        mobileSelectRow.Visible = v
+        if mobileSelectButton then mobileSelectButton.Text = CC.MobileBlockTarget and "Selected" or "Select" end
+        if v then mobileNotice("Tap Select, then tap the shield button.") end
+    end, blockCard)
+    UI.addRow(blockCard, mobileSelectRow, UI.ROW)
+    mobileSelectRow.Visible = false
+    label(mobileSelectRow, "Block button", nil)
+    mobileSelectButton = mk("TextButton", {
+        Name = "SelectMobileBlock", BackgroundColor3 = CHIP, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
+        Size = UDim2.fromOffset(88, 26), Font = Enum.Font.GothamMedium,
+        TextSize = 11, TextColor3 = THEME.Text, Text = "Select"
+    }, mobileSelectRow)
+    UI.corner(mobileSelectButton, 6)
+    UI.stroke(mobileSelectButton, LINE)
+    mobileSelectButton.Activated:Connect(function()
+        if not CC.BlockMobile then return end
+        if _G.KAMUI_BlockRelease then _G.KAMUI_BlockRelease() end
+        if targetDestroyConn then targetDestroyConn:Disconnect(); targetDestroyConn = nil end
+        CC.MobileBlockTarget = nil
+        calibrating, readyAt = true, os.clock() + 0.4
+        mobileSelectButton.Text = "Tap shield"
+        mobileNotice("Hide this menu, then tap the in-game shield once.")
+        local deadline = readyAt
+        task.delay(20, function()
+            if isCurrent() and calibrating and readyAt == deadline then
+                calibrating = false
+                mobileSelectButton.Text = "Select"
+                mobileNotice("Selection timed out; tap Select to try again.")
+            end
+        end)
+    end)
+    local selectTouchConn = UIS.TouchStarted:Connect(function(input)
+        if not isCurrent() or not CC.BlockMobile or not calibrating or os.clock() < readyAt then return end
+        local pg = player:FindFirstChildOfClass("PlayerGui")
+        if not pg then return end
+        local pos = input.Position
+        -- Ignore touches on the visible Kamui menu, even if a game button is behind it.
+        local mp, ms = MainFrame.AbsolutePosition, MainFrame.AbsoluteSize
+        if ScreenGui.Enabled and MainFrame.Visible and pos.X >= mp.X and pos.X <= mp.X + ms.X
+            and pos.Y >= mp.Y and pos.Y <= mp.Y + ms.Y then return end
+        local ok, objects = pcall(function() return pg:GetGuiObjectsAtPosition(pos.X, pos.Y) end)
+        if not ok then mobileNotice("Could not inspect the touched GUI on this executor."); return end
+        local target
+        for _, obj in ipairs(objects) do
+            local button = obj:IsA("GuiButton") and obj or obj:FindFirstAncestorWhichIsA("GuiButton")
+            if button and button:IsDescendantOf(pg) and button.Visible then target = button; break end
+        end
+        if not target then
+            mobileNotice("No GUI button found there; try tapping the shield again.")
+            return
+        end
+        CC.MobileBlockTarget = target
+        if targetDestroyConn then targetDestroyConn:Disconnect() end
+        targetDestroyConn = target.Destroying:Connect(function()
+            if CC.MobileBlockTarget ~= target then return end
+            CC.MobileBlockTarget = nil
+            if isCurrent() and mobileSelectButton.Parent then
+                mobileSelectButton.Text = "Select"
+                if CC.BlockMobile then mobileNotice("Block button changed; select the shield again.") end
+            end
+        end)
+        calibrating = false
+        mobileSelectButton.Text = "Selected"
+        mobileNotice("Block button selected. Enable Auto block to test.")
+        if _G.KAMUI_ParkourDiagnostic then
+            _G.KAMUI_ParkourDiagnostic("Block mobile target: " .. target:GetFullName())
+        end
+    end)
+    ScreenGui.Destroying:Connect(function()
+        calibrating = false
+        selectTouchConn:Disconnect()
+        if targetDestroyConn then targetDestroyConn:Disconnect(); targetDestroyConn = nil end
+    end)
     toggleRow("M1 Back", "M1 after a completed automatic block", function()
         return CC.BlockM1Back
     end, function(v)
@@ -9001,6 +9096,7 @@ _G.KAMUI_BuildCombat = function(UI)
     -- A previous execution may still have F held, so release it on re-run.
     if _G.KAMUI_BlockRelease then pcall(_G.KAMUI_BlockRelease) end
     local syntheticBlockHeld = false
+    local syntheticBlockTouch = nil -- { id, x, y } for an active mobile touch
     local excludedNames = { "idle", "walk", "run", "jump", "fall", "climb", "swim", "dash", "dodge", "block", "guard" }
     local locomotionSlots = { idle = true, walk = true, run = true, jump = true, fall = true,
         climb = true, swim = true, swimidle = true }
@@ -9031,6 +9127,40 @@ _G.KAMUI_BuildCombat = function(UI)
     end
     local function sendBlock(down)
         if down then
+            if CC.BlockMobile then
+                local button = CC.MobileBlockTarget
+                local pg = player:FindFirstChildOfClass("PlayerGui")
+                if not UIS.TouchEnabled or not button or not pg or not button:IsDescendantOf(pg) then
+                    blockLog("mobile button missing; select the shield again")
+                    return false
+                end
+                local cursor = button
+                while cursor and cursor ~= pg do
+                    if (cursor:IsA("GuiObject") and not cursor.Visible)
+                        or (cursor:IsA("ScreenGui") and not cursor.Enabled) then
+                        blockLog("selected mobile button is hidden")
+                        return false
+                    end
+                    cursor = cursor.Parent
+                end
+                local p, size = button.AbsolutePosition, button.AbsoluteSize
+                if size.X < 1 or size.Y < 1 then return false end
+                local x, y = math.floor(p.X + size.X / 2), math.floor(p.Y + size.Y / 2)
+                -- Do not interfere with a physical finger already holding this button.
+                for _, touch in ipairs(UIS:GetTouches()) do
+                    local v = touch.Position
+                    if v.X >= p.X and v.X <= p.X + size.X and v.Y >= p.Y and v.Y <= p.Y + size.Y then
+                        blockLog("shield already being touched; leaving it alone")
+                        return false
+                    end
+                end
+                local id = 81
+                local ok, err = pcall(function() VirtualInputManager:SendTouchEvent(id, 0, x, y) end)
+                if not ok then blockLog("mobile touch failed: " .. tostring(err)); return false end
+                syntheticBlockTouch = {id = id, x = x, y = y}
+                blockLog("mobile block touch started")
+                return true
+            end
             if UIS:IsKeyDown(Enum.KeyCode.F) then
                 blockLog("F already held; leaving it alone")
                 return true
@@ -9043,6 +9173,12 @@ _G.KAMUI_BuildCombat = function(UI)
             else blockLog("virtual F press failed: " .. tostring(err)) end
             return ok
         end
+        if syntheticBlockTouch then
+            local touch = syntheticBlockTouch
+            syntheticBlockTouch = nil
+            local ok, err = pcall(function() VirtualInputManager:SendTouchEvent(touch.id, 2, touch.x, touch.y) end)
+            if not ok then blockLog("mobile touch release failed: " .. tostring(err)) end
+        end
         if syntheticBlockHeld then
             syntheticBlockHeld = false
             local ok, err = pcall(function()
@@ -9054,7 +9190,7 @@ _G.KAMUI_BuildCombat = function(UI)
     end
     local function releaseBlock(completed)
         local target, char = blockTarget, player.Character
-        local wasBlocking, wasSynthetic = blocking, syntheticBlockHeld
+        local wasBlocking, wasSynthetic = blocking, syntheticBlockHeld or syntheticBlockTouch ~= nil
         if blocking then
             blocking = false
             sendBlock(false)
@@ -9065,10 +9201,12 @@ _G.KAMUI_BuildCombat = function(UI)
         -- on disable, cleanup, mode switch, or when the user was holding F.
         if not (completed and wasBlocking and wasSynthetic and target and char
             and CC.Block and CC.BlockM1Back) then return end
+        -- M1 Back still uses a simulated mouse click; suppress it on mobile.
+        if CC.BlockMobile then blockLog("M1 Back unavailable in mobile mode"); return end
         local epoch = CC.BlockEpoch
         task.delay(0.01, function()
             if not isCurrent() or not CC.Block or counterActive
-                or not CC.BlockM1Back or CC.BlockEpoch ~= epoch
+                or not CC.BlockM1Back or CC.BlockMobile or CC.BlockEpoch ~= epoch
                 or player.Character ~= char or not target.Parent or UIS:GetFocusedTextBox()
                 or UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then return end
             local root = char:FindFirstChild("HumanoidRootPart")
@@ -9091,6 +9229,8 @@ _G.KAMUI_BuildCombat = function(UI)
         end)
     end
     _G.KAMUI_BlockRelease = releaseBlock
+    local blockCharacterConn = player.CharacterAdded:Connect(function() releaseBlock() end)
+    ScreenGui.Destroying:Connect(function() releaseBlock(); blockCharacterConn:Disconnect() end)
     if _G.KAMUI_CounterRelease then pcall(_G.KAMUI_CounterRelease) end
     local function releaseCounterKey()
         if not counterKeyHeld then return end
@@ -9173,7 +9313,7 @@ _G.KAMUI_BuildCombat = function(UI)
             blockTarget = plr
             CC.BlockCamActive = CC.BlockCamEnabled
             local hold = BLOCK_HOLD
-            if CC.BlockM1Back then
+            if CC.BlockM1Back and not CC.BlockMobile then
                 -- Counterattack sooner, at the cost of a shorter guard.
                 hold = 0.20
             elseif track.Length > 0 and track.Speed > 0 then
