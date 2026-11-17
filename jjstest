@@ -8442,11 +8442,13 @@ _G.KAMUI_BuildCombat = function(UI)
         if _G.KAMUI_BlockRelease and not v then
             _G.KAMUI_BlockRelease()
         end
+        if not v and _G.KAMUI_M1BackRelease then _G.KAMUI_M1BackRelease() end
     end, blockCard)
     toggleRow("Mobile mode", "Use native block action; no button selection", function()
         return CC.BlockMobile
     end, function(v)
         if _G.KAMUI_BlockRelease then _G.KAMUI_BlockRelease() end
+        if _G.KAMUI_M1BackRelease then _G.KAMUI_M1BackRelease() end
         CC.BlockEpoch = CC.BlockEpoch + 1
         CC.BlockMobile = v
     end, blockCard)
@@ -8454,6 +8456,7 @@ _G.KAMUI_BuildCombat = function(UI)
         return CC.BlockM1Back
     end, function(v)
         CC.BlockM1Back = v
+        if not v and _G.KAMUI_M1BackRelease then _G.KAMUI_M1BackRelease() end
     end, blockCard)
     do
         local nrow = mk("Frame", { BackgroundTransparency = 1, BorderSizePixel = 0 }, nil)
@@ -9161,6 +9164,71 @@ _G.KAMUI_BuildCombat = function(UI)
         end
         return true
     end
+    -- Native Melee is the game's input action, not a screen coordinate or
+    -- synthetic mouse click. Only release a press owned by this script.
+    if _G.KAMUI_M1BackRelease then pcall(_G.KAMUI_M1BackRelease) end
+    local nativeM1
+    local function releaseNativeM1()
+        local own = nativeM1
+        if not own then return end
+        nativeM1 = nil
+        local ok, err = pcall(function()
+            if own.binding then own.binding:Fire(false) else own.action:Fire(false) end
+        end)
+        if own.binding then pcall(function() own.binding:Destroy() end) end
+        if not ok then blockLog("native M1 release failed: " .. tostring(err)) end
+    end
+    _G.KAMUI_M1BackRelease = releaseNativeM1
+    local function sendNativeM1()
+        if nativeM1 then return end
+        local storage = game:GetService("ReplicatedStorage")
+        local keybind = storage:FindFirstChild("Keybind")
+        local combat = keybind and keybind:FindFirstChild("Combat")
+        local action = combat and combat:FindFirstChild("Melee")
+        if not action or not action:IsA("InputAction") then
+            blockLog("native M1 Melee action not found"); return
+        end
+        local typeOk, isBool = pcall(function() return action.Type == Enum.InputActionType.Bool end)
+        local stateOk, state = pcall(function() return action:GetState() end)
+        if not typeOk or not isBool or not stateOk then
+            blockLog("native M1 action type/state unavailable"); return
+        end
+        if state == true then
+            blockLog("native M1 already held; leaving it alone"); return
+        end
+        local binding
+        local bindingOk, bindingErr = pcall(function()
+            binding = Instance.new("InputBinding")
+            binding.Name = "KAMUI_M1Back"
+            binding.Type = Enum.InputBindingType.Scriptable
+            binding.Parent = action
+        end)
+        -- Native input does not generate a mouse event. Preserve the existing
+        -- pause for our own M1, including its AnimationPlayed extension.
+        local previousAt, previousUntil = ownAttackAt, ownAttackUntil
+        ownAttackAt = os.clock()
+        ownAttackUntil = math.max(ownAttackUntil, ownAttackAt + 0.6)
+        local ok, err = false, bindingErr
+        if bindingOk then ok, err = pcall(function() binding:Fire(true) end) end
+        if ok then
+            nativeM1 = {action = action, binding = binding}
+        else
+            if binding then pcall(function() binding:Destroy() end) end
+            local legacyOk, legacyErr = pcall(function() action:Fire(true) end)
+            if not legacyOk then
+                ownAttackAt, ownAttackUntil = previousAt, previousUntil
+                blockLog("native M1 failed: " .. tostring(err) .. "; legacy: " .. tostring(legacyErr))
+                return
+            end
+            nativeM1 = {action = action}
+        end
+        local owned = nativeM1
+        local readOk, newState = pcall(function() return action:GetState() end)
+        blockLog("native M1 sent; state=" .. (readOk and tostring(newState) or "unavailable"))
+        task.delay(0.04, function()
+            if nativeM1 == owned then releaseNativeM1() end
+        end)
+    end
     local function releaseBlock(completed)
         local target, char = blockTarget, player.Character
         local wasBlocking, wasSynthetic = blocking, syntheticBlockHeld or nativeBlock ~= nil
@@ -9174,14 +9242,12 @@ _G.KAMUI_BuildCombat = function(UI)
         -- on disable, cleanup, mode switch, or when the user was holding F.
         if not (completed and wasBlocking and wasSynthetic and target and char
             and CC.Block and CC.BlockM1Back) then return end
-        -- M1 Back still simulates a mouse click. Do not change input type on mobile.
-        if CC.BlockMobile then blockLog("native mode: M1 Back unavailable"); return end
-        local epoch = CC.BlockEpoch
+        local epoch, mobile = CC.BlockEpoch, CC.BlockMobile
         task.delay(0.01, function()
             if not isCurrent() or not CC.Block or counterActive
-                or not CC.BlockM1Back or CC.BlockMobile or CC.BlockEpoch ~= epoch
+                or not CC.BlockM1Back or CC.BlockMobile ~= mobile or CC.BlockEpoch ~= epoch
                 or player.Character ~= char or not target.Parent or UIS:GetFocusedTextBox()
-                or UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then return end
+                or (not mobile and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)) then return end
             local root = char:FindFirstChild("HumanoidRootPart")
             local hum = char:FindFirstChildOfClass("Humanoid")
             local tc = target.Character
@@ -9189,6 +9255,7 @@ _G.KAMUI_BuildCombat = function(UI)
             local th = tc and tc:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health <= 0 or not tr or not th or th.Health <= 0
                 or (root.Position - tr.Position).Magnitude > CC.BlockRange then return end
+            if mobile then sendNativeM1(); return end
             local pos = UIS:GetMouseLocation()
             local ok, err = pcall(function()
                 VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 0)
@@ -9202,8 +9269,11 @@ _G.KAMUI_BuildCombat = function(UI)
         end)
     end
     _G.KAMUI_BlockRelease = releaseBlock
-    local blockCharacterConn = player.CharacterAdded:Connect(function() releaseBlock() end)
-    ScreenGui.Destroying:Connect(function() releaseBlock(); blockCharacterConn:Disconnect() end)
+    local blockCharacterConn = player.CharacterAdded:Connect(function() releaseBlock(); releaseNativeM1() end)
+    ScreenGui.Destroying:Connect(function()
+        releaseBlock(); releaseNativeM1(); blockCharacterConn:Disconnect()
+        if _G.KAMUI_M1BackRelease == releaseNativeM1 then _G.KAMUI_M1BackRelease = nil end
+    end)
     if _G.KAMUI_CounterRelease then pcall(_G.KAMUI_CounterRelease) end
     local function releaseCounterKey()
         if not counterKeyHeld then return end
