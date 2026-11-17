@@ -9012,12 +9012,19 @@ _G.KAMUI_BuildCombat = function(UI)
     end
     player.CharacterAdded:Connect(bindOwnAttacks)
     if player.Character then bindOwnAttacks(player.Character) end
+    local lastBlockSkipLog = 0
     local function blockLog(message)
         local log = _G.KAMUI_BlockDiagnostic
         if type(log) == "function" then log("Block: " .. message) end
         if CC.BlockMobile and type(_G.KAMUI_ParkourDiagnostic) == "function" then
             local text = tostring(message)
-            if text:find("native", 1, true) or text:find("accepted", 1, true) then
+            local isSkip = text:find("skip ", 1, true) ~= nil
+            if isSkip then
+                local now = os.clock()
+                if now - lastBlockSkipLog < 0.5 then return end
+                lastBlockSkipLog = now
+            end
+            if isSkip or text:find("native", 1, true) or text:find("accepted", 1, true) then
                 _G.KAMUI_ParkourDiagnostic("Block: " .. text)
             end
         end
@@ -9029,8 +9036,8 @@ _G.KAMUI_BuildCombat = function(UI)
         reports[reason] = true
         local anim = track.Animation
         local id = anim and tostring(anim.AnimationId) or "unknown"
-        blockLog(string.format("%s id=%s d=%.1f len=%.2f t=%.2f pri=%s", reason, id,
-            dist, track.Length, track.TimePosition, track.Priority.Name))
+        blockLog(string.format("%s id=%s name=%s d=%.1f len=%.2f t=%.2f pri=%s", reason, id,
+            tostring(track.Name), dist, track.Length, track.TimePosition, track.Priority.Name))
     end
     -- Use the same virtual keyboard mechanism used elsewhere in this script.
     -- A previous execution may still have F held, so release it on re-run.
