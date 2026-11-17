@@ -9241,20 +9241,61 @@ _G.KAMUI_BuildCombat = function(UI)
         -- A completed *attempt*, not a confirmed server-side block. Never fire
         -- on disable, cleanup, mode switch, or when the user was holding F.
         if not (completed and wasBlocking and wasSynthetic and target and char
-            and CC.Block and CC.BlockM1Back) then return end
+            and CC.Block and CC.BlockM1Back) then
+            if completed and CC.BlockMobile and CC.BlockM1Back then
+                blockLog(string.format("native M1 not queued: blocking=%s owned=%s target=%s",
+                    tostring(wasBlocking), tostring(wasSynthetic), tostring(target ~= nil)))
+            end
+            return
+        end
         local epoch, mobile = CC.BlockEpoch, CC.BlockMobile
+        if mobile then blockLog("native M1 queued after guard") end
         task.delay(0.01, function()
-            if not isCurrent() or not CC.Block or counterActive
-                or not CC.BlockM1Back or CC.BlockMobile ~= mobile or CC.BlockEpoch ~= epoch
-                or player.Character ~= char or not target.Parent or UIS:GetFocusedTextBox()
-                or (not mobile and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)) then return end
+            local function valid()
+                return isCurrent() and CC.Block and not counterActive
+                    and CC.BlockM1Back and CC.BlockMobile == mobile and CC.BlockEpoch == epoch
+                    and player.Character == char and target.Parent and not UIS:GetFocusedTextBox()
+                    and (mobile or not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1))
+            end
+            if not valid() then
+                if mobile then blockLog("native M1 cancelled: settings, character, or counter changed") end
+                return
+            end
+            if mobile then
+                -- Give the game's block state time to release. Do not invent a
+                -- remote or spam M1: one attempt only after a bounded wait.
+                local minWait, deadline = os.clock() + 0.10, os.clock() + 0.70
+                local announced = false
+                while true do
+                    if not valid() or blocking then
+                        blockLog("native M1 cancelled: another block or setting change")
+                        return
+                    end
+                    local info = char:FindFirstChild("Info")
+                    local blockMarker = info and info:FindFirstChild("Block")
+                    local now = os.clock()
+                    if not blockMarker and now >= minWait then break end
+                    if blockMarker and not announced then
+                        blockLog("native M1 waiting for Info/Block to clear")
+                        announced = true
+                    end
+                    if now >= deadline then
+                        blockLog("native M1 cancelled: Info/Block did not clear")
+                        return
+                    end
+                    RunService.Heartbeat:Wait()
+                end
+            end
             local root = char:FindFirstChild("HumanoidRootPart")
             local hum = char:FindFirstChildOfClass("Humanoid")
             local tc = target.Character
             local tr = tc and tc:FindFirstChild("HumanoidRootPart")
             local th = tc and tc:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health <= 0 or not tr or not th or th.Health <= 0
-                or (root.Position - tr.Position).Magnitude > CC.BlockRange then return end
+                or (root.Position - tr.Position).Magnitude > CC.BlockRange then
+                if mobile then blockLog("native M1 cancelled: target unavailable or out of range") end
+                return
+            end
             if mobile then sendNativeM1(); return end
             local pos = UIS:GetMouseLocation()
             local ok, err = pcall(function()
