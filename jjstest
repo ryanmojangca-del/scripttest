@@ -43,6 +43,10 @@ end
 local function isCurrent()
     return _G.SkidwareId == scriptId
 end
+-- Close the standalone Ratio trace when switching to the full feature build.
+if type(_G.KAMUI_RatioTraceStop) == "function" then
+    pcall(_G.KAMUI_RatioTraceStop)
+end
 -- Remove the standalone CamLock from the previous test version, if running.
 if _G.KAMUI_CamLockCleanup then
     pcall(_G.KAMUI_CamLockCleanup)
@@ -7308,6 +7312,7 @@ do
     CC.SwitcherSwapDelay = 0.60 -- seconds from 3 to R
     CC.SwitcherKickDelay = 0.20 -- seconds from R to first 2
     CC.AutoBFDelay = 0.33 -- starting estimate in seconds; adjustable in Combat
+    CC.AutoRatio = false -- manually start Ratio; auto-time the second Special
     CC.AutoQTE = false -- PC W/A/D and mobile QTE targets, off by default
     CC.QTEChance = 100 -- chance of selecting the correct key per attempt, percent
     CC.QTESpeed = 0.15 -- minimum delay between presses in seconds
@@ -7521,6 +7526,146 @@ _G.KAMUI_BuildCombat = function(UI)
             end
         end)
         return row
+    end
+
+    ------------------------------------------------------------------ Auto Ratio
+    do
+        if type(_G.KAMUI_RatioCleanup) == "function" then pcall(_G.KAMUI_RatioCleanup) end
+        local ratioCard = UI.card(page, "Auto Ratio")
+        local tracked = {}
+        local alive, held = true, nil
+        local function log(text)
+            print("[KAMUI Auto Ratio] " .. text)
+            if _G.KAMUI_ParkourDiagnostic then _G.KAMUI_ParkourDiagnostic("Ratio: " .. text) end
+        end
+        local function release()
+            local own = held
+            if not own then return end
+            held = nil
+            pcall(function()
+                if own.binding then own.binding:Fire(false) else own.action:Fire(false) end
+            end)
+            if own.binding then pcall(function() own.binding:Destroy() end) end
+        end
+        local function sendSpecial()
+            if held then return false, "Special already held by Auto Ratio" end
+            local storage = game:GetService("ReplicatedStorage")
+            local keybind = storage:FindFirstChild("Keybind")
+            local combat = keybind and keybind:FindFirstChild("Combat")
+            local action = combat and combat:FindFirstChild("Special")
+            if not action or not action:IsA("InputAction") then return false, "Special InputAction missing" end
+            local typeOk, boolType = pcall(function() return action.Type == Enum.InputActionType.Bool end)
+            local stateOk, state = pcall(function() return action:GetState() end)
+            if not typeOk or not boolType or not stateOk then return false, "Special type/state unavailable" end
+            if state == true then return false, "release Special before the marker" end
+            local binding
+            local made, err = pcall(function()
+                binding = Instance.new("InputBinding")
+                binding.Name = "KAMUI_AutoRatio"
+                binding.Type = Enum.InputBindingType.Scriptable
+                binding.Parent = action
+            end)
+            local sent = false
+            if made then sent, err = pcall(function() binding:Fire(true) end) end
+            if sent then
+                held = {action = action, binding = binding}
+            else
+                if binding then pcall(function() binding:Destroy() end) end
+                local ok, legacyErr = pcall(function() action:Fire(true) end)
+                if not ok then return false, tostring(err) .. "; legacy: " .. tostring(legacyErr) end
+                held = {action = action}
+            end
+            local own = held
+            task.delay(0.04, function() if held == own then release() end end)
+            return true
+        end
+        local function consider(obj)
+            if not alive or not CC.AutoRatio or not isCurrent() then return end
+            if obj:IsA("BillboardGui") and obj.Name == "Ratio" and obj:IsDescendantOf(Workspace) then
+                if not tracked[obj] then
+                    tracked[obj] = {created = os.clock()}
+                    log("Ratio bar detected")
+                end
+            end
+        end
+        local function scanExisting()
+            for _, obj in ipairs(Workspace:GetDescendants()) do
+                if obj:IsA("BillboardGui") and obj.Name == "Ratio" then consider(obj) end
+            end
+        end
+        toggleRow("Auto Ratio", "Start Ratio yourself; times the second Special on PC and mobile", function()
+            return CC.AutoRatio
+        end, function(v)
+            CC.AutoRatio = v
+            tracked = {}
+            if v then
+                log("ON; activate Ratio manually")
+                scanExisting()
+            else
+                release()
+                log("OFF")
+            end
+        end, ratioCard)
+        local added = Workspace.DescendantAdded:Connect(consider)
+        local heartbeat
+        heartbeat = RunService.Heartbeat:Connect(function()
+            if not alive or not isCurrent() or not page.Parent then return end
+            if not CC.AutoRatio then return end
+            local now = os.clock()
+            for gui, state in pairs(tracked) do
+                if not gui.Parent or not gui:IsDescendantOf(Workspace) then
+                    tracked[gui] = nil
+                elseif not state.done and gui.Enabled then
+                    local bar = gui:FindFirstChild("Bar")
+                    local cursor = bar and bar:FindFirstChild("Cursor")
+                    local hit = bar and bar:FindFirstChild("Hit")
+                    if bar and cursor and hit and bar:IsA("GuiObject")
+                        and cursor:IsA("GuiObject") and hit:IsA("GuiObject") and cursor.Visible then
+                        -- Cursor and marker are siblings. Compare positions in their
+                        -- shared parent, including pixel offsets when present.
+                        local height = math.max(1, bar.AbsoluteSize.Y)
+                        local c = cursor.Position.Y.Scale + cursor.Position.Y.Offset / height
+                        local h = hit.Position.Y.Scale + hit.Position.Y.Offset / height
+                        local d = c - h
+                        if state.prev and state.time then
+                            local dt = now - state.time
+                            local delta = d - state.prev
+                            local crossed = (state.prev > 0 and d <= 0) or (state.prev < 0 and d >= 0)
+                            local approaching = d * delta < 0
+                            -- Predict at most 12 ms ahead to reduce frame-boundary lateness,
+                            -- not a fixed delay: actual cursor motion determines timing.
+                            local lead = dt > 0 and dt <= 0.2 and math.min(dt * 0.5, 0.012) or 0
+                            local timeToMarker = math.abs(delta) > 1e-6 and math.abs(d / delta) * dt or math.huge
+                            if crossed or (approaching and timeToMarker <= lead) then
+                                state.done = true -- one attempt per Ratio bar, even on failure
+                                local ok, err = sendSpecial()
+                                if ok then
+                                    log(string.format("Special sent; cursor=%.3f marker=%.3f", c, h))
+                                else
+                                    log("Special not sent: " .. tostring(err))
+                                end
+                            end
+                        end
+                        state.prev, state.time = d, now
+                    elseif now - state.created > 4 then
+                        state.done = true
+                        log("Ratio bar found, but Cursor/Hit was unavailable")
+                    end
+                end
+            end
+        end)
+        local function cleanup()
+            if not alive then return end
+            alive = false
+            CC.AutoRatio = false
+            added:Disconnect()
+            heartbeat:Disconnect()
+            release()
+            table.clear(tracked)
+            if _G.KAMUI_RatioCleanup == cleanup then _G.KAMUI_RatioCleanup = nil end
+        end
+        _G.KAMUI_RatioCleanup = cleanup
+        ScreenGui.Destroying:Connect(cleanup)
     end
 
     ------------------------------------------------------------------ Auto BF card
@@ -11616,7 +11761,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - SKILL COLORS RESET V2", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - AUTO RATIO V1", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
@@ -11632,7 +11777,7 @@ do
         if stopped or not isCurrent() then return end
         -- This temporary build retains QTE messages for a focused test.
         local entry = tostring(text)
-        if not entry:find("QTE:", 1, true) and not entry:find("Dash:", 1, true)
+        if not entry:find("Ratio:", 1, true)
             and not entry:find("Cleared.", 1, true) then return end
         -- SwingForce is updated every frame and buried the Auto BF messages.
         if tostring(text):find("Value SwingForce/", 1, true)
