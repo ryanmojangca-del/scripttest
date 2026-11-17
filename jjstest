@@ -2052,6 +2052,25 @@ do
     -- Some versions use an unnamed BodyVelocity. Only consider it briefly
     -- after the player presses Q; never scale arbitrary movers at other times.
     local lastDashInput = -math.huge
+    local lastMobileDashAt = -math.huge
+    local mobileMarkerConn
+    local function bindMobileDashMarker(char)
+        if mobileMarkerConn then mobileMarkerConn:Disconnect(); mobileMarkerConn = nil end
+        lastMobileDashAt = -math.huge
+        mobileMarkerConn = char.DescendantAdded:Connect(function(obj)
+            if not isCurrent() or player.Character ~= char or not UIS.TouchEnabled
+                or obj.Name ~= "InDash" or obj.Parent ~= char:FindFirstChild("Info") then return end
+            -- Observe the marker even if No Side Dash Cooldown removes it on
+            -- the next turn; the short window avoids scaling ordinary forces.
+            lastMobileDashAt = os.clock()
+            if M.Enabled and _G.KAMUI_ParkourDiagnostic then
+                _G.KAMUI_ParkourDiagnostic("Dash: mobile InDash marker detected")
+            end
+        end)
+        conns[#conns + 1] = mobileMarkerConn
+    end
+    conns[#conns + 1] = player.CharacterAdded:Connect(bindMobileDashMarker)
+    if player.Character then bindMobileDashMarker(player.Character) end
     conns[#conns + 1] = UIS.InputBegan:Connect(function(input, processed)
         if isCurrent() and not UIS:GetFocusedTextBox()
             and input.UserInputType == Enum.UserInputType.Keyboard
@@ -2077,10 +2096,14 @@ do
                 end
             end
         end
-        -- The game may parent the mover as BodyVelocity, then rename it to
-        -- MovementForce. Restrict both names to the short manual-Q window to
-        -- reduce the chance of scaling unrelated movement forces.
-        if os.clock() - lastDashInput <= 0.35 then
+        -- On mobile, the observed native dash places InDash under Info and a
+        -- BodyVelocity named MovementForce on Torso. Do not require PC's Q.
+        -- A short marker window also handles the No Side CD marker remover.
+        local info = char and char:FindFirstChild("Info")
+        local mobileDash = UIS.TouchEnabled and ((info and info:FindFirstChild("InDash"))
+            or os.clock() - lastMobileDashAt <= 0.35)
+        -- Limit generic movement-force candidates to a real dash signal.
+        if mobileDash or os.clock() - lastDashInput <= 0.35 then
             for _, part in ipairs(torso and { torso, root } or { root }) do
                 for _, name in ipairs({ "MovementForce", "BodyVelocity" }) do
                     local candidate = part:FindFirstChild(name)
@@ -2116,6 +2139,10 @@ do
             states[dash] = st
             if _G.KAMUI_DebugDash then
                 print("[KAMUI dash] mover:", dash.ClassName, dash.Name, st.script and "(script dash - untouched)" or "(your dash)")
+            end
+            if UIS.TouchEnabled and M.Enabled and _G.KAMUI_ParkourDiagnostic then
+                _G.KAMUI_ParkourDiagnostic("Dash: found " .. dash.Name .. "; multiplier=" .. tostring(M.Distance)
+                    .. (st.script and "; script dash skipped" or "; your dash"))
             end
         end
         local mult = M.Distance
@@ -12136,7 +12163,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - AUTO QTE V5", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE DASH V1", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
@@ -12152,7 +12179,8 @@ do
         if stopped or not isCurrent() then return end
         -- This temporary build retains QTE messages for a focused test.
         local entry = tostring(text)
-        if not entry:find("QTE:", 1, true) and not entry:find("Cleared.", 1, true) then return end
+        if not entry:find("QTE:", 1, true) and not entry:find("Dash:", 1, true)
+            and not entry:find("Cleared.", 1, true) then return end
         -- SwingForce is updated every frame and buried the Auto BF messages.
         if tostring(text):find("Value SwingForce/", 1, true)
             or tostring(text):find("Value MovementForce/", 1, true) then return end
