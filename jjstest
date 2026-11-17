@@ -8157,8 +8157,20 @@ _G.KAMUI_BuildCombat = function(UI)
     -- Timing is best-effort: no verified pebble/glide confirmation is available.
     do
         local pending, alive = false, true
+        local mobileHeld
+        local function releaseMobileInput()
+            local own = mobileHeld
+            if not own then return end
+            mobileHeld = nil
+            local ok, err = pcall(function()
+                if own.binding then own.binding:Fire(false) else own.action:Fire(false) end
+            end)
+            if own.binding then pcall(function() own.binding:Destroy() end) end
+            if not ok then warn("[KAMUI Switcher BF] native release failed: " .. tostring(err)) end
+        end
         CC.SwitcherBFCancel = function()
             pending = false
+            releaseMobileInput()
             CC.SwitcherTrackTarget = nil
             if CC.SwitcherTargetRelease then CC.SwitcherTargetRelease() end
         end
@@ -8184,8 +8196,9 @@ _G.KAMUI_BuildCombat = function(UI)
             local t = move and move:GetAttribute("ReadyAt")
             return move ~= nil and (type(t) ~= "number" or t <= Workspace:GetServerTimeNow() + 0.15)
         end
-        local conn = UIS.InputBegan:Connect(function(input)
-            if input.UserInputType ~= Enum.UserInputType.Keyboard or input.KeyCode ~= Enum.KeyCode.Three then return end
+        -- mobileStartAt is the physical touch associated with the observed
+        -- Pebble Throw animation. PC passes nil and keeps its keyboard flow.
+        local function startSwitcher(mobileStartAt)
             if not alive or not isCurrent() or not ScreenGui.Parent
                 or not CC.AutoBF or CC.AutoBFMode ~= "Switcher" or UIS:GetFocusedTextBox() then return end
             if pending then
@@ -8225,7 +8238,8 @@ _G.KAMUI_BuildCombat = function(UI)
             end
             pending = true
             CC.AutoBFEpoch = (CC.AutoBFEpoch or 0) + 1
-            local epoch, startedAt = CC.AutoBFEpoch, os.clock()
+            local epoch, startedAt = CC.AutoBFEpoch, mobileStartAt or os.clock()
+            local mobile = mobileStartAt ~= nil
             local skillAdded, seenSkill = nil, false
             local swapDelay, kickDelay, bfDelay = CC.SwitcherSwapDelay, CC.SwitcherKickDelay, CC.SwitcherBFDelay
             local function valid()
@@ -8239,11 +8253,53 @@ _G.KAMUI_BuildCombat = function(UI)
                 return valid()
             end
             local function press(key)
-                if not valid() or UIS:IsKeyDown(key) then return false end
-                local ok = pcall(function() VirtualInputManager:SendKeyEvent(true, key, false, game) end)
-                if not ok then return false end
+                if not valid() then return false end
+                if not mobile then
+                    if UIS:IsKeyDown(key) then return false end
+                    local ok = pcall(function() VirtualInputManager:SendKeyEvent(true, key, false, game) end)
+                    if not ok then return false end
+                    task.wait(0.04)
+                    pcall(function() VirtualInputManager:SendKeyEvent(false, key, false, game) end)
+                    return true
+                end
+                local actionName = key == Enum.KeyCode.R and "Special"
+                    or (key == Enum.KeyCode.Two and "Skill 2" or nil)
+                if not actionName or mobileHeld then return false end
+                local storage = game:GetService("ReplicatedStorage")
+                local keybind = storage:FindFirstChild("Keybind")
+                local combat = keybind and keybind:FindFirstChild("Combat")
+                local action = combat and combat:FindFirstChild(actionName)
+                if not action or not action:IsA("InputAction") then
+                    log("mobile " .. actionName .. " InputAction not found"); return false
+                end
+                local typeOk, isBool = pcall(function() return action.Type == Enum.InputActionType.Bool end)
+                local stateOk, state = pcall(function() return action:GetState() end)
+                if not typeOk or not isBool or not stateOk or state == true then
+                    log("mobile " .. actionName .. " unavailable or manually held"); return false
+                end
+                local binding
+                local made, err = pcall(function()
+                    binding = Instance.new("InputBinding")
+                    binding.Name = "KAMUI_MobileSwitcherBF"
+                    binding.Type = Enum.InputBindingType.Scriptable
+                    binding.Parent = action
+                end)
+                local sent = false
+                if made then sent, err = pcall(function() binding:Fire(true) end) end
+                if sent then
+                    mobileHeld = {action = action, binding = binding}
+                else
+                    if binding then pcall(function() binding:Destroy() end) end
+                    local ok, legacyErr = pcall(function() action:Fire(true) end)
+                    if not ok then
+                        log("mobile " .. actionName .. " failed: " .. tostring(err) .. "; legacy: " .. tostring(legacyErr))
+                        return false
+                    end
+                    mobileHeld = {action = action}
+                end
+                local own = mobileHeld
                 task.wait(0.04)
-                pcall(function() VirtualInputManager:SendKeyEvent(false, key, false, game) end)
+                if mobileHeld == own then releaseMobileInput() end
                 return true
             end
             local function finish(message)
@@ -8301,11 +8357,53 @@ _G.KAMUI_BuildCombat = function(UI)
                 if valid() and not seenSkill then log("skill-end marker not observed; lock timed out") end
                 finish("Switcher sequence finished; outcome depends on timing")
             end)
+        end
+        local conn = UIS.InputBegan:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.Keyboard or input.KeyCode ~= Enum.KeyCode.Three then return end
+            startSwitcher(nil)
         end)
+        -- The supplied mobile trace identified this local Action animation at
+        -- the start of Pebble Throw; ReadyAt changed only after it ended.
+        local PEBBLE_ANIMATION_ID = "111720035828971"
+        local lastTouchAt, touchSerial, consumedTouch = -math.huge, 0, 0
+        local animatorConn, characterConn
+        local touchConn = UIS.TouchStarted:Connect(function()
+            if not alive or not isCurrent() or not ScreenGui.Parent or not UIS.TouchEnabled or UIS.KeyboardEnabled
+                or not CC.AutoBF or CC.AutoBFMode ~= "Switcher" or pending or UIS:GetFocusedTextBox() then return end
+            touchSerial = touchSerial + 1
+            lastTouchAt = os.clock()
+        end)
+        local function bindMobileSwitcher(char)
+            if animatorConn then animatorConn:Disconnect(); animatorConn = nil end
+            consumedTouch = touchSerial
+            task.spawn(function()
+                local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 5)
+                local animator = hum and (hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 5))
+                if not alive or not isCurrent() or player.Character ~= char or not animator then return end
+                animatorConn = animator.AnimationPlayed:Connect(function(track)
+                    local anim = track.Animation
+                    local id = anim and tostring(anim.AnimationId):match("%d+")
+                    local now = os.clock()
+                    if not alive or not isCurrent() or not ScreenGui.Parent or player.Character ~= char
+                        or not UIS.TouchEnabled or UIS.KeyboardEnabled or not CC.AutoBF
+                        or CC.AutoBFMode ~= "Switcher" or pending or UIS:GetFocusedTextBox()
+                        or id ~= PEBBLE_ANIMATION_ID or touchSerial == consumedTouch
+                        or now - lastTouchAt > 0.60 then return end
+                    consumedTouch = touchSerial
+                    log(string.format("mobile Pebble animation detected %.2fs after touch", now - lastTouchAt))
+                    startSwitcher(lastTouchAt)
+                end)
+            end)
+        end
+        characterConn = player.CharacterAdded:Connect(bindMobileSwitcher)
+        if player.Character then bindMobileSwitcher(player.Character) end
         ScreenGui.Destroying:Connect(function()
             alive = false
             CC.SwitcherBFCancel()
             conn:Disconnect()
+            touchConn:Disconnect()
+            characterConn:Disconnect()
+            if animatorConn then animatorConn:Disconnect(); animatorConn = nil end
         end)
     end
 
@@ -11928,7 +12026,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - SWITCHER TRACE V2", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE SWITCHER BF", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
@@ -11943,9 +12041,6 @@ do
     end
     local function log(text)
         if stopped or not isCurrent() then return end
-        -- This temporary build shows only the passive Switcher trace.
-        local entry = tostring(text)
-        if not entry:find("SWITCHTRACE", 1, true) and not entry:find("Cleared.", 1, true) then return end
         -- SwingForce is updated every frame and buried the Auto BF messages.
         if tostring(text):find("Value SwingForce/", 1, true)
             or tostring(text):find("Value MovementForce/", 1, true) then return end
@@ -11994,11 +12089,6 @@ do
             if stopped or not isCurrent() then return end
             local value, old = obj:GetAttribute(name), previous[name]
             previous[name] = value
-            local normalized = string.lower(obj.Name):gsub("[^%w]", "")
-            if (obj == player.Character or normalized == "pebblethrow" or normalized == "bruteforce")
-                and (scalar(value) or scalar(old) or type(value) == "string" or type(old) == "string") then
-                log(string.format("SWITCHTRACE %.2f %s.%s: %s -> %s", os.clock(), obj.Name, name, tostring(old), tostring(value)))
-            end
             if scalar(value) or scalar(old) then
                 changes = changes + 1
                 log("Attr " .. shortName(obj) .. "." .. name .. ": " .. tostring(old) .. " -> " .. tostring(value))
@@ -12029,7 +12119,6 @@ do
         charConns[#charConns + 1] = char.DescendantAdded:Connect(function(obj)
             if stopped or not isCurrent() then return end
             watch(obj)
-            if obj.Name == "InSkill" then log(string.format("SWITCHTRACE %.2f InSkill added", os.clock())) end
             if string.lower(obj.Name):find("parkour", 1, true) and obj:IsA("Sound") then
                 parkourSounds = parkourSounds + 1
                 log("Parkour sound appeared")
@@ -12040,23 +12129,10 @@ do
         end)
         charConns[#charConns + 1] = char.DescendantRemoving:Connect(function(obj)
             if stopped or not isCurrent() then return end
-            if obj.Name == "InSkill" then log(string.format("SWITCHTRACE %.2f InSkill removed", os.clock())) end
             if obj:IsA("IntValue") or obj:IsA("NumberValue") or obj:IsA("BoolValue") then
                 changes = changes + 1
                 log("Value removed " .. shortName(obj))
             end
-        end)
-        task.spawn(function()
-            local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 5)
-            local animator = hum and (hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 5))
-            if stopped or not isCurrent() or player.Character ~= char or not animator then return end
-            charConns[#charConns + 1] = animator.AnimationPlayed:Connect(function(track)
-                if stopped or not isCurrent() or player.Character ~= char or track.Looped
-                    or track.Priority.Value < Enum.AnimationPriority.Action.Value then return end
-                local anim = track.Animation
-                log(string.format("SWITCHTRACE %.2f anim %s pri=%s loop=%s", os.clock(),
-                    anim and tostring(anim.AnimationId) or "unknown", track.Priority.Name, tostring(track.Looped)))
-            end)
         end)
         log("Character ready. Press Clear before the test.")
     end
@@ -12069,29 +12145,5 @@ do
     end)
     allConns[#allConns + 1] = player.CharacterAdded:Connect(bindCharacter)
     allConns[#allConns + 1] = RestoreGui.Destroying:Connect(stop)
-    allConns[#allConns + 1] = UIS.TouchStarted:Connect(function()
-        if not stopped and isCurrent() then log(string.format("SWITCHTRACE %.2f physical touch", os.clock())) end
-    end)
-    task.spawn(function()
-        local action, conn
-        while not stopped and isCurrent() and RestoreGui.Parent do
-            local storage = game:GetService("ReplicatedStorage")
-            local keybind = storage:FindFirstChild("Keybind")
-            local combat = keybind and keybind:FindFirstChild("Combat")
-            local found = combat and combat:FindFirstChild("Skill 3")
-            if found and not found:IsA("InputAction") then found = nil end
-            if found ~= action then
-                if conn then conn:Disconnect(); conn = nil end
-                action = found
-                if action then
-                    conn = action.Pressed:Connect(function()
-                        log(string.format("SWITCHTRACE %.2f Skill 3 pressed", os.clock()))
-                    end)
-                end
-            end
-            task.wait(0.2)
-        end
-        if conn then conn:Disconnect() end
-    end)
     if player.Character then bindCharacter(player.Character) else log("Waiting for character.") end
 end
