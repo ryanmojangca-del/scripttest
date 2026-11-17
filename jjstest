@@ -8452,7 +8452,7 @@ _G.KAMUI_BuildCombat = function(UI)
         CC.BlockEpoch = CC.BlockEpoch + 1
         CC.BlockMobile = v
     end, blockCard)
-    toggleRow("M1 Back", "M1 after a completed automatic block", function()
+    toggleRow("M1 Back", "M1 after block (mobile M1 fast)", function()
         return CC.BlockM1Back
     end, function(v)
         CC.BlockM1Back = v
@@ -9250,7 +9250,8 @@ _G.KAMUI_BuildCombat = function(UI)
         end
         local epoch, mobile = CC.BlockEpoch, CC.BlockMobile
         if mobile then blockLog("native M1 queued after guard") end
-        task.delay(0.01, function()
+        -- Mobile starts on the next scheduler turn; PC timing stays unchanged.
+        task.delay(mobile and 0 or 0.01, function()
             local function valid()
                 return isCurrent() and CC.Block and not counterActive
                     and CC.BlockM1Back and CC.BlockMobile == mobile and CC.BlockEpoch == epoch
@@ -9262,9 +9263,9 @@ _G.KAMUI_BuildCombat = function(UI)
                 return
             end
             if mobile then
-                -- Give the game's block state time to release. Do not invent a
-                -- remote or spam M1: one attempt only after a bounded wait.
-                local minWait, deadline = os.clock() + 0.10, os.clock() + 0.70
+                -- One attempt as soon as the observed block marker is gone.
+                -- If it remains present, wait at most 0.70s; never spam M1.
+                local deadline = os.clock() + 0.70
                 local announced = false
                 while true do
                     if not valid() or blocking then
@@ -9274,7 +9275,7 @@ _G.KAMUI_BuildCombat = function(UI)
                     local info = char:FindFirstChild("Info")
                     local blockMarker = info and info:FindFirstChild("Block")
                     local now = os.clock()
-                    if not blockMarker and now >= minWait then break end
+                    if not blockMarker then break end
                     if blockMarker and not announced then
                         blockLog("native M1 waiting for Info/Block to clear")
                         announced = true
@@ -11318,7 +11319,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI DIAGNOSTIC - logs", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI DIAGNOSTIC - MOBILE M1 FAST", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
