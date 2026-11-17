@@ -11928,7 +11928,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE AUTO CHAIN", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - SWITCHER TRACE", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
@@ -11943,6 +11943,9 @@ do
     end
     local function log(text)
         if stopped or not isCurrent() then return end
+        -- This temporary build shows only the passive Switcher trace.
+        local entry = tostring(text)
+        if not entry:find("SWITCHTRACE", 1, true) and not entry:find("Cleared.", 1, true) then return end
         -- SwingForce is updated every frame and buried the Auto BF messages.
         if tostring(text):find("Value SwingForce/", 1, true)
             or tostring(text):find("Value MovementForce/", 1, true) then return end
@@ -11991,6 +11994,11 @@ do
             if stopped or not isCurrent() then return end
             local value, old = obj:GetAttribute(name), previous[name]
             previous[name] = value
+            local normalized = string.lower(obj.Name):gsub("[^%w]", "")
+            if (obj == player.Character or normalized == "pebblethrow" or normalized == "bruteforce")
+                and (scalar(value) or scalar(old) or type(value) == "string" or type(old) == "string") then
+                log(string.format("SWITCHTRACE %.2f %s.%s: %s -> %s", os.clock(), obj.Name, name, tostring(old), tostring(value)))
+            end
             if scalar(value) or scalar(old) then
                 changes = changes + 1
                 log("Attr " .. shortName(obj) .. "." .. name .. ": " .. tostring(old) .. " -> " .. tostring(value))
@@ -12021,6 +12029,7 @@ do
         charConns[#charConns + 1] = char.DescendantAdded:Connect(function(obj)
             if stopped or not isCurrent() then return end
             watch(obj)
+            if obj.Name == "InSkill" then log(string.format("SWITCHTRACE %.2f InSkill added", os.clock())) end
             if string.lower(obj.Name):find("parkour", 1, true) and obj:IsA("Sound") then
                 parkourSounds = parkourSounds + 1
                 log("Parkour sound appeared")
@@ -12031,10 +12040,23 @@ do
         end)
         charConns[#charConns + 1] = char.DescendantRemoving:Connect(function(obj)
             if stopped or not isCurrent() then return end
+            if obj.Name == "InSkill" then log(string.format("SWITCHTRACE %.2f InSkill removed", os.clock())) end
             if obj:IsA("IntValue") or obj:IsA("NumberValue") or obj:IsA("BoolValue") then
                 changes = changes + 1
                 log("Value removed " .. shortName(obj))
             end
+        end)
+        task.spawn(function()
+            local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 5)
+            local animator = hum and (hum:FindFirstChildOfClass("Animator") or hum:WaitForChild("Animator", 5))
+            if stopped or not isCurrent() or player.Character ~= char or not animator then return end
+            charConns[#charConns + 1] = animator.AnimationPlayed:Connect(function(track)
+                if stopped or not isCurrent() or player.Character ~= char or track.Looped
+                    or track.Priority.Value < Enum.AnimationPriority.Action.Value then return end
+                local anim = track.Animation
+                log(string.format("SWITCHTRACE %.2f anim %s pri=%s loop=%s", os.clock(),
+                    anim and tostring(anim.AnimationId) or "unknown", track.Priority.Name, tostring(track.Looped)))
+            end)
         end)
         log("Character ready. Press Clear before the test.")
     end
@@ -12047,5 +12069,29 @@ do
     end)
     allConns[#allConns + 1] = player.CharacterAdded:Connect(bindCharacter)
     allConns[#allConns + 1] = RestoreGui.Destroying:Connect(stop)
+    allConns[#allConns + 1] = UIS.TouchStarted:Connect(function()
+        if not stopped and isCurrent() then log(string.format("SWITCHTRACE %.2f physical touch", os.clock())) end
+    end)
+    task.spawn(function()
+        local action, conn
+        while not stopped and isCurrent() and RestoreGui.Parent do
+            local storage = game:GetService("ReplicatedStorage")
+            local keybind = storage:FindFirstChild("Keybind")
+            local combat = keybind and keybind:FindFirstChild("Combat")
+            local found = combat and combat:FindFirstChild("Skill 3")
+            if found and not found:IsA("InputAction") then found = nil end
+            if found ~= action then
+                if conn then conn:Disconnect(); conn = nil end
+                action = found
+                if action then
+                    conn = action.Pressed:Connect(function()
+                        log(string.format("SWITCHTRACE %.2f Skill 3 pressed", os.clock()))
+                    end)
+                end
+            end
+            task.wait(0.2)
+        end
+        if conn then conn:Disconnect() end
+    end)
     if player.Character then bindCharacter(player.Character) else log("Waiting for character.") end
 end
