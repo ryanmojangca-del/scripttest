@@ -10702,6 +10702,44 @@ _G.KAMUI_BuildCombat = function(UI)
             print("[KAMUI Chain] " .. text)
             if _G.KAMUI_ParkourDiagnostic then _G.KAMUI_ParkourDiagnostic("Chain: " .. text) end
         end
+        -- The game's mobile equivalent of the PC R feint is Special.
+        local function findRAction()
+            local storage = game:GetService("ReplicatedStorage")
+            local keybind = storage:FindFirstChild("Keybind")
+            local combat = keybind and keybind:FindFirstChild("Combat")
+            local action = combat and combat:FindFirstChild("Special")
+            if action and action:IsA("InputAction") then return action end
+            return nil, "Combat Special InputAction not found"
+        end
+        local function sendMobileFeintAction(action)
+            if nativeChainInput then return false, "another Chain input is held" end
+            if not action or not action.Parent then return false, "R action unavailable" end
+            local typeOk, isBool = pcall(function() return action.Type == Enum.InputActionType.Bool end)
+            local stateOk, state = pcall(function() return action:GetState() end)
+            if not typeOk or not isBool or not stateOk then return false, "R action type/state unavailable" end
+            if state == true then return false, "R action manually held" end
+            local binding
+            local made, err = pcall(function()
+                binding = Instance.new("InputBinding")
+                binding.Name = "KAMUI_MobileChainFeint"
+                binding.Type = Enum.InputBindingType.Scriptable
+                binding.Parent = action
+            end)
+            local sent = false
+            if made then sent, err = pcall(function() binding:Fire(true) end) end
+            if sent then
+                nativeChainInput = {action = action, binding = binding}
+            else
+                if binding then pcall(function() binding:Destroy() end) end
+                local ok, legacyErr = pcall(function() action:Fire(true) end)
+                if not ok then return false, tostring(err) .. "; legacy: " .. tostring(legacyErr) end
+                nativeChainInput = {action = action}
+            end
+            local own = nativeChainInput
+            task.wait(0.04)
+            if nativeChainInput == own then releaseChainInput() end
+            return true
+        end
         local function getMove(char)
             local moveset = char:FindFirstChild("Moveset", true)
             if not moveset then return nil end
@@ -10799,9 +10837,6 @@ _G.KAMUI_BuildCombat = function(UI)
                 end
                 local function runCycle()
                     observedHits = 0
-                    if UIS.TouchEnabled and not UIS.KeyboardEnabled and CC.FeintMode then
-                        return false, "mobile Chain: turn Feint mode off; mobile feint input is not supported"
-                    end
                     if not char or not root or not hum or hum.Health <= 0 or not getMove(char) then
                         return false, "select Vessel with Divergent Fist"
                     end
@@ -11105,20 +11140,34 @@ _G.KAMUI_BuildCombat = function(UI)
                                 return false, "Divergent Fist is on cooldown; press 3 again when ready"
                             end
                             if CC.FeintMode and observedHits >= 2 then
-                                    if phone then return false, "mobile Chain: Feint mode is not supported" end
+                                    local rAction
+                                    if phone then
+                                        local reason
+                                        rAction, reason = findRAction()
+                                        if not rAction then return false, "mobile feint: " .. tostring(reason) end
+                                        chainLog("mobile feint using Special")
+                                    end
                                     chainLog("two hits observed; sending feint 3 + R")
                                     CC.ChainSynthetic = true
                                     local started = sendThree()
                                     if not started or not valid() then
                                         CC.ChainSynthetic = false; return false, "feint canceled before R"
                                     end
-                                    local rDown = pcall(function()
-                                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.R, false, game)
-                                    end)
-                                    task.wait(0.04)
-                                    local rUp = pcall(function()
-                                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.R, false, game)
-                                    end)
+                                    local rDown, rUp
+                                    if phone then
+                                        local reason
+                                        rDown, reason = sendMobileFeintAction(rAction)
+                                        rUp = rDown
+                                        if not rDown then chainLog("mobile feint R failed: " .. tostring(reason)) end
+                                    else
+                                        rDown = pcall(function()
+                                            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.R, false, game)
+                                        end)
+                                        task.wait(0.04)
+                                        rUp = pcall(function()
+                                            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.R, false, game)
+                                        end)
+                                    end
                                     CC.ChainSynthetic = false
                                     if not rDown or not rUp then return false, "feint R input failed" end
                                     chainLog("feint sent; waiting 0.5s")
@@ -11209,7 +11258,6 @@ _G.KAMUI_BuildCombat = function(UI)
             end)
             if UIS:GetFocusedTextBox() then chainLog("close the text box first"); return end
             if CC.Counter then chainLog("turn Auto counter off"); return end
-            if CC.FeintMode then chainLog("turn Feint mode off on mobile"); return end
             beginChain()
         end
         local chainButtonInputConn = chainButton.InputBegan:Connect(function(input)
@@ -11890,7 +11938,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE CHAIN V3", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE FEINT", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
