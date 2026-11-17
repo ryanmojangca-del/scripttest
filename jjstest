@@ -8529,40 +8529,33 @@ _G.KAMUI_BuildCombat = function(UI)
             if math.random(1, 100) > CC.QTEChance then
                 log("mobile target skipped by chance"); return
             end
+            -- The manual trace showed exactly one MouseButton1Down listener,
+            -- and no Activated or MouseButton1Click listener. Invoke only that
+            -- known QTE signal, not a screen coordinate or an arbitrary remote.
+            if type(getconnections) ~= "function" then
+                log("mobile QTE: executor lacks getconnections"); return
+            end
+            local listed, listeners = pcall(getconnections, target.MouseButton1Down)
+            if not listed or type(listeners) ~= "table" then
+                log("mobile QTE: could not inspect button-down listener"); return
+            end
+            if #listeners ~= 1 then
+                log("mobile QTE: expected 1 button-down listener; found " .. tostring(#listeners)); return
+            end
+            -- MouseButton1Down accepts x and y. Use the current center of the
+            -- target, so no device-specific or fixed screen position is used.
             local center = pos + size / 2
-            local inset = game:GetService("GuiService"):GetGuiInset()
-            local point
-            for _, candidate in ipairs({center, center + inset, center - inset}) do
-                local ok, objects = pcall(function() return gui:GetGuiObjectsAtPosition(candidate.X, candidate.Y) end)
-                if ok then
-                    for _, obj in ipairs(objects) do
-                        if obj == target or obj:IsDescendantOf(target) then point = candidate; break end
-                    end
-                end
-                if point then break end
+            local x, y = math.floor(center.X + 0.5), math.floor(center.Y + 0.5)
+            local ok, err
+            if type(firesignal) == "function" then
+                ok, err = pcall(firesignal, target.MouseButton1Down, x, y)
+            else
+                ok, err = pcall(function() listeners[1]:Fire(x, y) end)
             end
-            if not point then
-                log("mobile target found, but touch coordinates could not be verified"); return
-            end
-            local own = {kind = "touch", id = 98, x = math.floor(point.X + 0.5), y = math.floor(point.Y + 0.5)}
-            held = own
-            pressToken = pressToken + 1
-            local token = pressToken
-            local ok, err = pcall(function() VirtualInputManager:SendTouchEvent(own.id, 0, own.x, own.y) end)
             if not ok then
-                held = nil
-                log("mobile touch failed: " .. tostring(err)); return
+                log("mobile QTE button-down failed: " .. tostring(err)); return
             end
-            log(string.format("mobile target tap sent at %d,%d", own.x, own.y))
-            task.delay(0.15, function()
-                if isCurrent() and CC.AutoQTE then
-                    log("mobile 0.15s later: target=" .. tostring(target.Parent ~= nil)
-                        .. "; visible=" .. tostring(target.Parent ~= nil and visible(target, gui)))
-                end
-            end)
-            task.delay(0.04, function()
-                if held == own and pressToken == token then release() end
-            end)
+            log("mobile QTE button-down sent; game result not verified")
         end
         local function scan()
             if not isCurrent() or not CC.AutoQTE then stop(); return end
@@ -12143,7 +12136,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - QTE MANUAL TRACE V4", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - AUTO QTE V5", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
@@ -12265,67 +12258,4 @@ do
     allConns[#allConns + 1] = player.CharacterAdded:Connect(bindCharacter)
     allConns[#allConns + 1] = RestoreGui.Destroying:Connect(stop)
     if player.Character then bindCharacter(player.Character) else log("Waiting for character.") end
-end
-
--- Passive QTE signal trace. Run with Auto QTE OFF and tap a square manually.
--- The trace observes events and counts listeners; it does not invoke them.
-do
-    local alive, watched, connections = true, nil, {}
-    local function log(message)
-        if _G.KAMUI_ParkourDiagnostic then _G.KAMUI_ParkourDiagnostic("QTE: " .. message) end
-    end
-    local function disconnect()
-        for _, conn in ipairs(connections) do pcall(function() conn:Disconnect() end) end
-        table.clear(connections)
-        watched = nil
-    end
-    local function countListeners(signal)
-        if type(getconnections) ~= "function" then return "unavailable" end
-        local ok, items = pcall(getconnections, signal)
-        return ok and tostring(#items) or "unavailable"
-    end
-    local function attach(button)
-        disconnect()
-        watched = button
-        local counts = {
-            "Activated=" .. countListeners(button.Activated),
-            "Click=" .. countListeners(button.MouseButton1Click),
-            "Down=" .. countListeners(button.MouseButton1Down),
-            "InputBegan=" .. countListeners(button.InputBegan),
-            "InputEnded=" .. countListeners(button.InputEnded)
-        }
-        log("button found; listener counts " .. table.concat(counts, ", "))
-        connections[#connections + 1] = button.InputBegan:Connect(function(input)
-            log(string.format("manual InputBegan %s at %.2f", input.UserInputType.Name, os.clock()))
-        end)
-        connections[#connections + 1] = button.InputEnded:Connect(function(input)
-            log(string.format("manual InputEnded %s at %.2f", input.UserInputType.Name, os.clock()))
-        end)
-        connections[#connections + 1] = button.Activated:Connect(function(input)
-            log(string.format("manual Activated %s at %.2f", input and input.UserInputType.Name or "unknown", os.clock()))
-        end)
-        connections[#connections + 1] = button.MouseButton1Down:Connect(function()
-            log(string.format("manual MouseButton1Down at %.2f", os.clock()))
-        end)
-        connections[#connections + 1] = button.MouseButton1Up:Connect(function()
-            log(string.format("manual MouseButton1Up at %.2f", os.clock()))
-        end)
-        connections[#connections + 1] = button.MouseButton1Click:Connect(function()
-            log(string.format("manual MouseButton1Click at %.2f", os.clock()))
-        end)
-    end
-    task.spawn(function()
-        while alive and isCurrent() and RestoreGui.Parent do
-            local pg = player:FindFirstChildOfClass("PlayerGui")
-            local qte = pg and pg:FindFirstChild("QTE")
-            local button = qte and qte:FindFirstChild("QTE_MOBILE")
-            if button and not button:IsA("TextButton") then button = nil end
-            if button ~= watched then
-                if button then attach(button) else disconnect() end
-            end
-            task.wait(0.05)
-        end
-        disconnect()
-    end)
-    ScreenGui.Destroying:Connect(function() alive = false; disconnect() end)
 end
