@@ -11938,7 +11938,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE FEINT", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - SKILL BUTTON TRACE", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
@@ -11953,6 +11953,9 @@ do
     end
     local function log(text)
         if stopped or not isCurrent() then return end
+        -- This temporary build keeps only the mobile skill-button hit test.
+        local entry = tostring(text)
+        if not entry:find("SKILL HIT", 1, true) and not entry:find("Cleared.", 1, true) then return end
         -- SwingForce is updated every frame and buried the Auto BF messages.
         if tostring(text):find("Value SwingForce/", 1, true)
             or tostring(text):find("Value MovementForce/", 1, true) then return end
@@ -12057,5 +12060,32 @@ do
     end)
     allConns[#allConns + 1] = player.CharacterAdded:Connect(bindCharacter)
     allConns[#allConns + 1] = RestoreGui.Destroying:Connect(stop)
+    -- Passive GUI hit-test only: record objects under a mobile skill tap.
+    allConns[#allConns + 1] = UIS.TouchStarted:Connect(function(input)
+        if stopped or not isCurrent() then return end
+        local pg = player:FindFirstChildOfClass("PlayerGui")
+        if not pg then log("SKILL HIT: PlayerGui unavailable"); return end
+        local ok, objects = pcall(function()
+            return pg:GetGuiObjectsAtPosition(input.Position.X, input.Position.Y)
+        end)
+        if not ok then log("SKILL HIT: GUI hit-test failed: " .. tostring(objects)); return end
+        local relevant = {}
+        for _, obj in ipairs(objects) do
+            if obj:IsA("GuiButton") or obj:IsA("TextLabel") or obj:IsA("TextBox") then
+                relevant[#relevant + 1] = obj
+            end
+        end
+        if #relevant == 0 then relevant = objects end
+        log("SKILL HIT: " .. #objects .. " total, " .. #relevant .. " candidates")
+        for i = 1, math.min(10, #relevant) do
+            local obj = relevant[i]
+            local label = ""
+            if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+                local t = tostring(obj.Text):gsub("%s+", " ")
+                if #t > 0 then label = " text=" .. string.sub(t, 1, 35) end
+            end
+            log("SKILL HIT " .. i .. " " .. obj.ClassName .. " " .. obj:GetFullName() .. label)
+        end
+    end)
     if player.Character then bindCharacter(player.Character) else log("Waiting for character.") end
 end
