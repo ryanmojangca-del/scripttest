@@ -9106,6 +9106,30 @@ _G.KAMUI_BuildCombat = function(UI)
     -- This pauses only new blocks; it does not forcibly end a held guard.
     do
         local meleeConn, alive = nil, true
+        -- Read-only trace: identify which game GUI button receives a physical
+        -- touch. This helps diagnose games that bypass Melee.Pressed on mobile.
+        local lastTouchTrace = 0
+        local touchConn = UIS.TouchStarted:Connect(function(input)
+            if not alive or not isCurrent() or not CC.BlockMobile or not CC.Block
+                or os.clock() - lastTouchTrace < 0.20 then return end
+            local pg = player:FindFirstChildOfClass("PlayerGui")
+            if not pg then return end
+            local ok, objects = pcall(function()
+                return pg:GetGuiObjectsAtPosition(input.Position.X, input.Position.Y)
+            end)
+            if not ok then return end
+            for _, obj in ipairs(objects) do
+                local button = obj:IsA("GuiButton") and obj or obj:FindFirstAncestorWhichIsA("GuiButton")
+                if button and button:IsDescendantOf(pg) and button.Visible then
+                    lastTouchTrace = os.clock()
+                    local image = button:IsA("ImageButton") and (" image=" .. tostring(button.Image)) or ""
+                    if _G.KAMUI_ParkourDiagnostic then
+                        _G.KAMUI_ParkourDiagnostic("Own touch: " .. button:GetFullName() .. image)
+                    end
+                    break
+                end
+            end
+        end)
         task.spawn(function()
             while alive and isCurrent() and ScreenGui.Parent do
                 local storage = game:GetService("ReplicatedStorage")
@@ -9128,6 +9152,7 @@ _G.KAMUI_BuildCombat = function(UI)
         end)
         ScreenGui.Destroying:Connect(function()
             alive = false
+            touchConn:Disconnect()
             if meleeConn then meleeConn:Disconnect() end
         end)
     end
@@ -11530,7 +11555,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI DIAGNOSTIC - MOBILE M1 PAUSE", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI DIAGNOSTIC - M1 INPUT TRACE", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
