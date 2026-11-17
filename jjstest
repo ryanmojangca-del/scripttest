@@ -8632,7 +8632,6 @@ _G.KAMUI_BuildCombat = function(UI)
             if v then
                 lastMobileStatus = nil
                 log("ON; touch=" .. tostring(UIS.TouchEnabled) .. "; keyboard=" .. tostring(UIS.KeyboardEnabled))
-                log("enter Final Judgement")
                 conn = RunService.Heartbeat:Connect(function()
                     local now = os.clock()
                     if now - lastScan < 0.05 then return end
@@ -12144,7 +12143,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - AUTO QTE DEBUG V2", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - AUTO QTE V3", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
@@ -12154,8 +12153,7 @@ do
     local lines, allConns, charConns = {}, {}, {}
     local attempts, parkourSounds, changes, stopped = 0, 0, 0, false
     local function refresh()
-        body.Text = string.format("Space presses: %d | Parkour sounds: %d | value changes: %d\n", attempts, parkourSounds, changes)
-            .. table.concat(lines, "\n")
+        body.Text = table.concat(lines, "\n")
     end
     local function log(text)
         if stopped or not isCurrent() then return end
