@@ -9070,6 +9070,7 @@ _G.KAMUI_BuildCombat = function(UI)
     --// filters can both miss attacks and admit non-attacks.
     local BLOCK_HOLD = 0.45
     local blocking, blockUntil = false, 0
+    local blockStartedAt = -math.huge
     local counterActive, counterUntil, counterTarget, counterKeyHeld = false, 0, nil, nil
     local blockTarget, rotationHum, previousAutoRotate = nil, nil, nil
     local function releaseBlockCam()
@@ -9401,6 +9402,7 @@ _G.KAMUI_BuildCombat = function(UI)
             blocking = false
             sendBlock(false)
         end
+        blockStartedAt = -math.huge
         blockTarget = nil
         releaseBlockCam()
         -- A completed *attempt*, not a confirmed server-side block. Never fire
@@ -9421,10 +9423,11 @@ _G.KAMUI_BuildCombat = function(UI)
                 return isCurrent() and CC.Block and not counterActive
                     and CC.BlockM1Back and CC.BlockMobile == mobile and CC.BlockEpoch == epoch
                     and player.Character == char and target.Parent and not UIS:GetFocusedTextBox()
+                    and (not mobile or os.clock() >= ownAttackUntil)
                     and (mobile or not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1))
             end
             if not valid() then
-                if mobile then blockLog("native M1 cancelled: settings, character, or counter changed") end
+                if mobile then blockLog("native M1 cancelled: settings, character, counter, or own attack") end
                 return
             end
             if mobile then
@@ -9475,6 +9478,51 @@ _G.KAMUI_BuildCombat = function(UI)
             end)
         end)
     end
+    -- The mobile GUI can bypass Melee.Pressed. The diagnostic showed these
+    -- attributes changing on the LOCAL character when an M1 actually starts.
+    -- They are a fallback, not a prediction: replication can arrive after a
+    -- nearby animation has already triggered a guard.
+    local ownM1AttributeConn
+    local lastOwnM1Trace = -math.huge
+    local function bindOwnM1Attributes(char)
+        if ownM1AttributeConn then ownM1AttributeConn:Disconnect(); ownM1AttributeConn = nil end
+        local previous = {
+            CurrentM1 = char:GetAttribute("CurrentM1"),
+            LastM1 = char:GetAttribute("LastM1")
+        }
+        ownM1AttributeConn = char.AttributeChanged:Connect(function(name)
+            if name ~= "CurrentM1" and name ~= "LastM1" then return end
+            local value, old = char:GetAttribute(name), previous[name]
+            previous[name] = value
+            if not isCurrent() or player.Character ~= char or not CC.BlockMobile
+                or value == nil or value == old then return end
+            -- Ignore clearing/resetting a combo to zero; the attack counters
+            -- and timestamp observed in the trace are numeric.
+            if type(value) ~= "number" or value <= 0 then return end
+            if name == "CurrentM1" and type(old) ~= "number" then return end
+            local now = os.clock()
+            ownAttackAt = now
+            ownAttackUntil = math.max(ownAttackUntil, now + 0.6)
+            -- If M1 confirmation arrives just after an automatic guard began,
+            -- undo only our own recent guard; never release a manual guard or
+            -- queue M1 Back for this cancellation.
+            local cancelled = blocking and nativeBlock ~= nil and now - blockStartedAt <= 0.35
+            if cancelled then releaseBlock(false) end
+            if now - lastOwnM1Trace > 0.10 then
+                lastOwnM1Trace = now
+                if _G.KAMUI_ParkourDiagnostic then
+                    _G.KAMUI_ParkourDiagnostic("Block: own M1 attribute " .. name
+                        .. "; new blocks paused" .. (cancelled and "; recent guard cancelled" or ""))
+                end
+            end
+        end)
+    end
+    local ownM1CharacterConn = player.CharacterAdded:Connect(bindOwnM1Attributes)
+    if player.Character then bindOwnM1Attributes(player.Character) end
+    ScreenGui.Destroying:Connect(function()
+        ownM1CharacterConn:Disconnect()
+        if ownM1AttributeConn then ownM1AttributeConn:Disconnect(); ownM1AttributeConn = nil end
+    end)
     _G.KAMUI_BlockRelease = releaseBlock
     local blockCharacterConn = player.CharacterAdded:Connect(function() releaseBlock(); releaseNativeM1() end)
     ScreenGui.Destroying:Connect(function()
@@ -9636,7 +9684,10 @@ _G.KAMUI_BuildCombat = function(UI)
         seenTracks[track] = true
         trackLog(track, "accepted", dist)
         if canCounter then startCounter(plr, track); return end
-        if not blocking then blocking = sendBlock(true) end
+        if not blocking then
+            blocking = sendBlock(true)
+            if blocking then blockStartedAt = os.clock() end
+        end
         if blocking then
             blockTarget = plr
             CC.BlockCamActive = CC.BlockCamEnabled
