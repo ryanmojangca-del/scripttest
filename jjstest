@@ -7615,6 +7615,13 @@ _G.KAMUI_BuildCombat = function(UI)
         end)
 
     end
+    -- Keep Vessel's delay directly under BF mode, even with Chain mode off.
+    vesselBFDelayRow = sliderRow("BF Delay", function() return CC.AutoBFDelay end,
+        function(v) CC.AutoBFDelay = math.floor(v * 100 + 0.5) / 100 end,
+        0.10, 0.80, function(v) return string.format("%.2fs", v) end, bfCard, true)
+    vesselBFDelayRow.Visible = CC.AutoBFMode == "Vessel"
+    vesselBFDelayRow.Name = "VesselBFDelayRow"
+
     chainModeRow, chainModePaint = toggleRow("Chain mode", "Press 3 once: attempt up to four Black Flashes", function()
         return CC.ChainMode
     end, function(v)
@@ -7764,10 +7771,6 @@ _G.KAMUI_BuildCombat = function(UI)
     chainOnly(sliderRow("Fake dash speed", function() return CC.ChainSpeed end,
         function(v) CC.ChainSpeed = math.floor(v * 10 + 0.5) / 10 end,
         0.5, 8.0, function(v) return string.format("%.1fx", v) end, bfCard, true))
-    vesselBFDelayRow = sliderRow("BF Delay", function() return CC.AutoBFDelay end,
-        function(v) CC.AutoBFDelay = math.floor(v * 100 + 0.5) / 100 end,
-        0.10, 0.80, function(v) return string.format("%.2fs", v) end, bfCard, true)
-    vesselBFDelayRow.Visible = CC.AutoBFMode == "Vessel"
 
     local function switcherOnly(row)
         table.insert(switcherRows, row)
@@ -11753,7 +11756,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI DIAGNOSTIC - M1 INPUT TRACE", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - BF DELAY V2", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
