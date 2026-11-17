@@ -11212,7 +11212,8 @@ do
     local function log(text)
         if stopped or not isCurrent() then return end
         -- SwingForce is updated every frame and buried the Auto BF messages.
-        if tostring(text):find("Value SwingForce/", 1, true) then return end
+        if tostring(text):find("Value SwingForce/", 1, true)
+            or tostring(text):find("Value MovementForce/", 1, true) then return end
         lines[#lines + 1] = tostring(text)
         while #lines > 14 do table.remove(lines, 1) end
         refresh()
