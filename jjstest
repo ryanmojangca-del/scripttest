@@ -9280,9 +9280,43 @@ _G.KAMUI_BuildCombat = function(UI)
             CC.BlockCamActive = CC.BlockCamEnabled
             local hold = BLOCK_HOLD
             if CC.BlockMobile then
-                -- Rearm faster on mobile instead of waiting up to 1.5 seconds
-                -- for a long animation. New threats extend the current guard.
-                hold = 0.30
+                -- The opponent's InSkill marker and animation duration are
+                -- heuristics, not authoritative attack classification.
+                local startedAt = os.clock()
+                local owner = nativeBlock
+                local function mobileHold()
+                    local info = oc and oc:FindFirstChild("Info")
+                    local skillMarker = info and info:FindFirstChild("InSkill")
+                    local duration, remaining = 0, 0
+                    if track.Length > 0 and track.Speed > 0 then
+                        duration = track.Length / track.Speed
+                        remaining = math.max(0, (track.Length - track.TimePosition) / track.Speed)
+                    end
+                    if skillMarker or duration > 0.65 then
+                        -- Unknown duration with an InSkill marker gets a
+                        -- conservative hold; long animations are capped.
+                        return math.clamp(remaining > 0 and remaining or 0.85, 0.65, 1.5)
+                    end
+                    return 0.30
+                end
+                hold = mobileHold()
+                -- Animation length/skill markers can arrive just after
+                -- AnimationPlayed; recheck while the same owned guard is active.
+                for _, delaySeconds in ipairs({0.08, 0.18}) do
+                    task.delay(delaySeconds, function()
+                        if not isCurrent() or not CC.Block or not CC.BlockMobile
+                            or not blocking or nativeBlock ~= owner or blockTarget ~= plr
+                            or not track.IsPlaying then return end
+                        local adjusted = mobileHold()
+                        if adjusted > 0.30 then
+                            local untilTime = math.min(startedAt + 1.5, os.clock() + adjusted)
+                            if untilTime > blockUntil then
+                                blockUntil = untilTime
+                                blockLog(string.format("native guard extended: %.2fs", untilTime - os.clock()))
+                            end
+                        end
+                    end)
+                end
             elseif CC.BlockM1Back then
                 -- Counterattack sooner, at the cost of a shorter guard.
                 hold = 0.20
