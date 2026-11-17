@@ -7242,7 +7242,6 @@ do
     CC.ChainSpeed = 1.0 -- fake-dash speed multiplier; 1x is the original timing
     CC.ChainTarget = nil
     CC.ChainSynthetic = false
-    CC.ChainMobilePaint = nil
     CC.AutoBFMode = "Vessel"
     CC.AutoBF = false -- timed second press for selected character
     CC.SwitcherBFDelay = 0.65 -- starting estimates; adjustable, not guaranteed
@@ -7479,7 +7478,6 @@ _G.KAMUI_BuildCombat = function(UI)
         local vessel = CC.AutoBFMode == "Vessel"
         if chainModeRow then chainModeRow.Visible = vessel end
         if vesselBFDelayRow then vesselBFDelayRow.Visible = vessel end
-        if CC.ChainMobilePaint then CC.ChainMobilePaint() end
         for _, row in ipairs(switcherRows) do row.Visible = CC.AutoBFMode == "Switcher" end
         for _, row in ipairs(chainRows) do row.Visible = vessel and CC.ChainMode end
     end
@@ -7624,7 +7622,7 @@ _G.KAMUI_BuildCombat = function(UI)
     vesselBFDelayRow.Visible = CC.AutoBFMode == "Vessel"
     vesselBFDelayRow.Name = "VesselBFDelayRow"
 
-    chainModeRow, chainModePaint = toggleRow("Chain mode", "PC: press 3; mobile: tap Chain button", function()
+    chainModeRow, chainModePaint = toggleRow("Chain mode", "Tap Divergent Fist to start Chain", function()
         return CC.ChainMode
     end, function(v)
         CC.ChainMode = v and true or false
@@ -7639,7 +7637,7 @@ _G.KAMUI_BuildCombat = function(UI)
         if CC.AutoBFCancel then CC.AutoBFCancel() end
         if CC.SwitcherBFCancel then CC.SwitcherBFCancel() end
         if _G.KAMUI_ParkourDiagnostic then
-            _G.KAMUI_ParkourDiagnostic("Chain: " .. (v and "ON; press 3 to start" or "OFF"))
+            _G.KAMUI_ParkourDiagnostic("Chain: " .. (v and "ON; use Divergent Fist to start" or "OFF"))
         end
     end, bfCard)
     chainOnly(toggleRow("Feint mode", "Feint every two hits; press 3 again after cooldown", function()
@@ -10792,7 +10790,9 @@ _G.KAMUI_BuildCombat = function(UI)
             ringConn:Disconnect()
             if orbitRing.Parent then orbitRing:Destroy() end
         end)
-        local function beginChain()
+        -- mobileStartAt is the time of the physical touch that already
+        -- started Divergent Fist. PC calls without it and keeps its old flow.
+        local function beginChain(mobileStartAt)
             if chainBusy then chainLog("already working"); return end
             chainBusy = true
             local epoch = CC.ChainEpoch
@@ -10844,8 +10844,13 @@ _G.KAMUI_BuildCombat = function(UI)
                     local info = char:FindFirstChild("Info")
                     local inSkill = info and info:FindFirstChild("InSkill")
                     local ragdoll = char:GetAttribute("Ragdoll")
-                    if hum.Sit or (info and (info:FindFirstChild("Stun") or info:FindFirstChild("Block")))
-                        or (inSkill and inSkill:IsA("BoolValue") and not inSkill.Value)
+                    local stun = info and info:FindFirstChild("Stun")
+                    local block = info and info:FindFirstChild("Block")
+                    -- During the already-started mobile skill the game can add
+                    -- a false Stun BoolValue; its presence alone isn't a stun.
+                    local stunned = stun and (not mobileStartAt or not stun:IsA("BoolValue") or stun.Value)
+                    if hum.Sit or stunned or block
+                        or (not mobileStartAt and inSkill and inSkill:IsA("BoolValue") and not inSkill.Value)
                         or ragdoll == true or (type(ragdoll) == "number" and ragdoll > 0) then
                         return false, "movement or skill blocked"
                     end
@@ -10854,7 +10859,7 @@ _G.KAMUI_BuildCombat = function(UI)
                     end
                     local move = getMove(char)
                     local readyAt = move:GetAttribute("ReadyAt")
-                    if type(readyAt) == "number" and readyAt > Workspace:GetServerTimeNow() + 0.15 then
+                    if not mobileStartAt and type(readyAt) == "number" and readyAt > Workspace:GetServerTimeNow() + 0.15 then
                         return false, "Divergent Fist is on cooldown; press 3 again when ready"
                     end
                     CC.ChainTarget = target
@@ -10863,7 +10868,7 @@ _G.KAMUI_BuildCombat = function(UI)
                     CC.BFTrackTarget = target
                     -- Set priority before the next render so block/aimbot relinquish control.
                     CC.TargetLockEngaged = CC.TargetLock
-                    seenSkill = false
+                    seenSkill = mobileStartAt ~= nil and inSkill ~= nil or false
                     lastHealth = targetHum.Health
                     healthConn = targetHum.HealthChanged:Connect(function(health)
                         if observingDamage and lastHealth and health < lastHealth then
@@ -10898,8 +10903,16 @@ _G.KAMUI_BuildCombat = function(UI)
                             CC.TargetLockEngaged = CC.TargetLock
                         end
                         local readyAt = move:GetAttribute("ReadyAt")
-                        if type(readyAt) == "number" and readyAt > Workspace:GetServerTimeNow() + 0.15 then
+                        local alreadyStarted = mobileStartAt ~= nil and strike == 1
+                        if not alreadyStarted and type(readyAt) == "number" and readyAt > Workspace:GetServerTimeNow() + 0.15 then
                             return false, "Divergent Fist is on cooldown; press 3 again when ready"
+                        end
+                        if alreadyStarted then
+                            -- Watch damage during movement because the manual
+                            -- first attack is already running.
+                            strikeDamage = false
+                            lastHealth = targetHum.Health
+                            observingDamage = true
                         end
                         chainLog("attempt " .. strike)
                         local orbitRadius = CC.ChainRadius -- keep one radius for this movement
@@ -11079,23 +11092,35 @@ _G.KAMUI_BuildCombat = function(UI)
                             if nativeChainInput == own then releaseChainInput() end
                             return true
                         end
-                        if dashEndedAt then
+                        if alreadyStarted then
+                            chainLog("first mobile skill already started; preparing follow-up")
+                        elseif dashEndedAt then
                             chainLog(string.format("starting skill %.0fms after movement", (os.clock() - dashEndedAt) * 1000))
                         else
                             chainLog("already behind; starting skill")
                         end
-                        -- Reset the per-strike signal before the first press.
-                        seenSkill = false
+                        if not alreadyStarted then seenSkill = false end
                         local currentInfo = char:FindFirstChild("Info")
                         if currentInfo and currentInfo:FindFirstChild("InSkill") then seenSkill = true end
-                        strikeDamage = false
-                        lastHealth = targetHum.Health
-                        observingDamage = true
-                        local first = sendThree()
-                        local nextAt = os.clock() + math.max(0, CC.AutoBFDelay - 0.04)
+                        if not alreadyStarted then
+                            strikeDamage = false
+                            lastHealth = targetHum.Health
+                            observingDamage = true
+                        end
+                        -- The physical mobile tap already sent the first skill;
+                        -- do not send an extra first press on that strike.
+                        local first = alreadyStarted or sendThree()
+                        local nextAt = alreadyStarted and (mobileStartAt + CC.AutoBFDelay)
+                            or (os.clock() + math.max(0, CC.AutoBFDelay - 0.04))
                         while valid() and os.clock() < nextAt do task.wait() end
                         if not first or not valid() then
                             CC.ChainSynthetic = false; return false, "canceled before BF follow-up"
+                        end
+                        if alreadyStarted and char:GetAttribute("FlashTime") == nil then
+                            CC.ChainSynthetic = false; return false, "mobile follow-up missed: FlashTime already cleared"
+                        end
+                        if alreadyStarted then
+                            chainLog(string.format("mobile follow-up %.2fs after touch", os.clock() - mobileStartAt))
                         end
                         local second = sendThree()
                         task.wait(0.06)
@@ -11216,79 +11241,44 @@ _G.KAMUI_BuildCombat = function(UI)
             if state == Enum.UserInputState.Begin then beginChain() end
             return Enum.ContextActionResult.Sink
         end, false, Enum.ContextActionPriority.High.Value + 1000, Enum.KeyCode.Three)
-        -- A separate button starts the chain before the game skill is fired.
-        -- The mobile game's own skill button does not expose the PC key event.
-        local chainButton = Instance.new("TextButton")
-        chainButton.Name = "MobileChainButton"
-        chainButton:SetAttribute("KamuiSkinned", true)
-        chainButton.Size = UDim2.fromOffset(116, 36)
-        chainButton.Position = UDim2.new(0.68, 0, 0.32, 0)
-        chainButton.AnchorPoint = Vector2.new(0.5, 0.5)
-        chainButton.BackgroundColor3 = THEME.BackgroundLight
-        chainButton.TextColor3 = THEME.Text
-        chainButton.Font = Enum.Font.GothamMedium
-        chainButton.TextSize = 13
-        chainButton.Text = "Chain BF"
-        -- Put the button above the diagnostic window (ZIndex 100) and do not
-        -- make the action button draggable: dragging can consume mobile taps.
-        chainButton.Active, chainButton.Draggable = true, false
-        chainButton.ZIndex = 150
-        chainButton.Parent = RestoreGui
-        applyCorner(chainButton, 17)
-        UI.stroke(chainButton, THEME.Red)
-        local function paintMobileChain()
-            if chainButton.Parent then
-                chainButton.Visible = isCurrent() and UIS.TouchEnabled and not UIS.KeyboardEnabled
-                    and CC.AutoBFMode == "Vessel" and CC.ChainMode
-            end
-        end
-        CC.ChainMobilePaint = paintMobileChain
-        paintMobileChain()
-        local lastChainTap = -math.huge
-        local function handleChainTap(source)
-            if not isCurrent() or not chainButton.Parent or not chainButton.Visible then return end
-            local now = os.clock()
-            -- Both the GUI and global touch path can see the same touch.
-            if now - lastChainTap < 0.3 then return end
-            lastChainTap = now
-            chainLog("mobile button tapped (" .. source .. ")")
-            chainButton.Text = "Chain: starting"
-            task.delay(0.7, function()
-                if chainButton.Parent then chainButton.Text = "Chain BF" end
+        -- A recent physical touch plus FlashTime creation is the same
+        -- best-effort mobile signal used by normal Vessel Auto BF. It does not
+        -- intercept the game's button: the first skill is already running.
+        local mobileTouchAt, mobileTouchSerial, consumedTouch = -math.huge, 0, 0
+        local chainFlashConn
+        local chainTouchConn = UIS.TouchStarted:Connect(function()
+            if not isCurrent() or not ScreenGui.Parent or not UIS.TouchEnabled or UIS.KeyboardEnabled
+                or CC.AutoBFMode ~= "Vessel" or not CC.ChainMode or chainBusy
+                or UIS:GetFocusedTextBox() then return end
+            mobileTouchSerial = mobileTouchSerial + 1
+            mobileTouchAt = os.clock()
+        end)
+        local function bindMobileChainCharacter(char)
+            if chainFlashConn then chainFlashConn:Disconnect(); chainFlashConn = nil end
+            consumedTouch = mobileTouchSerial
+            local previous = char:GetAttribute("FlashTime")
+            chainFlashConn = char:GetAttributeChangedSignal("FlashTime"):Connect(function()
+                local old, value = previous, char:GetAttribute("FlashTime")
+                previous = value
+                local now = os.clock()
+                if not isCurrent() or not ScreenGui.Parent or player.Character ~= char
+                    or not UIS.TouchEnabled or UIS.KeyboardEnabled or CC.AutoBFMode ~= "Vessel"
+                    or not CC.ChainMode or chainBusy or CC.ChainSynthetic or UIS:GetFocusedTextBox()
+                    or old ~= nil or value ~= 0 or mobileTouchSerial == consumedTouch
+                    or now - mobileTouchAt > 0.60 or not getMove(char) then return end
+                consumedTouch = mobileTouchSerial
+                chainLog(string.format("mobile FlashTime detected %.2fs after touch", now - mobileTouchAt))
+                beginChain(mobileTouchAt)
             end)
-            if UIS:GetFocusedTextBox() then chainLog("close the text box first"); return end
-            if CC.Counter then chainLog("turn Auto counter off"); return end
-            beginChain()
         end
-        local chainButtonInputConn = chainButton.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.Touch
-                or input.UserInputType == Enum.UserInputType.MouseButton1 then
-                handleChainTap("button input")
-            end
-        end)
-        -- Some executors do not deliver GuiButton events reliably. Observe
-        -- physical touches globally as a fallback, only inside this button.
-        local chainTouchConn = UIS.TouchStarted:Connect(function(input)
-            if not isCurrent() or not chainButton.Parent or not chainButton.Visible then return end
-            local pos, size = chainButton.AbsolutePosition, chainButton.AbsoluteSize
-            if size.X <= 0 or size.Y <= 0 then return end
-            local point = Vector2.new(input.Position.X, input.Position.Y)
-            local inset = game:GetService("GuiService"):GetGuiInset()
-            local function inside(p)
-                return p.X >= pos.X and p.X <= pos.X + size.X
-                    and p.Y >= pos.Y and p.Y <= pos.Y + size.Y
-            end
-            if inside(point) or inside(point - inset) or inside(point + inset) then
-                handleChainTap("touch fallback")
-            end
-        end)
+        local chainCharacterConn = player.CharacterAdded:Connect(bindMobileChainCharacter)
+        if player.Character then bindMobileChainCharacter(player.Character) end
         local function cleanupChain()
             pcall(function() CAS:UnbindAction(actionName) end)
-            chainButtonInputConn:Disconnect()
             chainTouchConn:Disconnect()
+            chainCharacterConn:Disconnect()
+            if chainFlashConn then chainFlashConn:Disconnect(); chainFlashConn = nil end
             releaseChainInput()
-            if CC.ChainMobilePaint == paintMobileChain then CC.ChainMobilePaint = nil end
-            if chainButton.Parent then chainButton:Destroy() end
             CC.ChainMode = false
             CC.ChainEpoch = CC.ChainEpoch + 1
             CC.BFTrackToken = CC.BFTrackToken + 1
@@ -11938,7 +11928,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - SKILL BUTTON TRACE", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE AUTO CHAIN", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
@@ -11953,9 +11943,6 @@ do
     end
     local function log(text)
         if stopped or not isCurrent() then return end
-        -- This temporary build keeps only the mobile skill-button hit test.
-        local entry = tostring(text)
-        if not entry:find("SKILL HIT", 1, true) and not entry:find("Cleared.", 1, true) then return end
         -- SwingForce is updated every frame and buried the Auto BF messages.
         if tostring(text):find("Value SwingForce/", 1, true)
             or tostring(text):find("Value MovementForce/", 1, true) then return end
@@ -12060,32 +12047,5 @@ do
     end)
     allConns[#allConns + 1] = player.CharacterAdded:Connect(bindCharacter)
     allConns[#allConns + 1] = RestoreGui.Destroying:Connect(stop)
-    -- Passive GUI hit-test only: record objects under a mobile skill tap.
-    allConns[#allConns + 1] = UIS.TouchStarted:Connect(function(input)
-        if stopped or not isCurrent() then return end
-        local pg = player:FindFirstChildOfClass("PlayerGui")
-        if not pg then log("SKILL HIT: PlayerGui unavailable"); return end
-        local ok, objects = pcall(function()
-            return pg:GetGuiObjectsAtPosition(input.Position.X, input.Position.Y)
-        end)
-        if not ok then log("SKILL HIT: GUI hit-test failed: " .. tostring(objects)); return end
-        local relevant = {}
-        for _, obj in ipairs(objects) do
-            if obj:IsA("GuiButton") or obj:IsA("TextLabel") or obj:IsA("TextBox") then
-                relevant[#relevant + 1] = obj
-            end
-        end
-        if #relevant == 0 then relevant = objects end
-        log("SKILL HIT: " .. #objects .. " total, " .. #relevant .. " candidates")
-        for i = 1, math.min(10, #relevant) do
-            local obj = relevant[i]
-            local label = ""
-            if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
-                local t = tostring(obj.Text):gsub("%s+", " ")
-                if #t > 0 then label = " text=" .. string.sub(t, 1, 35) end
-            end
-            log("SKILL HIT " .. i .. " " .. obj.ClassName .. " " .. obj:GetFullName() .. label)
-        end
-    end)
     if player.Character then bindCharacter(player.Character) else log("Waiting for character.") end
 end
