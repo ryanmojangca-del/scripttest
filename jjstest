@@ -11196,14 +11196,13 @@ _G.KAMUI_BuildCombat = function(UI)
         CC.ChainMobilePaint = paintMobileChain
         paintMobileChain()
         local lastChainTap = -math.huge
-        chainButton.InputBegan:Connect(function(input)
-            if input.UserInputType ~= Enum.UserInputType.Touch
-                and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
-            if not isCurrent() or not chainButton.Visible then return end
+        local function handleChainTap(source)
+            if not isCurrent() or not chainButton.Parent or not chainButton.Visible then return end
             local now = os.clock()
+            -- Both the GUI and global touch path can see the same touch.
             if now - lastChainTap < 0.3 then return end
             lastChainTap = now
-            chainLog("mobile button tapped")
+            chainLog("mobile button tapped (" .. source .. ")")
             chainButton.Text = "Chain: starting"
             task.delay(0.7, function()
                 if chainButton.Parent then chainButton.Text = "Chain BF" end
@@ -11212,9 +11211,33 @@ _G.KAMUI_BuildCombat = function(UI)
             if CC.Counter then chainLog("turn Auto counter off"); return end
             if CC.FeintMode then chainLog("turn Feint mode off on mobile"); return end
             beginChain()
+        end
+        local chainButtonInputConn = chainButton.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch
+                or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                handleChainTap("button input")
+            end
+        end)
+        -- Some executors do not deliver GuiButton events reliably. Observe
+        -- physical touches globally as a fallback, only inside this button.
+        local chainTouchConn = UIS.TouchStarted:Connect(function(input)
+            if not isCurrent() or not chainButton.Parent or not chainButton.Visible then return end
+            local pos, size = chainButton.AbsolutePosition, chainButton.AbsoluteSize
+            if size.X <= 0 or size.Y <= 0 then return end
+            local point = Vector2.new(input.Position.X, input.Position.Y)
+            local inset = game:GetService("GuiService"):GetGuiInset()
+            local function inside(p)
+                return p.X >= pos.X and p.X <= pos.X + size.X
+                    and p.Y >= pos.Y and p.Y <= pos.Y + size.Y
+            end
+            if inside(point) or inside(point - inset) or inside(point + inset) then
+                handleChainTap("touch fallback")
+            end
         end)
         local function cleanupChain()
             pcall(function() CAS:UnbindAction(actionName) end)
+            chainButtonInputConn:Disconnect()
+            chainTouchConn:Disconnect()
             releaseChainInput()
             if CC.ChainMobilePaint == paintMobileChain then CC.ChainMobilePaint = nil end
             if chainButton.Parent then chainButton:Destroy() end
@@ -11867,7 +11890,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE CHAIN V2", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE CHAIN V3", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
