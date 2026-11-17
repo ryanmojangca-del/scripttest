@@ -13,6 +13,12 @@ local VirtualInputManager = game:GetService("VirtualInputManager")
 local scriptId = math.random(1, 1000000)
 _G.SkidwareId = scriptId
 
+-- Restore colors recorded by a previous run before replacing its UI.
+if type(_G.KAMUI_SkillColorsRestore) == "function" then
+    pcall(_G.KAMUI_SkillColorsRestore)
+    _G.KAMUI_SkillColorsRestore = nil
+end
+
 -- Close the standalone block-binding diagnostic from the previous test.
 -- It has its own ScreenGui and otherwise stays above the Kamui interface.
 do
@@ -298,7 +304,7 @@ local function getId(str)
     return tostring(str):match("%d+")
 end
 
---// Shared marker used by dash assist and the dash multiplier.
+--// Shared marker used by scripted movement and the dash multiplier.
 _G.KAMUI_MarkScriptDash = function()
     _G.KAMUI_ScriptDashAt = os.clock()
 end
@@ -783,9 +789,9 @@ local lastDestroyClick = 0
 _G.KAMUI_DestroyClick = function()
     local currentTime = tick()
     if currentTime - lastDestroyClick <= 5 then
-        if SkillsColorConnection then
-            SkillsColorConnection:Disconnect()
-            SkillsColorConnection = nil
+        if type(_G.KAMUI_SkillColorsRestore) == "function" then
+            _G.KAMUI_SkillColorsRestore()
+            _G.KAMUI_SkillColorsRestore = nil
         end
         --// TURN FPS BOOST OFF BEFORE DESTROYING
         if potatoEnabled then
@@ -2829,6 +2835,38 @@ local GetB, SetB = CreateColorSlider(
 )
 
 --// SKILLS COLOR APPLICATION
+-- Keep the first unmodified value, even when a different color is applied later.
+-- Weak keys allow effects that disappear to be garbage collected.
+do
+    local originals = setmetatable({}, { __mode = "k" })
+    _G.KAMUI_SetSkillColorProperty = function(instance, property, value)
+        local ok, original = pcall(function() return instance[property] end)
+        if not ok then return end
+        local properties = originals[instance]
+        if not properties then
+            properties = {}
+            originals[instance] = properties
+        end
+        if properties[property] == nil then
+            properties[property] = original
+        end
+        pcall(function() instance[property] = value end)
+    end
+    _G.KAMUI_SkillColorsRestore = function()
+        SkillsColorEnabled = false
+        if SkillsColorConnection then
+            SkillsColorConnection:Disconnect()
+            SkillsColorConnection = nil
+        end
+        for instance, properties in pairs(originals) do
+            for property, original in pairs(properties) do
+                pcall(function() instance[property] = original end)
+            end
+        end
+        table.clear(originals)
+    end
+end
+
 local function ApplySkillColorToInstance(instance)
     if not SkillsColorEnabled then
         return
@@ -2837,22 +2875,22 @@ local function ApplySkillColorToInstance(instance)
         return
     end
     if instance:IsA("ParticleEmitter") then
-        instance.Color = ColorSequence.new(AppliedSkillColor)
+        _G.KAMUI_SetSkillColorProperty(instance, "Color", ColorSequence.new(AppliedSkillColor))
     elseif instance:IsA("Trail") then
-        instance.Color = ColorSequence.new(AppliedSkillColor)
+        _G.KAMUI_SetSkillColorProperty(instance, "Color", ColorSequence.new(AppliedSkillColor))
     elseif instance:IsA("Beam") then
-        instance.Color = ColorSequence.new(AppliedSkillColor)
+        _G.KAMUI_SetSkillColorProperty(instance, "Color", ColorSequence.new(AppliedSkillColor))
     elseif instance:IsA("PointLight")
         or instance:IsA("SpotLight")
         or instance:IsA("SurfaceLight") then
-        instance.Color = AppliedSkillColor
+        _G.KAMUI_SetSkillColorProperty(instance, "Color", AppliedSkillColor)
     elseif instance:IsA("Highlight") then
-        instance.FillColor = AppliedSkillColor
-        instance.OutlineColor = AppliedSkillColor
+        _G.KAMUI_SetSkillColorProperty(instance, "FillColor", AppliedSkillColor)
+        _G.KAMUI_SetSkillColorProperty(instance, "OutlineColor", AppliedSkillColor)
     elseif instance:IsA("BasePart") then
         if instance.Material ==
             Enum.Material.Neon then
-            instance.Color = AppliedSkillColor
+            _G.KAMUI_SetSkillColorProperty(instance, "Color", AppliedSkillColor)
         end
     end
 end
@@ -2934,11 +2972,7 @@ ResetColorsBtn.MouseButton1Click:Connect(function()
     if not isCurrent() then
         return
     end
-    SkillsColorEnabled = false
-    if SkillsColorConnection then
-        SkillsColorConnection:Disconnect()
-        SkillsColorConnection = nil
-    end
+    _G.KAMUI_SkillColorsRestore()
     SetR(255)
     SetG(0)
     SetB(0)
@@ -6239,7 +6273,7 @@ _G.KAMUI_BuildGUI = function(UI)
             BGTrans = { 0, 1 }, BarThick = { 1, 6 }, Radius = { 0, 10 }, AnimSpeed = { 0.25, 3 }
         }
         local MODS = {
-            { "aimbot", "Aimbot" }, { "block", "Auto block" }, { "dashassist", "Dash Assist" },
+            { "aimbot", "Aimbot" }, { "block", "Auto block" },
             { "dashmult", "Dash multiplier" }, { "nosidecd", "No side dash cooldown" }, { "nostun", "No stun" },
             { "walkjump", "WalkSpeed / Jump height" }, { "fakelag", "Fake lag" },
             { "fps", "FPS boost" }, { "headless", "Headless & Korblox" }
@@ -6792,8 +6826,6 @@ _G.KAMUI_BuildGUI = function(UI)
             add("targetlock", 2, CC.TargetLock, "BF TargetLock", nil, CC.TargetLockMode)
             add("aimbot", 2, CC.Aimbot, "Aimbot", CC.AimKey, (CC.Smooth and CC.Smooth > 0) and ("smooth " .. fmtNum(CC.Smooth)) or nil)
             add("block", 2, CC.Block, "Auto block", nil, CC.BlockRange and fmtNum(CC.BlockRange))
-            local SA = CC.SideDashAssist
-            add("dashassist", 2, SA and SA.Enabled, "Dash Assist", SA and SA.Key, SA and SA.Mode)
             add("dashmult", 3, M.Enabled and M.Distance ~= 1, "Dash multiplier", nil, M.Distance and string.format("%.2fx", M.Distance))
             add("nosidecd", 3, M.NoSideCD, "No side dash cooldown")
             add("nostun", 3, M.NoStun, "No stun")
@@ -7226,6 +7258,7 @@ end
 _G.KAMUI_Combat = _G.KAMUI_Combat or {}
 do
     local CC = _G.KAMUI_Combat
+    CC.SideDashAssist = nil -- remove state left by earlier versions
     CC.Enabled = false -- off by default
     CC.Range = 18      -- studs: only react to dashes this close to you
     CC.Speed = 60      -- studs/second: how fast a player has to move to count as dashing
@@ -10351,198 +10384,8 @@ _G.KAMUI_BuildCombat = function(UI)
         end
     end)
 
-    ------------------------------------------------------------------ Side dash assist
-    --// The toggle enables the feature; the keybind executes one dash.
-    --// Side goes toward the nearest player's flank and then hooks inward.
-    --// Behind follows a C-shaped arc to a point behind the player.
-    --// The camera turns sideways for the dash input; movement is not a teleport.
+    ------------------------------------------------------------------ Chain mode
     do
-        local SA = { Enabled = false, Mode = "Side", Key = "H", Busy = false, Mobile = false }
-        CC.SideDashAssist = SA
-        local assistCard = UI.card(page, "Side dash assist")
-        -- Keep the card at the standard layer so it cannot cover its own controls.
-        local mobileButton, mobileDot, mobileStroke, mobileLabel
-        local function refreshAssistMobile()
-            if not mobileButton then return end
-            -- Mobile uses the game's own dash button; do not show the old key-simulating button.
-            mobileButton.Visible = false
-            mobileDot.BackgroundColor3 = SA.Enabled and THEME.BrightRed or Color3.fromRGB(70, 70, 74)
-            mobileLabel.TextColor3 = SA.Enabled and THEME.Text or THEME.MutedText
-            mobileStroke.Color = SA.Enabled and THEME.Red or Color3.fromRGB(58, 10, 15)
-        end
-        toggleRow("Side dash assist", "Dash toward the nearest player", function()
-            return SA.Enabled
-        end, function(v)
-            SA.Enabled = v
-            refreshAssistMobile()
-        end, assistCard)
-
-        local modeRow = mk("Frame", { Name = "SideAssistModeRow", ZIndex = 3, BackgroundTransparency = 1, BorderSizePixel = 0 }, nil)
-        UI.addRow(assistCard, modeRow, UI.ROW)
-        label(modeRow, "Mode", nil)
-        local modeBtn = mk("TextButton", {
-            Name = "SideAssistMode", ZIndex = 4, BackgroundColor3 = CHIP, BorderSizePixel = 0,
-            AutoButtonColor = false, AnchorPoint = Vector2.new(1, 0.5),
-            Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.new(0, 104, 0, 26),
-            Text = ""
-        }, modeRow)
-        UI.corner(modeBtn, 6)
-        UI.stroke(modeBtn, LINE)
-        local modeValue = mk("TextLabel", {
-            Name = "ModeValue", ZIndex = 5, BackgroundTransparency = 1, Active = false,
-            Position = UDim2.new(0, 10, 0, 0), Size = UDim2.new(1, -32, 1, 0),
-            Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = THEME.Text,
-            TextXAlignment = Enum.TextXAlignment.Left, Text = SA.Mode
-        }, modeBtn)
-        local modeChevron = mk("Frame", {
-            Name = "Chevron", ZIndex = 5, BackgroundTransparency = 1, BorderSizePixel = 0,
-            Active = false, AnchorPoint = Vector2.new(0.5, 0.5),
-            Position = UDim2.new(1, -15, 0.5, 0), Size = UDim2.new(0, 12, 0, 12)
-        }, modeBtn)
-        for _, arm in ipairs({ { 3.4, 40 }, { 8.6, -40 } }) do
-            mk("Frame", {
-                BackgroundColor3 = THEME.MutedText, BorderSizePixel = 0, Active = false, ZIndex = 6,
-                AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, arm[1], 0, 5.5),
-                Size = UDim2.new(0, 6.5, 0, 1.6), Rotation = arm[2]
-            }, modeChevron)
-        end
-        -- Compact pop-up, like the Home mode menu; it does not resize the card.
-        local modeList = mk("Frame", {
-            Name = "SideAssistModeList", BackgroundColor3 = CHIP, BorderSizePixel = 0,
-            Position = UDim2.new(0, 0, 1, 4), Size = UDim2.new(1, 0, 0, 62),
-            Visible = false, ZIndex = 10
-        }, modeBtn)
-        UI.corner(modeList, 7)
-        UI.stroke(modeList, LINE)
-        local modeOptions = {}
-        for i, name in ipairs({ "Side", "Behind" }) do
-            local option = mk("TextButton", {
-                Name = "Option" .. name, AutoButtonColor = false, ZIndex = 11,
-                BorderSizePixel = 0, Position = UDim2.new(0, 4, 0, 4 + (i - 1) * 27),
-                Size = UDim2.new(1, -8, 0, 26), Font = Enum.Font.GothamMedium,
-                TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Text = name
-            }, modeList)
-            UI.corner(option, 6)
-            UI.make("UIPadding", { PaddingLeft = UDim.new(0, 10) }, option)
-            modeOptions[name] = option
-            option.MouseButton1Click:Connect(function()
-                if not isCurrent() then return end
-                SA.Mode = name
-                modeValue.Text = name
-                for optionName, btn in pairs(modeOptions) do
-                    local selected = optionName == name
-                    btn.BackgroundTransparency = selected and 0 or 1
-                    btn.BackgroundColor3 = THEME.DarkRed
-                    btn.TextColor3 = selected and THEME.Text or THEME.MutedText
-                end
-                modeList.Visible = false
-                modeChevron.Rotation = 0
-            end)
-        end
-        for name, btn in pairs(modeOptions) do
-            local selected = name == SA.Mode
-            btn.BackgroundTransparency = selected and 0 or 1
-            btn.BackgroundColor3 = THEME.DarkRed
-            btn.TextColor3 = selected and THEME.Text or THEME.MutedText
-        end
-        modeBtn.MouseButton1Click:Connect(function()
-            if not isCurrent() then return end
-            if not modeList.Visible then
-                -- Keep both options within the scrolling tab when near its bottom.
-                local availableBelow = page.AbsolutePosition.Y + page.AbsoluteSize.Y
-                    - (modeBtn.AbsolutePosition.Y + modeBtn.AbsoluteSize.Y)
-                modeList.Position = availableBelow < 66 and UDim2.new(0, 0, 0, -66)
-                    or UDim2.new(0, 0, 1, 4)
-            end
-            modeList.Visible = not modeList.Visible
-            modeChevron.Rotation = modeList.Visible and 180 or 0
-        end)
-        local function closeModeList()
-            modeList.Visible = false
-            modeChevron.Rotation = 0
-        end
-        local function insideModeControl(gui, point)
-            local pos, size = gui.AbsolutePosition, gui.AbsoluteSize
-            return point.X >= pos.X and point.X <= pos.X + size.X
-                and point.Y >= pos.Y and point.Y <= pos.Y + size.Y
-        end
-        UIS.InputBegan:Connect(function(input)
-            if not isCurrent() or not modeList.Visible then return end
-            if input.UserInputType ~= Enum.UserInputType.MouseButton1
-                and input.UserInputType ~= Enum.UserInputType.Touch then return end
-            local inset = game:GetService("GuiService"):GetGuiInset()
-            local point = Vector2.new(input.Position.X, input.Position.Y)
-            for _, p in ipairs({ point, point - inset, point + inset }) do
-                if insideModeControl(modeBtn, p) or insideModeControl(modeList, p) then return end
-            end
-            closeModeList()
-        end)
-        page:GetPropertyChangedSignal("Visible"):Connect(function()
-            if not page.Visible then closeModeList() end
-        end)
-
-        local keyRow = mk("Frame", { Name = "SideAssistKeyRow", BackgroundTransparency = 1, BorderSizePixel = 0 }, nil)
-        UI.addRow(assistCard, keyRow, UI.ROW)
-        label(keyRow, "Dash keybind", nil)
-        local key = mk("TextButton", {
-            Name = "SideAssistKey", BackgroundColor3 = CHIP, BorderSizePixel = 0,
-            AutoButtonColor = false, AnchorPoint = Vector2.new(1, 0.5),
-            Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.new(0, 80, 0, 26),
-            Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = THEME.Text, Text = SA.Key
-        }, keyRow)
-        UI.corner(key, 6)
-        UI.stroke(key, LINE)
-        local capturingKey = false
-        key.MouseButton1Click:Connect(function()
-            capturingKey = true
-            key.Text = "Press key..."
-        end)
-
-        toggleRow("Mobile mode", "Guides your normal mobile dash", function()
-            return SA.Mobile
-        end, function(v)
-            SA.Mobile = v
-            refreshAssistMobile()
-        end, assistCard)
-        -- Keep the draggable action button visible when the main GUI is hidden.
-        mobileButton = Instance.new("TextButton")
-        mobileButton.Name = "SideDashAssistButton"
-        mobileButton:SetAttribute("KamuiSkinned", true)
-        mobileButton.Parent = RestoreGui
-        mobileButton.ZIndex = 50
-        mobileButton.AnchorPoint = Vector2.new(0.5, 0.5)
-        mobileButton.Size = UDim2.new(0, 112, 0, 34)
-        mobileButton.Position = UDim2.new(0.7, 28, 0.65, 0)
-        mobileButton.BackgroundColor3 = THEME.BackgroundLight
-        mobileButton.BackgroundTransparency = 0
-        mobileButton.AutoButtonColor = false
-        mobileButton.Text = ""
-        mobileButton.Visible = false
-        mobileButton.Draggable = true
-        mobileButton.Active = true
-        UI.corner(mobileButton, 17)
-        mobileStroke = Instance.new("UIStroke")
-        mobileStroke.Parent = mobileButton
-        mobileStroke.Thickness = 1
-        mobileDot = Instance.new("Frame")
-        mobileDot.Name = "SideDashDot"
-        mobileDot.Parent = mobileButton
-        mobileDot.AnchorPoint = Vector2.new(0, 0.5)
-        mobileDot.Position = UDim2.new(0, 12, 0.5, 0)
-        mobileDot.Size = UDim2.new(0, 5, 0, 5)
-        mobileDot.BorderSizePixel = 0
-        UI.corner(mobileDot, 100)
-        mobileLabel = Instance.new("TextLabel")
-        mobileLabel.Name = "SideDashLabel"
-        mobileLabel.Parent = mobileButton
-        mobileLabel.BackgroundTransparency = 1
-        mobileLabel.Position = UDim2.new(0, 22, 0, 0)
-        mobileLabel.Size = UDim2.new(1, -28, 1, 0)
-        mobileLabel.Font = Enum.Font.GothamMedium
-        mobileLabel.TextSize = 11
-        mobileLabel.Text = "Side dash"
-        refreshAssistMobile()
-
         local function flat(v)
             return Vector3.new(v.X, 0, v.Z)
         end
@@ -10560,361 +10403,6 @@ _G.KAMUI_BuildCombat = function(UI)
                 end
             end
             return best
-        end
-        local function findMover(root)
-            for _, m in ipairs(root:GetChildren()) do
-                if m:IsA("BodyVelocity") or m:IsA("LinearVelocity") then
-                    local n = string.lower(m.Name)
-                    if n:find("dodge") or n:find("dash") then return m end
-                end
-            end
-            return nil
-        end
-        -- Native JJS Dash creates BodyVelocity named MovementForce on Torso,
-        -- with an InDash marker in Info; it does not use dodgevelocity on root.
-        local function findChainDashMover(root)
-            local char = root and root.Parent
-            local info = char and char:FindFirstChild("Info")
-            local torso = char and char:FindFirstChild("Torso")
-            if not info or not info:FindFirstChild("InDash") or not torso then return nil end
-            local mover = torso:FindFirstChild("MovementForce")
-            return mover and mover:IsA("BodyVelocity") and mover or nil
-        end
-        local function moverToWorld(m, v)
-            if not m:IsA("LinearVelocity") or m.RelativeTo == Enum.ActuatorRelativeTo.World then return v end
-            local a = m.RelativeTo == Enum.ActuatorRelativeTo.Attachment0 and m.Attachment0 or m.Attachment1
-            return a and a.WorldCFrame:VectorToWorldSpace(v) or nil
-        end
-        local function moverFromWorld(m, v)
-            if not m:IsA("LinearVelocity") or m.RelativeTo == Enum.ActuatorRelativeTo.World then return v end
-            local a = m.RelativeTo == Enum.ActuatorRelativeTo.Attachment0 and m.Attachment0 or m.Attachment1
-            return a and a.WorldCFrame:VectorToObjectSpace(v) or nil
-        end
-        -- With a mover, the user's mobile dash is already in progress; do not synthesize keys.
-        -- Without one, keep the original PC keybind behavior.
-        local function dashOnce(existingMover, chainTarget, onFinished)
-            local fromChain = chainTarget ~= nil
-            local function dashEnabled()
-                return fromChain and CC.ChainMode or (not fromChain and SA.Enabled)
-            end
-            if not dashEnabled() or SA.Busy or not isCurrent() then return end
-            local char = player.Character
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if not root or not hum or hum.Health <= 0 then return end
-            if existingMover then
-                if existingMover.Parent ~= root then return end
-            elseif (fromChain and findChainDashMover(root)) or findMover(root) then return end
-            local target = chainTarget or closestTarget(root)
-            if not target or (not existingMover and not VirtualInputManager) then return end
-            -- Do not release or interfere with a Q key the player is already holding.
-            if not existingMover and UIS:IsKeyDown(Enum.KeyCode.Q) then return end
-            local targetHum = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
-            local right = flat(target.CFrame.RightVector)
-            if right.Magnitude < 0.01 then return end
-            right = right.Unit
-            local sideSign = flat(root.Position - target.Position):Dot(right) < 0 and -1 or 1
-            local chosenMode = fromChain and "Behind" or SA.Mode
-            local function destination()
-                if chosenMode == "Behind" then
-                    local forward = flat(target.CFrame.LookVector)
-                    if forward.Magnitude < 0.01 then return nil end
-                    return target.Position - forward.Unit * 3.5
-                end
-                local side = flat(target.CFrame.RightVector)
-                if side.Magnitude < 0.01 then return nil end
-                return target.Position + side.Unit * (3.5 * sideSign)
-            end
-            local dest = destination()
-            local cam = Workspace.CurrentCamera
-            if not dest or not cam then return end
-            local startPos = flat(root.Position)
-            local sideGoal = flat(dest)
-            -- Behind follows an arc around the target instead of aiming at
-            -- time-based points that can make the dash cut across the middle.
-            -- The target's position is followed; behind is based on the
-            -- direction it was facing when the dash started.
-            local curve, hook
-            local delta = sideGoal - startPos
-            if chosenMode == "Side" then
-                local toward = flat(target.Position - root.Position)
-                if toward.Magnitude < 0.1 then return end
-                toward = toward.Unit
-                local flank = Vector3.new(-toward.Z, 0, toward.X)
-                if flank:Dot(right * sideSign) < 0 then flank = -flank end
-                -- First travel beyond the nearest flank, then curl back inward.
-                local entry = flat(target.Position) + flank * 5 + toward * 1.2
-                local toEntry = entry - startPos
-                if toEntry.Magnitude < 0.1 then return end
-                hook = {
-                    toward = toward,
-                    flank = flank,
-                    start = startPos,
-                    initialDirection = toEntry.Unit,
-                    entryDistance = toEntry.Magnitude,
-                    progress = 0,
-                }
-                delta = toEntry
-            end
-            if chosenMode == "Behind" then
-                local radial = flat(root.Position - target.Position)
-                local back = flat(dest - target.Position)
-                if radial.Magnitude < 0.1 or back.Magnitude < 0.1 then return end
-                local startAngle = math.atan2(radial.Z, radial.X)
-                local endAngle = math.atan2(back.Z, back.X)
-                local side = right * sideSign
-                local sideAngle = math.atan2(side.Z, side.X)
-                local tau = 2 * math.pi
-                local ccw = (endAngle - startAngle) % tau
-                local viaSide = (sideAngle - startAngle) % tau
-                local sweep = viaSide <= ccw and ccw or ccw - tau
-                -- Avoid an unnecessary full circle if starting near behind.
-                if math.abs(sweep) > math.pi * 1.25 then
-                    sweep = sweep > 0 and math.pi * 1.25 or -math.pi * 1.25
-                end
-                if math.abs(sweep) > 0.1 then
-                    curve = {
-                        direction = sweep > 0 and 1 or -1,
-                        sweep = math.abs(sweep),
-                        lastAngle = startAngle,
-                        travelled = 0,
-                        radius = radial.Magnitude,
-                        back = back.Unit,
-                    }
-                    local unit = radial.Unit
-                    delta = Vector3.new(-unit.Z, 0, unit.X) * curve.direction
-                end
-            end
-            if delta.Magnitude < (curve and 0.01 or 0.75) then return end
-            -- Face the CAMERA perpendicular to the initial travel direction,
-            -- so left/right dash input starts toward the intended path.
-            local dashDirection = delta.Unit
-            local rightDashFacing = Vector3.new(dashDirection.Z, 0, -dashDirection.X)
-            local currentFacing = flat(cam.CFrame.LookVector)
-            local useRight = currentFacing:Dot(rightDashFacing) >= 0
-            local dashKey = useRight and Enum.KeyCode.D or Enum.KeyCode.A
-            local cameraFacing = useRight and rightDashFacing or -rightDashFacing
-            local cameraPitch = math.clamp(cam.CFrame.LookVector.Y, -0.99, 0.99)
-            local function faceCameraSideways()
-                if not cam.Parent or Workspace.CurrentCamera ~= cam then return false end
-                local pos = cam.CFrame.Position
-                local horizontal = math.sqrt(1 - cameraPitch * cameraPitch)
-                local look = cameraFacing * horizontal + Vector3.new(0, cameraPitch, 0)
-                cam.CFrame = CFrame.lookAt(pos, pos + look)
-                return true
-            end
-            if not existingMover and not faceCameraSideways() then return end
-            -- Mobile has already started its dash; PC still faces sideways before input.
-            local moverSeen = existingMover ~= nil
-            local cameraBinding = "KAMUI_SideAssistCamera_" .. tostring(scriptId)
-            pcall(function()
-                RunService:BindToRenderStep(cameraBinding, Enum.RenderPriority.Camera.Value + 1, function()
-                    if not isCurrent() or not dashEnabled() or not SA.Busy then return end
-                    if (chosenMode == "Behind" or chosenMode == "Side") and moverSeen then
-                        pcall(function()
-                            if cam.Parent and Workspace.CurrentCamera == cam and target.Parent then
-                                local pos = cam.CFrame.Position
-                                local focus = target.Position
-                                if (focus - pos).Magnitude > 0.01 then
-                                    cam.CFrame = CFrame.lookAt(pos, focus)
-                                end
-                            end
-                        end)
-                    else
-                        pcall(faceCameraSideways)
-                    end
-                end)
-            end)
-            local function releaseCamera()
-                pcall(function() RunService:UnbindFromRenderStep(cameraBinding) end)
-            end
-            SA.Busy = true
-            if not existingMover then
-            _G.KAMUI_MarkScriptDash()
-            -- Trigger the normal client-side dash path instead of sending only
-            -- the remote (which can play the dash in place without its mover).
-            -- Keep a movement key the user was already holding untouched.
-            local directionAlreadyDown = UIS:IsKeyDown(dashKey)
-            local directionSent = directionAlreadyDown or pcall(function()
-                VirtualInputManager:SendKeyEvent(true, dashKey, false, game)
-            end)
-            if not directionSent then
-                releaseCamera()
-                SA.Busy = false
-                return
-            end
-            task.spawn(function()
-                local qSent = false
-                task.wait(0.04)
-                if isCurrent() and dashEnabled() and SA.Busy and player.Character == char
-                    and not UIS:IsKeyDown(Enum.KeyCode.Q) and faceCameraSideways() then
-                    qSent = pcall(function()
-                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Q, false, game)
-                    end)
-                end
-                task.wait(0.05)
-                if qSent then
-                    pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Q, false, game) end)
-                end
-                if not directionAlreadyDown then
-                    pcall(function() VirtualInputManager:SendKeyEvent(false, dashKey, false, game) end)
-                end
-                if _G.KAMUI_RestoreTouchInput then
-                    task.delay(0.1, _G.KAMUI_RestoreTouchInput, SA.Mobile)
-                end
-            end)
-            end -- original simulated-input path is PC/keybind only
-            local started = os.clock()
-            local mobileTeleported = false
-            local conn
-            local function finishAssist()
-                if conn then conn:Disconnect(); conn = nil end
-                releaseCamera()
-                SA.Busy = false
-                if fromChain and not moverSeen and _G.KAMUI_ParkourDiagnostic then
-                    _G.KAMUI_ParkourDiagnostic("Chain: no game dash mover appeared")
-                end
-                if onFinished then onFinished(moverSeen) end
-            end
-            -- JJS's Swing updates the mover during its own frame callbacks.
-            -- Apply the chain steering before physics, not after the physics step.
-            local stepSignal = fromChain and RunService.PreSimulation or RunService.Heartbeat
-            conn = stepSignal:Connect(function(dt)
-                if not isCurrent() or not dashEnabled() or player.Character ~= char
-                    or not root.Parent or not target.Parent or not targetHum or targetHum.Health <= 0
-                    or os.clock() - started > 1.2 then
-                    finishAssist(); return
-                end
-                local mover
-                if existingMover then
-                    mover = existingMover.Parent == root and existingMover or nil
-                else
-                    mover = (fromChain and findChainDashMover(root)) or findMover(root)
-                end
-                if not mover then
-                    if moverSeen then finishAssist() end
-                    return
-                end
-                if fromChain and not moverSeen and _G.KAMUI_ParkourDiagnostic then
-                    _G.KAMUI_ParkourDiagnostic("Chain: game dash started")
-                end
-                moverSeen = true
-                -- Mobile only: start pulling toward the target's back while the
-                -- game's dash mover is still active, then teleport near the end.
-                -- This is a timing estimate, not a game-provided end signal.
-                if existingMover then
-                    local elapsed = os.clock() - started
-                    if mobileTeleported then
-                        pcall(function()
-                            local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
-                            local world = moverToWorld(mover, mover[prop])
-                            if world then
-                                local stopped = moverFromWorld(mover, Vector3.new(0, world.Y, 0))
-                                if stopped then mover[prop] = stopped end
-                            end
-                        end)
-                        return
-                    end
-                    if elapsed >= 0.12 then
-                        local forward = flat(target.CFrame.LookVector)
-                        if forward.Magnitude > 0.01 then
-                            local behind = flat(target.Position) - forward.Unit * 3.5
-                            local delta = behind - flat(root.Position)
-                            local distance = delta.Magnitude
-                            if distance <= 24 then
-                                if elapsed >= 0.20 then
-                                    local ok = pcall(function()
-                                        local position = root.Position
-                                        root.CFrame = root.CFrame + Vector3.new(behind.X - position.X, 0, behind.Z - position.Z)
-                                        local velocity = root.AssemblyLinearVelocity
-                                        root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
-                                        local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
-                                        local world = moverToWorld(mover, mover[prop])
-                                        if world then
-                                            local stopped = moverFromWorld(mover, Vector3.new(0, world.Y, 0))
-                                            if stopped then mover[prop] = stopped end
-                                        end
-                                    end)
-                                    if ok then mobileTeleported = true end
-                                    return
-                                elseif distance > 0.05 then
-                                    pcall(function()
-                                        local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
-                                        local world = moverToWorld(mover, mover[prop])
-                                        if not world then return end
-                                        local speed = flat(world).Magnitude
-                                        if speed < 0.1 then return end
-                                        local directed = delta.Unit * speed + Vector3.new(0, world.Y, 0)
-                                        local result = moverFromWorld(mover, directed)
-                                        if result then mover[prop] = result end
-                                    end)
-                                    return
-                                end
-                            end
-                        end
-                    end
-                end
-                local goal = (hook and (flat(target.Position) + hook.flank * 2.6 + hook.toward * 1.2))
-                    or (curve and (flat(target.Position) + curve.back * 3.5) or destination())
-                if not goal then finishAssist(); return end
-                local remaining = flat(goal - root.Position)
-                local arrived = remaining.Magnitude <= 0.75
-                local steer = remaining
-                if hook and not arrived then
-                    local entry = flat(target.Position) + hook.flank * 5 + hook.toward * 1.2
-                    local toEntry = entry - flat(root.Position)
-                    local travelled = (flat(root.Position) - hook.start):Dot(hook.initialDirection)
-                    hook.progress = math.max(hook.progress,
-                        math.clamp(travelled / math.max(hook.entryDistance, 0.1), 0, 1))
-                    -- Progress-based steering begins outward and hooks back in
-                    -- during the latter part of the game's normal side dash.
-                    local blend = math.clamp((hook.progress - 0.45) / 0.35, 0, 1)
-                    if toEntry.Magnitude > 0.05 then
-                        steer = toEntry.Unit * (1 - blend) + remaining.Unit * blend
-                    end
-                elseif curve and not arrived then
-                    local radial = flat(root.Position - target.Position)
-                    if radial.Magnitude > 0.1 then
-                        local angle = math.atan2(radial.Z, radial.X)
-                        local step = (angle - curve.lastAngle + math.pi) % (2 * math.pi) - math.pi
-                        curve.lastAngle = angle
-                        curve.travelled = math.clamp(curve.travelled + step * curve.direction, 0, curve.sweep)
-                        local progress = curve.travelled / curve.sweep
-                        local unit = radial.Unit
-                        local tangent = Vector3.new(-unit.Z, 0, unit.X) * curve.direction
-                        -- Hold the orbit and gradually converge to the behind position.
-                        local wantedRadius = curve.radius + (3.5 - curve.radius) * progress
-                        local correction = math.clamp((wantedRadius - radial.Magnitude)
-                            / math.max(radial.Magnitude, 3) * 1.4, -0.8, 0.8)
-                        local arcSteer = tangent + unit * correction
-                        -- Only aim at the endpoint at the end of the arc.
-                        local blend = math.clamp((progress - 0.88) / 0.12, 0, 1)
-                        steer = arcSteer * (1 - blend) + remaining.Unit * blend
-                    end
-                end
-                pcall(function()
-                    local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
-                    local world = moverToWorld(mover, mover[prop])
-                    if not world then return end
-                    local speed = flat(world).Magnitude
-                    if speed < 0.1 then return end
-                    local v
-                    if (chosenMode == "Behind" or chosenMode == "Side") and arrived then
-                        -- Hold the endpoint, but keep camera lock until the mover ends.
-                        v = Vector3.new(0, world.Y, 0)
-                    elseif steer.Magnitude > 0.001 then
-                        -- Keep the game's dash speed; only redirect its mover.
-                        local capped = (chosenMode == "Behind" or chosenMode == "Side") and speed
-                            or math.min(speed, steer.Magnitude / math.max(dt, 1/120))
-                        v = steer.Unit * capped + Vector3.new(0, world.Y, 0)
-                    else
-                        return
-                    end
-                    local result = moverFromWorld(mover, v)
-                    if result then mover[prop] = result end
-                end)
-            end)
-            return true
         end
         -- Chain mode intercepts the initial PC 3 key, moves locally around the
         -- opponent without a native dash, then starts Divergent Fist.
@@ -11156,7 +10644,7 @@ _G.KAMUI_BuildCombat = function(UI)
                         local currentDistance = flat(root.Position - target.Position).Magnitude
                         -- Every follow-up gets a real orbit, even if we're still behind.
                         if strike > 1 or not behind(root, target) or math.abs(currentDistance - orbitRadius) > 0.75 then
-                            if SA.Busy or root.Anchored then return false, "movement unavailable" end
+                            if root.Anchored then return false, "movement unavailable" end
                             local initialOffset = flat(root.Position - target.Position)
                             local initialForward = flat(target.CFrame.LookVector)
                             if initialForward.Magnitude < 0.01 then return false, "target direction unavailable" end
@@ -11522,41 +11010,6 @@ _G.KAMUI_BuildCombat = function(UI)
         end
         _G.KAMUI_ChainCleanup = cleanupChain
         ScreenGui.Destroying:Connect(cleanupChain)
-        -- Observe the normal game dash on touch devices. No virtual keyboard/mouse
-        -- input or synthetic touch is sent by this mobile path.
-        local observedMover
-        local nativeDashConn
-        nativeDashConn = RunService.Heartbeat:Connect(function()
-            if not isCurrent() or not page.Parent then
-                nativeDashConn:Disconnect()
-                return
-            end
-            if not (SA.Enabled and SA.Mobile and UIS.TouchEnabled) then
-                observedMover = nil
-                return
-            end
-            local char = player.Character
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-            local mover = root and findMover(root) or nil
-            if mover == observedMover then return end
-            observedMover = mover
-            if mover and not SA.Busy and (os.clock() - (_G.KAMUI_ScriptDashAt or -math.huge)) > 0.8 then
-                dashOnce(mover)
-            end
-        end)
-        UIS.InputBegan:Connect(function(input, processed)
-            if not isCurrent() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
-            if capturingKey then
-                capturingKey = false
-                if input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode ~= Enum.KeyCode.Unknown then
-                    SA.Key = input.KeyCode.Name
-                end
-                key.Text = SA.Key
-                return
-            end
-            if processed or UIS:GetFocusedTextBox() then return end
-            if input.KeyCode.Name == SA.Key then dashOnce() end
-        end)
     end
 end
 
@@ -12163,7 +11616,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE DASH V1", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - SKILL COLORS RESET V2", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
