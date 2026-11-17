@@ -9279,7 +9279,11 @@ _G.KAMUI_BuildCombat = function(UI)
             blockTarget = plr
             CC.BlockCamActive = CC.BlockCamEnabled
             local hold = BLOCK_HOLD
-            if CC.BlockM1Back and not CC.BlockMobile then
+            if CC.BlockMobile then
+                -- Rearm faster on mobile instead of waiting up to 1.5 seconds
+                -- for a long animation. New threats extend the current guard.
+                hold = 0.30
+            elseif CC.BlockM1Back then
                 -- Counterattack sooner, at the cost of a shorter guard.
                 hold = 0.20
             elseif track.Length > 0 and track.Speed > 0 then
