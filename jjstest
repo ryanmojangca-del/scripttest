@@ -9257,6 +9257,17 @@ _G.KAMUI_BuildCombat = function(UI)
         local dist = toMe.Magnitude
         local canCounter = CC.Counter and dist <= CC.CounterRange
         local canBlock = CC.Block and dist <= CC.BlockRange
+        -- This side-dash animation was supplied by the user. Exclude it from
+        -- Auto block only; Auto counter retains its existing detection rules.
+        local anim = track.Animation
+        local animId = anim and tostring(anim.AnimationId):match("%d+")
+        if canBlock and animId == "138196552148011" then
+            canBlock = false
+            if not canCounter then
+                trackLog(track, "skip side dash", dist)
+                return
+            end
+        end
         if dist <= 0.1 or (not canCounter and not canBlock) then return end
         if track.Priority.Value < Enum.AnimationPriority.Action.Value then
             trackLog(track, "skip priority", dist); return
