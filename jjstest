@@ -8003,6 +8003,172 @@ _G.KAMUI_BuildCombat = function(UI)
         end)
     end
 
+    -- Mobile Vessel (Chain mode OFF): detect the native Skill 3 input and
+    -- send the follow-up through that same action rather than a virtual key.
+    -- Some mobile UIs may bypass InputAction.Pressed. A ReadyAt change on the
+    -- local Divergent Fist move is a best-effort fallback; it may arrive late.
+    do
+        local alive, pending, synthetic = true, false, false
+        local generation, lastStart = 0, -math.huge
+        local actionConn, readyConn, held = nil, nil, nil
+        local watchedAction, watchedMove = nil, nil
+        local previousCancel = CC.AutoBFCancel
+        local function log(message)
+            print("[KAMUI Mobile BF] " .. message)
+            if _G.KAMUI_ParkourDiagnostic then _G.KAMUI_ParkourDiagnostic("Mobile BF: " .. message) end
+        end
+        local function releaseHeld()
+            local own = held
+            if not own then return end
+            held = nil
+            local ok, err = pcall(function()
+                if own.binding then own.binding:Fire(false) else own.action:Fire(false) end
+            end)
+            if own.binding then pcall(function() own.binding:Destroy() end) end
+            if not ok then log("follow-up release failed: " .. tostring(err)) end
+        end
+        local function cancel()
+            pending = false
+            generation = generation + 1
+            releaseHeld()
+            if previousCancel then previousCancel() end
+        end
+        CC.AutoBFCancel = cancel
+        local function findMove(char)
+            if not char then return nil end
+            local moveset = char:FindFirstChild("Moveset", true)
+            if moveset then
+                for _, obj in ipairs(moveset:GetChildren()) do
+                    if string.lower(obj.Name):gsub("[^%w]", "") == "divergentfist" then return obj end
+                end
+            end
+            local backpack = player:FindFirstChildOfClass("Backpack")
+            for _, container in ipairs(backpack and {char, backpack} or {char}) do
+                for _, obj in ipairs(container:GetChildren()) do
+                    if obj:IsA("Tool") and string.lower(obj.Name):gsub("[^%w]", "") == "divergentfist" then return obj end
+                end
+            end
+        end
+        local function getAction()
+            local storage = game:GetService("ReplicatedStorage")
+            local keybind = storage:FindFirstChild("Keybind")
+            local combat = keybind and keybind:FindFirstChild("Combat")
+            local action = combat and combat:FindFirstChild("Skill 3")
+            return action and action:IsA("InputAction") and action or nil
+        end
+        local function active()
+            return alive and isCurrent() and ScreenGui.Parent ~= nil
+                and UIS.TouchEnabled and not UIS.KeyboardEnabled
+                and CC.AutoBF and CC.AutoBFMode == "Vessel" and not CC.ChainMode
+                and not CC.Counter and not UIS:GetFocusedTextBox()
+        end
+        local function begin(source)
+            if synthetic or not active() then return end
+            local char = player.Character
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local move = findMove(char)
+            if not hum or hum.Health <= 0 or not move then return end
+            if pending then
+                -- A second physical press means the user handled the timing.
+                -- The cooldown signal is a duplicate of the first press.
+                if source == "Skill 3" then
+                    cancel()
+                    log("manual follow-up detected; automatic press canceled")
+                end
+                return
+            end
+            local now = os.clock()
+            -- Suppress a delayed ReadyAt update for this same activation.
+            if now - lastStart < 1.0 then return end
+            lastStart = now
+            pending = true
+            generation = generation + 1
+            local myGeneration, epoch, delaySeconds = generation, CC.AutoBFEpoch, CC.AutoBFDelay
+            log(string.format("%s detected; follow-up scheduled in %.2fs", source, delaySeconds))
+            task.delay(delaySeconds, function()
+                if not active() or not pending or generation ~= myGeneration or CC.AutoBFEpoch ~= epoch
+                    or player.Character ~= char or not hum.Parent or hum.Health <= 0 or findMove(char) ~= move then
+                    if generation == myGeneration then pending = false end
+                    return
+                end
+                pending = false
+                local action = getAction()
+                if not action then log("Skill 3 InputAction not found; follow-up not sent"); return end
+                local typeOk, isBool = pcall(function() return action.Type == Enum.InputActionType.Bool end)
+                local stateOk, state = pcall(function() return action:GetState() end)
+                if not typeOk or not isBool or not stateOk then
+                    log("Skill 3 action type/state unavailable"); return
+                end
+                if state == true then log("Skill 3 still held; follow-up not sent"); return end
+                synthetic = true
+                local binding
+                local made, err = pcall(function()
+                    binding = Instance.new("InputBinding")
+                    binding.Name = "KAMUI_MobileAutoBF"
+                    binding.Type = Enum.InputBindingType.Scriptable
+                    binding.Parent = action
+                end)
+                local sent = false
+                if made then sent, err = pcall(function() binding:Fire(true) end) end
+                if sent then
+                    held = {action = action, binding = binding}
+                else
+                    if binding then pcall(function() binding:Destroy() end) end
+                    local ok, legacyErr = pcall(function() action:Fire(true) end)
+                    if not ok then
+                        synthetic = false
+                        log("follow-up failed: " .. tostring(err) .. "; legacy: " .. tostring(legacyErr))
+                        return
+                    end
+                    held = {action = action}
+                end
+                local own = held
+                log(string.format("second Skill 3 sent after %.2fs; BF depends on timing", delaySeconds))
+                task.delay(0.04, function()
+                    if held == own then releaseHeld() end
+                    task.delay(0.1, function() synthetic = false end)
+                end)
+            end)
+        end
+        task.spawn(function()
+            while alive and isCurrent() and ScreenGui.Parent do
+                local action = getAction()
+                if action ~= watchedAction then
+                    if actionConn then actionConn:Disconnect(); actionConn = nil end
+                    watchedAction = action
+                    if action then
+                        actionConn = action.Pressed:Connect(function() begin("Skill 3") end)
+                    end
+                end
+                local char = player.Character
+                local move = findMove(char)
+                if move ~= watchedMove then
+                    if readyConn then readyConn:Disconnect(); readyConn = nil end
+                    watchedMove = move
+                    if move then
+                        local previousReady = move:GetAttribute("ReadyAt")
+                        readyConn = move:GetAttributeChangedSignal("ReadyAt"):Connect(function()
+                            local old = previousReady
+                            local value = move:GetAttribute("ReadyAt")
+                            previousReady = value
+                            if player.Character == char and type(old) == "number" and type(value) == "number"
+                                and value > old and value > Workspace:GetServerTimeNow() + 0.15 then
+                                begin("ReadyAt fallback")
+                            end
+                        end)
+                    end
+                end
+                task.wait(0.15)
+            end
+        end)
+        ScreenGui.Destroying:Connect(function()
+            alive = false
+            cancel()
+            if actionConn then actionConn:Disconnect() end
+            if readyConn then readyConn:Disconnect() end
+        end)
+    end
+
     -- Switcher: physical 3 starts Pebble Throw; send R, 2, then a timed 2.
     -- Timing is best-effort: no verified pebble/glide confirmation is available.
     do
