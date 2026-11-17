@@ -8452,7 +8452,7 @@ _G.KAMUI_BuildCombat = function(UI)
         CC.BlockEpoch = CC.BlockEpoch + 1
         CC.BlockMobile = v
     end, blockCard)
-    toggleRow("M1 Back", "M1 after block (mobile M1 fast)", function()
+    toggleRow("M1 Back", "Quick M1 after block attempt", function()
         return CC.BlockM1Back
     end, function(v)
         CC.BlockM1Back = v
@@ -9409,7 +9409,11 @@ _G.KAMUI_BuildCombat = function(UI)
             blockTarget = plr
             CC.BlockCamActive = CC.BlockCamEnabled
             local hold = BLOCK_HOLD
-            if CC.BlockMobile then
+            if CC.BlockMobile and CC.BlockM1Back then
+                -- Prioritize a faster counter after an automatic block attempt.
+                -- This short hold can miss delayed/multi-hit skills.
+                hold = 0.25
+            elseif CC.BlockMobile then
                 -- The opponent's InSkill marker and animation duration are
                 -- heuristics, not authoritative attack classification.
                 local startedAt = os.clock()
@@ -9434,7 +9438,7 @@ _G.KAMUI_BuildCombat = function(UI)
                 -- AnimationPlayed; recheck while the same owned guard is active.
                 for _, delaySeconds in ipairs({0.08, 0.18}) do
                     task.delay(delaySeconds, function()
-                        if not isCurrent() or not CC.Block or not CC.BlockMobile
+                        if not isCurrent() or not CC.Block or not CC.BlockMobile or CC.BlockM1Back
                             or not blocking or nativeBlock ~= owner or blockTarget ~= plr
                             or not track.IsPlaying then return end
                         local adjusted = mobileHold()
@@ -11319,7 +11323,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI DIAGNOSTIC - MOBILE M1 FAST", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI DIAGNOSTIC - MOBILE M1 QUICK", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
