@@ -7252,6 +7252,7 @@ do
     CC.QTEChance = 100 -- chance of selecting the correct key per attempt, percent
     CC.QTESpeed = 0.15 -- minimum delay between presses in seconds
     CC.Counter = false
+    CC.CounterMode = "Charles" -- preserves the old slot-3 default
     CC.CounterRange = 12
     CC.CounterFOV = false
     CC.CounterCamEnabled = true
@@ -8606,12 +8607,121 @@ _G.KAMUI_BuildCombat = function(UI)
 
     ------------------------------------------------------------------ Auto counter card
     local counterCard = UI.card(page, "Auto counter")
-    toggleRow("Auto counter", "Uses skill slot 3 against detected attacks", function()
+    toggleRow("Auto counter", "Uses the selected character's counter skill", function()
         return CC.Counter
     end, function(v)
         CC.Counter = v
         if not v and _G.KAMUI_CounterRelease then _G.KAMUI_CounterRelease() end
     end, counterCard)
+    do
+        local modeRow = mk("Frame", { Name = "CounterCharacterModeRow", ZIndex = 3, BackgroundTransparency = 1, BorderSizePixel = 0 }, nil)
+        UI.addRow(counterCard, modeRow, UI.ROW)
+        label(modeRow, "Mode", nil)
+        local modeBtn = mk("TextButton", {
+            Name = "CounterCharacterMode", ZIndex = 4, BackgroundColor3 = CHIP, BorderSizePixel = 0,
+            AutoButtonColor = false, AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.new(0, 104, 0, 26),
+            Text = ""
+        }, modeRow)
+        UI.corner(modeBtn, 6)
+        UI.stroke(modeBtn, LINE)
+        local modeValue = mk("TextLabel", {
+            Name = "ModeValue", ZIndex = 5, BackgroundTransparency = 1, Active = false,
+            Position = UDim2.new(0, 10, 0, 0), Size = UDim2.new(1, -32, 1, 0),
+            Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = THEME.Text,
+            TextXAlignment = Enum.TextXAlignment.Left, Text = CC.CounterMode
+        }, modeBtn)
+        local modeChevron = mk("Frame", {
+            Name = "Chevron", ZIndex = 5, BackgroundTransparency = 1, BorderSizePixel = 0,
+            Active = false, AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(1, -15, 0.5, 0), Size = UDim2.new(0, 12, 0, 12)
+        }, modeBtn)
+        for _, arm in ipairs({ { 3.4, 40 }, { 8.6, -40 } }) do
+            mk("Frame", {
+                BackgroundColor3 = THEME.MutedText, BorderSizePixel = 0, Active = false, ZIndex = 6,
+                AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, arm[1], 0, 5.5),
+                Size = UDim2.new(0, 6.5, 0, 1.6), Rotation = arm[2]
+            }, modeChevron)
+        end
+        -- Compact pop-up, like the Home mode menu; it does not resize the card.
+        local modeList = mk("Frame", {
+            Name = "CounterCharacterModeList", BackgroundColor3 = CHIP, BorderSizePixel = 0,
+            Position = UDim2.new(0, 0, 1, 4), Size = UDim2.new(1, 0, 0, 62),
+            Visible = false, ZIndex = 10
+        }, modeBtn)
+        UI.corner(modeList, 7)
+        UI.stroke(modeList, LINE)
+        local modeOptions = {}
+        for i, name in ipairs({ "Vessel", "Charles" }) do
+            local option = mk("TextButton", {
+                Name = "Option" .. name, AutoButtonColor = false, ZIndex = 11,
+                BorderSizePixel = 0, Position = UDim2.new(0, 4, 0, 4 + (i - 1) * 27),
+                Size = UDim2.new(1, -8, 0, 26), Font = Enum.Font.GothamMedium,
+                TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Text = name
+            }, modeList)
+            UI.corner(option, 6)
+            UI.make("UIPadding", { PaddingLeft = UDim.new(0, 10) }, option)
+            modeOptions[name] = option
+            option.MouseButton1Click:Connect(function()
+                if not isCurrent() then return end
+                if CC.CounterMode ~= name and _G.KAMUI_CounterRelease then
+                    _G.KAMUI_CounterRelease()
+                end
+                CC.CounterMode = name
+                modeValue.Text = name
+                for optionName, btn in pairs(modeOptions) do
+                    local selected = optionName == name
+                    btn.BackgroundTransparency = selected and 0 or 1
+                    btn.BackgroundColor3 = THEME.DarkRed
+                    btn.TextColor3 = selected and THEME.Text or THEME.MutedText
+                end
+                modeList.Visible = false
+                modeChevron.Rotation = 0
+            end)
+        end
+        for name, btn in pairs(modeOptions) do
+            local selected = name == CC.CounterMode
+            btn.BackgroundTransparency = selected and 0 or 1
+            btn.BackgroundColor3 = THEME.DarkRed
+            btn.TextColor3 = selected and THEME.Text or THEME.MutedText
+        end
+        modeBtn.MouseButton1Click:Connect(function()
+            if not isCurrent() then return end
+            if not modeList.Visible then
+                -- Keep both options within the scrolling tab when near its bottom.
+                local availableBelow = page.AbsolutePosition.Y + page.AbsoluteSize.Y
+                    - (modeBtn.AbsolutePosition.Y + modeBtn.AbsoluteSize.Y)
+                modeList.Position = availableBelow < 66 and UDim2.new(0, 0, 0, -66)
+                    or UDim2.new(0, 0, 1, 4)
+            end
+            modeList.Visible = not modeList.Visible
+            modeChevron.Rotation = modeList.Visible and 180 or 0
+        end)
+        local function closeModeList()
+            modeList.Visible = false
+            modeChevron.Rotation = 0
+        end
+        local function insideModeControl(gui, point)
+            local pos, size = gui.AbsolutePosition, gui.AbsoluteSize
+            return point.X >= pos.X and point.X <= pos.X + size.X
+                and point.Y >= pos.Y and point.Y <= pos.Y + size.Y
+        end
+        UIS.InputBegan:Connect(function(input)
+            if not isCurrent() or not modeList.Visible then return end
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1
+                and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            local inset = game:GetService("GuiService"):GetGuiInset()
+            local point = Vector2.new(input.Position.X, input.Position.Y)
+            for _, p in ipairs({ point, point - inset, point + inset }) do
+                if insideModeControl(modeBtn, p) or insideModeControl(modeList, p) then return end
+            end
+            closeModeList()
+        end)
+        page:GetPropertyChangedSignal("Visible"):Connect(function()
+            if not page.Visible then closeModeList() end
+        end)
+
+    end
     do
         local nrow = mk("Frame", { BackgroundTransparency = 1, BorderSizePixel = 0 }, nil)
         UI.addRow(counterCard, nrow, UI.ROW)
@@ -8960,7 +9070,7 @@ _G.KAMUI_BuildCombat = function(UI)
     --// filters can both miss attacks and admit non-attacks.
     local BLOCK_HOLD = 0.45
     local blocking, blockUntil = false, 0
-    local counterActive, counterUntil, counterTarget, counterKeyHeld = false, 0, nil, false
+    local counterActive, counterUntil, counterTarget, counterKeyHeld = false, 0, nil, nil
     local blockTarget, rotationHum, previousAutoRotate = nil, nil, nil
     local function releaseBlockCam()
         CC.BlockCamActive = false
@@ -8991,6 +9101,36 @@ _G.KAMUI_BuildCombat = function(UI)
             ownAttackUntil = math.max(ownAttackUntil, ownAttackAt + (isM1 and 0.6 or 0.9))
         end
     end)
+    -- Physical mobile M1 taps do not produce a MouseButton1 event. Listen to
+    -- the game's Melee InputAction to apply the same own-attack pause used on PC.
+    -- This pauses only new blocks; it does not forcibly end a held guard.
+    do
+        local meleeConn, alive = nil, true
+        task.spawn(function()
+            while alive and isCurrent() and ScreenGui.Parent do
+                local storage = game:GetService("ReplicatedStorage")
+                local keybind = storage:FindFirstChild("Keybind")
+                local combat = keybind and keybind:FindFirstChild("Combat")
+                local action = combat and combat:FindFirstChild("Melee")
+                if action and action:IsA("InputAction") then
+                    meleeConn = action.Pressed:Connect(function()
+                        if not alive or not isCurrent() or not CC.BlockMobile or UIS:GetFocusedTextBox() then return end
+                        ownAttackAt = os.clock()
+                        ownAttackUntil = math.max(ownAttackUntil, ownAttackAt + 0.6)
+                        if _G.KAMUI_ParkourDiagnostic then
+                            _G.KAMUI_ParkourDiagnostic("Block: mobile own M1; new blocks paused")
+                        end
+                    end)
+                    return
+                end
+                task.wait(1)
+            end
+        end)
+        ScreenGui.Destroying:Connect(function()
+            alive = false
+            if meleeConn then meleeConn:Disconnect() end
+        end)
+    end
     -- When an action animation starts just after our own attack input, use its
     -- known duration to extend the pause, capped so it cannot remain stuck.
     local ownAnimationConn
@@ -9318,9 +9458,18 @@ _G.KAMUI_BuildCombat = function(UI)
     end)
     if _G.KAMUI_CounterRelease then pcall(_G.KAMUI_CounterRelease) end
     local function releaseCounterKey()
-        if not counterKeyHeld then return end
-        counterKeyHeld = false
-        pcall(function() VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Three, false, game) end)
+        local own = counterKeyHeld
+        if not own then return end
+        counterKeyHeld = nil
+        if own.kind == "native" then
+            local ok, err = pcall(function()
+                if own.binding then own.binding:Fire(false) else own.action:Fire(false) end
+            end)
+            if own.binding then pcall(function() own.binding:Destroy() end) end
+            if not ok then blockLog("native counter release failed: " .. tostring(err)) end
+        else
+            pcall(function() VirtualInputManager:SendKeyEvent(false, own.key, false, game) end)
+        end
     end
     local function releaseCounter()
         releaseCounterKey()
@@ -9328,16 +9477,74 @@ _G.KAMUI_BuildCombat = function(UI)
         releaseBlockCam()
     end
     _G.KAMUI_CounterRelease = releaseCounter
+    local counterCharacterConn = player.CharacterAdded:Connect(releaseCounter)
+    ScreenGui.Destroying:Connect(function()
+        releaseCounter(); counterCharacterConn:Disconnect()
+        if _G.KAMUI_CounterRelease == releaseCounter then _G.KAMUI_CounterRelease = nil end
+    end)
     local function startCounter(plr, track)
-        if counterActive or UIS:IsKeyDown(Enum.KeyCode.Three) or UIS:GetFocusedTextBox() then return end
-        -- Slot 3 takes priority over AutoBlock so F does not conflict with it.
+        if counterActive or counterKeyHeld or UIS:GetFocusedTextBox() then return end
+        local slot = CC.CounterMode == "Vessel" and 4 or 3
+        local key = slot == 4 and Enum.KeyCode.Four or Enum.KeyCode.Three
+        local phone = UIS.TouchEnabled and not UIS.KeyboardEnabled
+        local action
+        if phone then
+            local storage = game:GetService("ReplicatedStorage")
+            local keybind = storage:FindFirstChild("Keybind")
+            local combat = keybind and keybind:FindFirstChild("Combat")
+            action = combat and combat:FindFirstChild("Skill " .. slot)
+            if not action or not action:IsA("InputAction") then
+                blockLog("native counter Skill " .. slot .. " action not found"); return
+            end
+            local typeOk, isBool = pcall(function() return action.Type == Enum.InputActionType.Bool end)
+            local stateOk, state = pcall(function() return action:GetState() end)
+            if not typeOk or not isBool or not stateOk then
+                blockLog("native counter action type/state unavailable"); return
+            end
+            if state == true then blockLog("native counter already held; leaving it alone"); return end
+        elseif UIS:IsKeyDown(key) then
+            return -- never release a key the user is holding
+        end
+        -- Counter takes priority over an active block.
         if blocking then releaseBlock() end
-        local ok, err = pcall(function()
-            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Three, false, game)
+        local own, err
+        if phone then
+            local binding
+            local bindingOk, bindingErr = pcall(function()
+                binding = Instance.new("InputBinding")
+                binding.Name = "KAMUI_AutoCounter"
+                binding.Type = Enum.InputBindingType.Scriptable
+                binding.Parent = action
+            end)
+            local previousAt, previousUntil = ownAttackAt, ownAttackUntil
+            ownAttackAt = os.clock()
+            ownAttackUntil = math.max(ownAttackUntil, ownAttackAt + 0.9)
+            local sent = false
+            if bindingOk then sent, err = pcall(function() binding:Fire(true) end) else err = bindingErr end
+            if sent then
+                own = {kind = "native", binding = binding, action = action}
+            else
+                if binding then pcall(function() binding:Destroy() end) end
+                local legacyOk, legacyErr = pcall(function() action:Fire(true) end)
+                if not legacyOk then
+                    ownAttackAt, ownAttackUntil = previousAt, previousUntil
+                    blockLog("native counter failed: " .. tostring(err) .. "; legacy: " .. tostring(legacyErr))
+                    return
+                end
+                own = {kind = "native", action = action}
+            end
+            local stateOk, state = pcall(function() return action:GetState() end)
+            blockLog("native counter slot " .. slot .. " sent; state=" .. (stateOk and tostring(state) or "unavailable"))
+        else
+            local sent
+            sent, err = pcall(function() VirtualInputManager:SendKeyEvent(true, key, false, game) end)
+            if not sent then blockLog("Counter " .. slot .. " failed: " .. tostring(err)); return end
+            own = {kind = "keyboard", key = key}
+        end
+        counterKeyHeld = own
+        task.delay(0.05, function()
+            if counterKeyHeld == own then releaseCounterKey() end
         end)
-        if not ok then blockLog("Counter 3 failed: " .. tostring(err)); return end
-        counterKeyHeld = true
-        task.delay(0.05, releaseCounterKey)
         counterActive, counterTarget = true, plr
         CC.BlockCamActive = CC.CounterCamEnabled
         local hold = BLOCK_HOLD
@@ -9345,7 +9552,7 @@ _G.KAMUI_BuildCombat = function(UI)
             hold = math.clamp((track.Length - track.TimePosition) / track.Speed, BLOCK_HOLD, 1.5)
         end
         counterUntil = os.clock() + hold
-        blockLog("Counter slot 3 sent")
+        blockLog("Counter slot " .. slot .. " sent")
     end
     --// judges one nearby player animation once per playback; action priority is a heuristic
     local function judge(plr, track)
@@ -11323,7 +11530,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI DIAGNOSTIC - MOBILE M1 QUICK", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI DIAGNOSTIC - MOBILE M1 PAUSE", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
