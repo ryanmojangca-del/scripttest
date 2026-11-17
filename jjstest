@@ -9125,6 +9125,16 @@ _G.KAMUI_BuildCombat = function(UI)
         end
         return nil
     end
+    -- On a touch-only phone, try to switch Roblox back to touch after each
+    -- synthetic keyboard/mouse event. This is best-effort, not guaranteed by JJS.
+    local function restoreBlockTouchSoon()
+        if not UIS.TouchEnabled then return end
+        task.delay(0.04, function()
+            if isCurrent() and _G.KAMUI_RestoreTouchInput then
+                _G.KAMUI_RestoreTouchInput()
+            end
+        end)
+    end
     local function sendBlock(down)
         if down then
             if CC.BlockMobile then
@@ -9169,6 +9179,7 @@ _G.KAMUI_BuildCombat = function(UI)
                 VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
             end)
             syntheticBlockHeld = ok
+            if ok then restoreBlockTouchSoon() end
             if ok then blockLog("virtual F press sent")
             else blockLog("virtual F press failed: " .. tostring(err)) end
             return ok
@@ -9184,6 +9195,7 @@ _G.KAMUI_BuildCombat = function(UI)
             local ok, err = pcall(function()
                 VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
             end)
+            if ok then restoreBlockTouchSoon() end
             if not ok then blockLog("virtual F release failed: " .. tostring(err)) end
         end
         return true
@@ -9221,10 +9233,12 @@ _G.KAMUI_BuildCombat = function(UI)
                 VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 0)
             end)
             if not ok then blockLog("M1 Back failed: " .. tostring(err)); return end
+            restoreBlockTouchSoon()
             blockLog("M1 Back sent")
             -- Always release the synthetic click, even if the script stops.
             task.delay(0.04, function()
                 pcall(function() VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 0) end)
+                restoreBlockTouchSoon()
             end)
         end)
     end
