@@ -7248,7 +7248,7 @@ do
     CC.SwitcherSwapDelay = 0.60 -- seconds from 3 to R
     CC.SwitcherKickDelay = 0.20 -- seconds from R to first 2
     CC.AutoBFDelay = 0.33 -- starting estimate in seconds; adjustable in Combat
-    CC.AutoQTE = false -- PC W/A/D prompt automation, off by default
+    CC.AutoQTE = false -- PC W/A/D and mobile QTE targets, off by default
     CC.QTEChance = 100 -- chance of selecting the correct key per attempt, percent
     CC.QTESpeed = 0.15 -- minimum delay between presses in seconds
     CC.Counter = false
@@ -8417,6 +8417,13 @@ _G.KAMUI_BuildCombat = function(UI)
         local pressToken = 0
         local qtePaint
         local seen = {}
+        local mobileTarget, mobileOrigin, mobileDone = nil, nil, false
+        local mobileVisibilityConn, mobileGuiConn
+        local function clearMobile()
+            if mobileVisibilityConn then mobileVisibilityConn:Disconnect(); mobileVisibilityConn = nil end
+            if mobileGuiConn then mobileGuiConn:Disconnect(); mobileGuiConn = nil end
+            mobileTarget, mobileOrigin, mobileDone = nil, nil, false
+        end
         local function log(message)
             if _G.KAMUI_ParkourDiagnostic then
                 _G.KAMUI_ParkourDiagnostic("QTE: " .. message)
@@ -8424,14 +8431,20 @@ _G.KAMUI_BuildCombat = function(UI)
         end
         local function release()
             if not held then return end
-            local key = held
+            local own = held
             held = nil
             pressToken = pressToken + 1
-            pcall(function() VirtualInputManager:SendKeyEvent(false, key, false, game) end)
+            if type(own) == "table" and own.kind == "touch" then
+                local ok, err = pcall(function() VirtualInputManager:SendTouchEvent(own.id, 2, own.x, own.y) end)
+                if not ok then log("mobile touch release failed: " .. tostring(err)) end
+            else
+                pcall(function() VirtualInputManager:SendKeyEvent(false, own, false, game) end)
+            end
         end
         local function stop()
             if conn then conn:Disconnect(); conn = nil end
             release()
+            clearMobile()
         end
         local function visible(obj, root)
             local cursor = obj
@@ -8455,9 +8468,84 @@ _G.KAMUI_BuildCombat = function(UI)
             return false
         end
         local keys = { W = Enum.KeyCode.W, A = Enum.KeyCode.A, D = Enum.KeyCode.D }
+        local function scanMobile(gui)
+            local qteGui = gui:FindFirstChild("QTE")
+            local target = qteGui and qteGui:FindFirstChild("QTE_MOBILE")
+            if not target or not target:IsA("TextButton") then
+                if mobileTarget then clearMobile() end
+                return
+            end
+            if target ~= mobileTarget then
+                clearMobile()
+                mobileTarget = target
+                mobileVisibilityConn = target:GetPropertyChangedSignal("Visible"):Connect(function()
+                    if not target.Visible then mobileDone, mobileOrigin = false, nil end
+                end)
+                if qteGui:IsA("ScreenGui") then
+                    mobileGuiConn = qteGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+                        if not qteGui.Enabled then mobileDone, mobileOrigin = false, nil end
+                    end)
+                end
+            end
+            if not visible(target, gui) or target.TextTransparency >= 1
+                or not target.Text:gsub("<[^>]->", ""):match("^%s*!%s*$") then
+                mobileDone, mobileOrigin = false, nil
+                return
+            end
+            local pos, size = target.AbsolutePosition, target.AbsoluteSize
+            if size.X <= 0 or size.Y <= 0 then return end
+            -- The game may reuse the button at a new randomized position. A
+            -- substantial move counts as a new prompt; tiny jitter does not.
+            if mobileDone and mobileOrigin then
+                local threshold = math.max(12, math.min(size.X, size.Y) * 0.5)
+                if (pos - mobileOrigin).Magnitude > threshold then mobileDone = false end
+            end
+            if mobileDone or held or os.clock() - lastPress < CC.QTESpeed then return end
+            mobileDone, mobileOrigin = true, pos
+            lastPress = os.clock()
+            -- On mobile a failed chance roll skips this target instead of
+            -- tapping a random area of the screen.
+            if math.random(1, 100) > CC.QTEChance then
+                log("mobile target skipped by chance"); return
+            end
+            local center = pos + size / 2
+            local inset = game:GetService("GuiService"):GetGuiInset()
+            local point
+            for _, candidate in ipairs({center, center + inset, center - inset}) do
+                local ok, objects = pcall(function() return gui:GetGuiObjectsAtPosition(candidate.X, candidate.Y) end)
+                if ok then
+                    for _, obj in ipairs(objects) do
+                        if obj == target or obj:IsDescendantOf(target) then point = candidate; break end
+                    end
+                end
+                if point then break end
+            end
+            if not point then
+                log("mobile target found, but touch coordinates could not be verified"); return
+            end
+            local own = {kind = "touch", id = 98, x = math.floor(point.X + 0.5), y = math.floor(point.Y + 0.5)}
+            held = own
+            pressToken = pressToken + 1
+            local token = pressToken
+            local ok, err = pcall(function() VirtualInputManager:SendTouchEvent(own.id, 0, own.x, own.y) end)
+            if not ok then
+                held = nil
+                log("mobile touch failed: " .. tostring(err)); return
+            end
+            log(string.format("mobile target tap sent at %d,%d", own.x, own.y))
+            task.delay(0.04, function()
+                if held == own and pressToken == token then release() end
+            end)
+        end
         local function scan()
             if not isCurrent() or not CC.AutoQTE then stop(); return end
-            if not UIS.KeyboardEnabled or UIS:GetFocusedTextBox() then return end
+            if UIS:GetFocusedTextBox() then return end
+            if UIS.TouchEnabled and not UIS.KeyboardEnabled then
+                local gui = player:FindFirstChildOfClass("PlayerGui")
+                if gui then scanMobile(gui) end
+                return
+            end
+            if not UIS.KeyboardEnabled then return end
             local gui = player:FindFirstChildOfClass("PlayerGui")
             if not gui then return end
             local selected, ambiguous = nil, false
@@ -8508,7 +8596,7 @@ _G.KAMUI_BuildCombat = function(UI)
             end)
         end
         local _
-        _, qtePaint = toggleRow("Auto QTE", "Automatically answers detected W/A/D prompts (PC)", function()
+        _, qtePaint = toggleRow("Auto QTE", "Answers PC prompts or mobile QTE targets", function()
             return CC.AutoQTE
         end, function(v)
             CC.AutoQTE = v
@@ -8538,6 +8626,7 @@ _G.KAMUI_BuildCombat = function(UI)
             0.05, 1.0, function(v) return string.format("%.2fs", v) end, qteCard, true)
         local charConn = player.CharacterAdded:Connect(function()
             release()
+            clearMobile()
             seen = setmetatable({}, { __mode = "k" })
         end)
         ScreenGui.Destroying:Connect(function()
@@ -12026,7 +12115,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE QTE TRACE", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE AUTO QTE", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
@@ -12041,9 +12130,6 @@ do
     end
     local function log(text)
         if stopped or not isCurrent() then return end
-        -- Temporary QTE diagnostic: retain only touch hit-test information.
-        local entry = tostring(text)
-        if not entry:find("QTETRACE", 1, true) and not entry:find("Cleared.", 1, true) then return end
         -- SwingForce is updated every frame and buried the Auto BF messages.
         if tostring(text):find("Value SwingForce/", 1, true)
             or tostring(text):find("Value MovementForce/", 1, true) then return end
@@ -12148,56 +12234,5 @@ do
     end)
     allConns[#allConns + 1] = player.CharacterAdded:Connect(bindCharacter)
     allConns[#allConns + 1] = RestoreGui.Destroying:Connect(stop)
-    -- Passive touch hit-test. Does not synthesize taps or modify game UI.
-    local function reallyVisible(obj, root)
-        local cursor = obj
-        while cursor and cursor ~= root do
-            if cursor:IsA("GuiObject") and not cursor.Visible then return false end
-            if cursor:IsA("ScreenGui") and not cursor.Enabled then return false end
-            cursor = cursor.Parent
-        end
-        return cursor == root
-    end
-    allConns[#allConns + 1] = UIS.TouchStarted:Connect(function(input)
-        if stopped or not isCurrent() then return end
-        local pg = player:FindFirstChildOfClass("PlayerGui")
-        if not pg then log("QTETRACE PlayerGui unavailable"); return end
-        local ok, objects = pcall(function()
-            return pg:GetGuiObjectsAtPosition(input.Position.X, input.Position.Y)
-        end)
-        if not ok then log("QTETRACE hit-test error: " .. tostring(objects)); return end
-        local candidates = {}
-        for _, obj in ipairs(objects) do
-            if reallyVisible(obj, pg) and obj:IsA("GuiObject") then
-                local score = 0
-                if obj:IsA("GuiButton") then score = score + 5 end
-                if obj:IsA("TextLabel") or obj:IsA("TextButton") then
-                    if tostring(obj.Text):find("!", 1, true) then score = score + 15 end
-                end
-                local cur = obj
-                while cur and cur ~= pg do
-                    local name = string.lower(cur.Name):gsub("[%s_%-]", "")
-                    if name:find("qte", 1, true) or name:find("judg", 1, true)
-                        or name:find("quicktime", 1, true) then score = score + 10; break end
-                    cur = cur.Parent
-                end
-                if obj:IsA("ImageLabel") or obj:IsA("ImageButton") then score = score + 2 end
-                candidates[#candidates + 1] = {object = obj, score = score}
-            end
-        end
-        table.sort(candidates, function(a,b) return a.score > b.score end)
-        log(string.format("QTETRACE touch %.0f,%.0f: %d visible hits", input.Position.X, input.Position.Y, #candidates))
-        for i = 1, math.min(9, #candidates) do
-            local obj = candidates[i].object
-            local detail = ""
-            if obj:IsA("TextLabel") or obj:IsA("TextButton") then
-                local text = tostring(obj.Text):gsub("%s+", " ")
-                if #text > 0 then detail = " text=" .. string.sub(text, 1, 22) end
-            elseif obj:IsA("ImageLabel") or obj:IsA("ImageButton") then
-                detail = " image=" .. tostring(obj.Image)
-            end
-            log("QTETRACE " .. i .. " " .. obj.ClassName .. " " .. obj:GetFullName() .. detail)
-        end
-    end)
     if player.Character then bindCharacter(player.Character) else log("Waiting for character.") end
 end
