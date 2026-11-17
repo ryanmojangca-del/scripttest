@@ -11146,9 +11146,15 @@ _G.KAMUI_BuildCombat = function(UI)
                     end
                     return false, "chain canceled"
                 end
-                local _, message = runCycle()
+                -- Always clear chainBusy and tracking if an unexpected error
+                -- occurs inside the movement/skill cycle.
+                local ok, _, message = pcall(runCycle)
                 CC.ChainSynthetic = false
-                stop(message or "loop stopped")
+                if not ok then
+                    stop("error: " .. tostring(_))
+                else
+                    stop(message or "loop stopped")
+                end
             end)
         end
         if _G.KAMUI_ChainCleanup then pcall(_G.KAMUI_ChainCleanup) end
@@ -11174,8 +11180,10 @@ _G.KAMUI_BuildCombat = function(UI)
         chainButton.Font = Enum.Font.GothamMedium
         chainButton.TextSize = 13
         chainButton.Text = "Chain BF"
-        chainButton.Active, chainButton.Draggable = true, true
-        chainButton.ZIndex = 50
+        -- Put the button above the diagnostic window (ZIndex 100) and do not
+        -- make the action button draggable: dragging can consume mobile taps.
+        chainButton.Active, chainButton.Draggable = true, false
+        chainButton.ZIndex = 150
         chainButton.Parent = RestoreGui
         applyCorner(chainButton, 17)
         UI.stroke(chainButton, THEME.Red)
@@ -11187,8 +11195,22 @@ _G.KAMUI_BuildCombat = function(UI)
         end
         CC.ChainMobilePaint = paintMobileChain
         paintMobileChain()
-        chainButton.Activated:Connect(function()
-            if not isCurrent() or not chainButton.Visible or UIS:GetFocusedTextBox() then return end
+        local lastChainTap = -math.huge
+        chainButton.InputBegan:Connect(function(input)
+            if input.UserInputType ~= Enum.UserInputType.Touch
+                and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            if not isCurrent() or not chainButton.Visible then return end
+            local now = os.clock()
+            if now - lastChainTap < 0.3 then return end
+            lastChainTap = now
+            chainLog("mobile button tapped")
+            chainButton.Text = "Chain: starting"
+            task.delay(0.7, function()
+                if chainButton.Parent then chainButton.Text = "Chain BF" end
+            end)
+            if UIS:GetFocusedTextBox() then chainLog("close the text box first"); return end
+            if CC.Counter then chainLog("turn Auto counter off"); return end
+            if CC.FeintMode then chainLog("turn Feint mode off on mobile"); return end
             beginChain()
         end)
         local function cleanupChain()
@@ -11845,7 +11867,7 @@ do
     title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
     title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
     title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE CHAIN BF", 101, frame
+    title.Text, title.ZIndex, title.Parent = "KAMUI - MOBILE CHAIN V2", 101, frame
     local body = Instance.new("TextLabel")
     body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
     body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
