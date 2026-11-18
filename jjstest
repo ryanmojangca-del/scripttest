@@ -10,6 +10,10 @@ local Stats = game:GetService("Stats")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 --// OLD SCRIPT TERMINATION SYSTEM
+if type(_G.KAMUI_ProfileFlush) == "function" then pcall(_G.KAMUI_ProfileFlush) end
+-- Restore the prior experimental side-dash timestamp before starting another run.
+if type(_G.KAMUI_NoSideCDCleanup) == "function" then pcall(_G.KAMUI_NoSideCDCleanup) end
+if type(_G.KAMUI_FlyCleanup) == "function" then pcall(_G.KAMUI_FlyCleanup) end
 local scriptId = math.random(1, 1000000)
 _G.SkidwareId = scriptId
 
@@ -46,6 +50,10 @@ end
 -- Close the standalone Ratio trace when switching to the full feature build.
 if type(_G.KAMUI_RatioTraceStop) == "function" then
     pcall(_G.KAMUI_RatioTraceStop)
+end
+-- Close the temporary Perfect Swap trace when this feature build starts.
+if type(_G.KAMUI_PerfectSwapTraceStop) == "function" then
+    pcall(_G.KAMUI_PerfectSwapTraceStop)
 end
 -- Remove the standalone CamLock from the previous test version, if running.
 if _G.KAMUI_CamLockCleanup then
@@ -323,6 +331,9 @@ for _, gui in pairs(game.CoreGui:GetChildren()) do
         gui:Destroy()
     end
 end
+
+-- Clear the old diagnostic sink after the previous GUI has been removed.
+_G.KAMUI_ParkourDiagnostic = nil
 
 --// SCREEN GUI
 ScreenGui = Instance.new("ScreenGui")
@@ -791,6 +802,7 @@ end
 --// DESTROY LOGIC
 local lastDestroyClick = 0
 _G.KAMUI_DestroyClick = function()
+    if type(_G.KAMUI_ProfileFlush) == "function" then pcall(_G.KAMUI_ProfileFlush) end
     local currentTime = tick()
     if currentTime - lastDestroyClick <= 5 then
         if type(_G.KAMUI_SkillColorsRestore) == "function" then
@@ -1297,8 +1309,8 @@ do
         h.Text = text
     end
     sidebarHeading("Main", 0)
-    sidebarHeading("Player", 46)
-    sidebarHeading("Extras", 118)
+    sidebarHeading("Player", 72)
+    sidebarHeading("Extras", 144)
 end
 
 --// FIXED SIDEBAR PROFILE: outside TabHeader, so it stays put while the tabs scroll.
@@ -2044,16 +2056,96 @@ end
 --// It only affects YOUR dashes, never the ones this script performs (fireDash stamps the time
 --// with _G.KAMUI_MarkScriptDash; a dash mover that shows up right after is the script's).
 --// Debug: run `_G.KAMUI_DebugDash = true` first to print every dash mover and who it belongs to.
-_G.KAMUI_Movement = { Enabled = true, Distance = 1.0, DistMin = 0, DistMax = 10, NoSideCD = false, NoStun = false, NoFatigue = false,
+_G.KAMUI_Movement = { Enabled = true, Distance = 1.0, DistMin = 0, DistMax = 10, NoSideCD = false, NoFatigue = false,
     SJEnabled = false, WalkSpeed = 25, JumpPower = 50, InfiniteParkour = false,
     Blinking = false, BlinkMax = 2.0, BlinkKey = "X", AutoStop = false, BlinkMobile = false, BlinkCapturing = false,
-    FakeLag = false, FakeLagMs = 50, FakeLagKey = "Z", FakeLagMobile = false, FakeLagCapturing = false }
+    FakeLag = false, FakeLagMs = 50, FakeLagKey = "Z", FakeLagMobile = false, FakeLagCapturing = false,
+    Fly = false, FlySpeed = 50, FlyKey = "", FlyMobile = false, FlyCapturing = false }
 for _, c in ipairs(_G.KAMUI_MovementConns or {}) do
     pcall(function()
         c:Disconnect()
     end)
 end
 _G.KAMUI_MovementConns = {}
+
+--// FLY: local movement force; no changes to the humanoid's game settings.
+do
+    local M, conns = _G.KAMUI_Movement, _G.KAMUI_MovementConns
+    local alive, force, forceRoot = true, nil, nil
+    local lastError = nil
+    local function removeForce()
+        if force then pcall(function() force:Destroy() end) end
+        force, forceRoot = nil, nil
+    end
+    M.FlySet = function(on)
+        M.Fly = on and true or false
+        if not M.Fly then removeForce() end
+        if M.FlyPaint then pcall(M.FlyPaint) end
+    end
+    local function update()
+        if not alive or not isCurrent() then removeForce(); return end
+        if not M.Fly then return end
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local cam = Workspace.CurrentCamera
+        if not root or not hum or hum.Health <= 0 or not cam then removeForce(); return end
+        if forceRoot ~= root or not force or force.Parent ~= root then
+            removeForce()
+            local ok, err = pcall(function()
+                local f = Instance.new("BodyVelocity")
+                force = f
+                f.Name = "KAMUI_FlyVelocity"
+                f.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                f.P = 1250
+                f.Velocity = Vector3.new(0, 0, 0)
+                f.Parent = root
+                forceRoot = root
+            end)
+            if not ok then
+                removeForce()
+                if tostring(err) ~= lastError then warn("[KAMUI Fly] " .. tostring(err)); lastError = tostring(err) end
+                return
+            end
+            lastError = nil
+        end
+        local look, right = cam.CFrame.LookVector, cam.CFrame.RightVector
+        local flatLook = Vector3.new(look.X, 0, look.Z)
+        local flatRight = Vector3.new(right.X, 0, right.Z)
+        if flatLook.Magnitude < 0.001 then
+            local fallback = root.CFrame.LookVector
+            flatLook = Vector3.new(fallback.X, 0, fallback.Z)
+        end
+        if flatRight.Magnitude < 0.001 then
+            local fallback = root.CFrame.RightVector
+            flatRight = Vector3.new(fallback.X, 0, fallback.Z)
+        end
+        if flatLook.Magnitude < 0.001 or flatRight.Magnitude < 0.001 then return end
+        local move = hum.MoveDirection
+        local direction = look * move:Dot(flatLook.Unit) + right * move:Dot(flatRight.Unit)
+        if UIS.KeyboardEnabled and not UIS:GetFocusedTextBox() then
+            if UIS:IsKeyDown(Enum.KeyCode.Space) then direction = direction + Vector3.new(0, 1, 0) end
+            if UIS:IsKeyDown(Enum.KeyCode.LeftControl) or UIS:IsKeyDown(Enum.KeyCode.RightControl) then
+                direction = direction - Vector3.new(0, 1, 0)
+            end
+        end
+        if direction.Magnitude > 1 then direction = direction.Unit end
+        force.Velocity = direction * math.clamp(tonumber(M.FlySpeed) or 50, 1, 200)
+    end
+    conns[#conns + 1] = RunService.PreSimulation:Connect(update)
+    conns[#conns + 1] = player.CharacterAdded:Connect(removeForce)
+    local function cleanup()
+        if not alive then return end
+        alive = false
+        M.Fly = false
+        removeForce()
+        if M.FlyRemoveButton then pcall(M.FlyRemoveButton) end
+        if _G.KAMUI_FlyCleanup == cleanup then _G.KAMUI_FlyCleanup = nil end
+    end
+    _G.KAMUI_FlyCleanup = cleanup
+    conns[#conns + 1] = ScreenGui.Destroying:Connect(cleanup)
+end
+
 do
     local M = _G.KAMUI_Movement
     local conns = _G.KAMUI_MovementConns
@@ -2179,107 +2271,136 @@ do
     conns[#conns + 1] = RunService.PreSimulation:Connect(updateDashMultiplier)
 end
 
---// NO SIDE DASH COOLDOWN (toggle lives in the Movement tab, inside the Dash multiplier card)
---// Ported from the Rage tab of the other script. While ON it:
---//   1) sets your character attribute CustomSideDashCooldown to 0,
---//   2) sets the workspace flags NoDashCooldown = true / EffectAffects = 1 (the game's no-cooldown switch),
---//   3) destroys the dash cooldown markers (UsedDash / InDash / DashCooldown / SideDashCooldown) on your character.
---// Turning it OFF puts the workspace flags back to the values the game had and clears the attribute.
+--// NO SIDE DASH COOLDOWN: guarded native-controller experiment (PC and touch).
+--// Trace showed the single numeric Dash upvalue at index 7 changing when a side
+--// dash started, but not in one observed forward dash. This is not guaranteed
+--// across game updates/executors. Fail closed if the controller shape differs.
+--// Unlike the previous version, this does not delete game dash markers or set
+--// Workspace cooldown flags. Game/server checks can still reject a dash.
 do
-    local M = _G.KAMUI_Movement
-    local conns = _G.KAMUI_MovementConns
-    local MARKERS = { UsedDash = true, InDash = true, DashCooldown = true, SideDashCooldown = true }
-    --// kept in _G so re-running the script can still restore the game's real values
-    local orig = _G.KAMUI_NoSideCDOrig
-    if not orig then
-        orig = { captured = false }
-        _G.KAMUI_NoSideCDOrig = orig
+    local M, conns = _G.KAMUI_Movement, _G.KAMUI_MovementConns
+    local active, target, savedTimestamp, resetApplied = true, nil, nil, false
+    local scanning, nextScan, wasOn = false, 0, false
+    local index = 7
+    local function report(message)
+        print("[KAMUI side dash] " .. message)
+        if type(_G.KAMUI_ParkourDiagnostic)=="function" then
+            _G.KAMUI_ParkourDiagnostic("Side dash: " .. message)
+        end
     end
-
-    local function setServerFlags(on)
+    local function getValues(fn)
+        local ok, values=pcall(debug.getupvalues, fn)
+        if ok and type(values)=="table" then return values end
+        return nil
+    end
+    local function restore()
+        if target and resetApplied and type(savedTimestamp)=="number" then
+            local values=getValues(target)
+            -- Don't overwrite a fresh game-side value if it has changed since us.
+            if values and values[index]==0 then
+                local ok,err=pcall(debug.setupvalue,target,index,savedTimestamp)
+                if not ok then report("could not restore previous timestamp: "..tostring(err)) end
+            end
+        end
+        target, savedTimestamp, resetApplied=nil,nil,false
+    end
+    local function cleanup()
+        if not active then return end
+        active=false
+        restore()
+        if _G.KAMUI_NoSideCDCleanup==cleanup then _G.KAMUI_NoSideCDCleanup=nil end
+    end
+    -- Revert the previous build's local workspace overrides if it left them on.
+    local legacy=_G.KAMUI_NoSideCDOrig
+    if type(legacy)=="table" and legacy.captured then
         pcall(function()
-            if on then
-                if not orig.captured then
-                    orig.captured = true
-                    orig.noDash = Workspace:GetAttribute("NoDashCooldown")
-                    orig.effect = Workspace:GetAttribute("EffectAffects")
-                end
-                if Workspace:GetAttribute("NoDashCooldown") ~= true then
-                    Workspace:SetAttribute("NoDashCooldown", true)
-                end
-                if Workspace:GetAttribute("EffectAffects") ~= 1 then
-                    Workspace:SetAttribute("EffectAffects", 1)
-                end
-            elseif orig.captured then
-                orig.captured = false
-                Workspace:SetAttribute("NoDashCooldown", orig.noDash)
-                Workspace:SetAttribute("EffectAffects", orig.effect)
+            Workspace:SetAttribute("NoDashCooldown",legacy.noDash)
+            Workspace:SetAttribute("EffectAffects",legacy.effect)
+            local char=player.Character
+            if char then
+                char:SetAttribute("CustomSideDashCooldown",nil)
+                char:SetAttribute("AfterimageDash",nil)
             end
         end)
+        legacy.captured=false
     end
-    local function clearAttr(char)
-        pcall(function()
-            char:SetAttribute("CustomSideDashCooldown", nil)
-            char:SetAttribute("AfterimageDash", nil)
-        end)
+    local function findController()
+        if type(getgc)~="function" or type(debug)~="table"
+            or type(debug.getupvalues)~="function" or type(debug.setupvalue)~="function" then
+            return nil,"executor lacks getgc or debug upvalue support"
+        end
+        local ok,objects=pcall(getgc,true)
+        if not ok or type(objects)~="table" then return nil,"controller scan failed" end
+        local found,seen=nil,{}
+        for _,obj in ipairs(objects) do
+            if type(obj)=="table" and rawget(obj,"Name")=="MovementController"
+                and type(rawget(obj,"Dash"))=="function" and type(rawget(obj,"Parkour"))=="function" then
+                local fn=rawget(obj,"Dash")
+                if not seen[fn] then
+                    seen[fn]=true
+                    local values=getValues(fn)
+                    local numericCount=0
+                    if values then
+                        for k,v in pairs(values) do
+                            if type(k)=="number" and type(v)=="number" then numericCount=numericCount+1 end
+                        end
+                    end
+                    local v=values and values[index]
+                    if numericCount==1 and type(v)=="number" and v>=1000000000 and v<=4000000000 then
+                        if found then return nil,"multiple matching controllers; no changes made" end
+                        found=fn
+                    end
+                end
+            end
+        end
+        return found,found and nil or "matching side-dash timestamp not found"
     end
-
-    --// a fresh run starts with the toggle OFF: give back anything an earlier run changed
-    setServerFlags(false)
-
-    --// kill the cooldown markers the moment the game adds them to your character
-    local function hook(char)
-        conns[#conns + 1] = char.DescendantAdded:Connect(function(d)
-            if isCurrent() and M.NoSideCD and MARKERS[d.Name] then
-                task.defer(function()
-                    pcall(d.Destroy, d)
+    _G.KAMUI_NoSideCDCleanup=cleanup
+    conns[#conns+1]=ScreenGui.Destroying:Connect(cleanup)
+    conns[#conns+1]=RunService.Heartbeat:Connect(function()
+        if not active or not isCurrent() then return end
+        if not M.NoSideCD then
+            if wasOn then restore();report("OFF") end
+            wasOn=false
+            return
+        end
+        if not wasOn then wasOn=true;nextScan=0;report("ON; checking controller") end
+        if not target then
+            if not scanning and os.clock()>=nextScan then
+                scanning=true;nextScan=os.clock()+5
+                task.spawn(function()
+                    local fn,why=findController()
+                    scanning=false
+                    if not active or not isCurrent() or not M.NoSideCD then return end
+                    target=fn
+                    report(fn and "timestamp found; experimental reset active" or why)
                 end)
             end
-        end)
-    end
-    if player.Character then
-        hook(player.Character)
-    end
-    conns[#conns + 1] = player.CharacterAdded:Connect(hook)
-
-    local wasOn = false
-    conns[#conns + 1] = RunService.Heartbeat:Connect(function()
-        if not isCurrent() then
             return
         end
-        local char = player.Character
-        if not M.NoSideCD then
-            if wasOn then -- just turned off
-                wasOn = false
-                setServerFlags(false)
-                if char then
-                    clearAttr(char)
-                end
-            end
+        local values=getValues(target)
+        local v=values and values[index]
+        if type(v)~="number" or v~=v or (v~=0 and (v<1000000000 or v>4000000000)) then
+            report("unexpected timestamp; stopped and will rescan")
+            restore();nextScan=os.clock()+5
             return
         end
-        wasOn = true
-        setServerFlags(true)
-        if not char then
-            return
-        end
-        if char:GetAttribute("CustomSideDashCooldown") ~= 0 then
-            pcall(char.SetAttribute, char, "CustomSideDashCooldown", 0)
-        end
-        for name in pairs(MARKERS) do
-            local o = char:FindFirstChild(name)
-            if o then
-                pcall(o.Destroy, o)
+        if v~=0 then
+            savedTimestamp=v
+            local ok,err=pcall(debug.setupvalue,target,index,0)
+            local verify=ok and getValues(target) or nil
+            if not ok or not verify or verify[index]~=0 then
+                report("timestamp reset failed: "..tostring(err or "verification failed"))
+                target, savedTimestamp, resetApplied=nil,nil,false
+                nextScan=os.clock()+5
+            else
+                resetApplied=true
             end
         end
     end)
 end
 
---// NO STUN + NO FATIGUE (two separate toggles in the Movement tab, ported from the Rage tab of the other script)
---//   No stun    : destroys the "Freeze" stun marker as soon as the game puts it on your character.
---//   No fatigue : keeps your Humanoid JumpPower at 50 (the game lowers it while you are fatigued). It stays out of
---//                the way while you are in a state the game should control (Counter, HunterCounter, emotes,
---//                BeingLaunched, Ragdoll, Freeze, BarrageBind) or when the game marks you with NoJump.
+--// WALK SPEED / JUMP HEIGHT: respect movement-blocking game states.
 do
     local M = _G.KAMUI_Movement
     local conns = _G.KAMUI_MovementConns
@@ -2295,40 +2416,6 @@ do
         end
         return false
     end
-
-    --// remove Freeze the moment it appears (any depth under your character)
-    local function hook(char)
-        conns[#conns + 1] = char.DescendantAdded:Connect(function(d)
-            if isCurrent() and M.NoStun and d.Name == "Freeze" then
-                task.defer(function()
-                    pcall(d.Destroy, d)
-                end)
-            end
-        end)
-    end
-    if player.Character then
-        hook(player.Character)
-    end
-    conns[#conns + 1] = player.CharacterAdded:Connect(hook)
-
-    conns[#conns + 1] = RunService.Heartbeat:Connect(function()
-        if not isCurrent() then
-            return
-        end
-        if not M.NoStun then
-            return
-        end
-        local char = player.Character
-        if not char then
-            return
-        end
-        if M.NoStun then
-            local f = char:FindFirstChild("Freeze")
-            if f then
-                pcall(f.Destroy, f)
-            end
-        end
-    end)
 
     --// WALKSPEED / JUMP HEIGHT: while enabled, holds Humanoid.WalkSpeed and JumpPower at the slider values.
     --// Same hands-off rule as No fatigue (blocked states). Turning it off puts back the normal 16 / 50 once.
@@ -2634,15 +2721,16 @@ end
 do
     local rows = {
         { HomeTabBtn, 18 },
-        { _G.KAMUI_CombatTab.Btn, 64 },
-        { _G.KAMUI_MovementTab.Btn, 90 },
-        { SkillsColorTabBtn, 136 },
-        { FPSBoosterTabBtn, 162 },
-        { _G.KAMUI_GuiTab.Btn, 188 },
-        { _G.KAMUI_MusicTab.Btn, 214 }
+        { ProfilesTabBtn, 44 },
+        { _G.KAMUI_CombatTab.Btn, 90 },
+        { _G.KAMUI_MovementTab.Btn, 116 },
+        { SkillsColorTabBtn, 162 },
+        { FPSBoosterTabBtn, 188 },
+        { _G.KAMUI_GuiTab.Btn, 214 },
+        { _G.KAMUI_MusicTab.Btn, 240 }
     }
     SettingsTabBtn.Visible = false
-    ProfilesTabBtn.Visible = false
+    ProfilesTabBtn.Visible = true
     for _, r in ipairs(rows) do
         r[1].Position = UDim2.new(0, 0, 0, r[2])
         r[1].Size = UDim2.new(1, 0, 0, 24)
@@ -3650,6 +3738,9 @@ local function setTab(tab)
 end
 HomeTabBtn.MouseButton1Click:Connect(function()
     setTab("Home")
+end)
+ProfilesTabBtn.MouseButton1Click:Connect(function()
+    setTab("Profiles")
 end)
 SkillsColorTabBtn.MouseButton1Click:Connect(function()
     setTab("Skills Color")
@@ -4816,6 +4907,9 @@ end
 ----------------------------------------------------------------
 _G.KAMUI_BuildHome = function(UI)
     UI.setupPage(HomeContainer)
+    _G.KAMUI_Profile.add("Controls", "HideGUIKey", function() return Config.HideGUIKeybind end,
+        function(v) Config.HideGUIKeybind=v; HideGUIKeyBtn.Text=v end,
+        function(v) return v ~= "" and _G.KAMUI_Profile.keyValid(v) end)
 
     local PILL_LINE = Color3.fromRGB(90, 18, 24)
     local dashCard = UI.card(HomeContainer)
@@ -5233,6 +5327,12 @@ _G.KAMUI_BuildOthers = function(UI)
     end
     keep(BoostPanel, BoostTitle, PSW, "FPS boost")
     keep(HeadlessKorbloxPanel, HeadlessKorbloxTitle, HeadlessKorbloxSwitch, "Headless & Korblox")
+    _G.KAMUI_Profile.add("Others", "FPSBoost", function() return potatoEnabled end,
+        function(v) if potatoEnabled ~= v then potatoEnabled=v; applyBoost(v) end end)
+    _G.KAMUI_Profile.add("Others", "HeadlessKorblox", function() return headlessKorbloxEnabled end,
+        function(v) if headlessKorbloxEnabled ~= v then
+            headlessKorbloxEnabled=v; setHeadless(v); setKorblox(v); updateHeadlessKorbloxSwitch(v)
+        end end)
 end
 --// ============================================================
 --// GUI TAB (Extras): accent color picker, rainbow mode, font dropdown
@@ -6184,6 +6284,8 @@ _G.KAMUI_BuildGUI = function(UI)
         dirty = true
         saveSoon()
     end
+    _G.KAMUI_Profile.add("GUI", "Font", function() return St.font end, setFont,
+        function(v) return famByName[v] ~= nil end)
     for i, fam in ipairs(avail) do
         local b = mk("TextButton", {
             Name = "FontOption",
@@ -6277,10 +6379,14 @@ _G.KAMUI_BuildGUI = function(UI)
             BGTrans = { 0, 1 }, BarThick = { 1, 6 }, Radius = { 0, 10 }, AnimSpeed = { 0.25, 3 }
         }
         local MODS = {
-            { "aimbot", "Aimbot" }, { "block", "Auto block" },
-            { "dashmult", "Dash multiplier" }, { "nosidecd", "No side dash cooldown" }, { "nostun", "No stun" },
+            { "autoratio", "Auto Ratio" }, { "perfectswap", "Perfect Swap" },
+            { "autobf", "Auto BF" }, { "autoqte", "Auto QTE" },
+            { "aimbot", "Aimbot" }, { "block", "Auto block" }, { "counter", "Auto counter" },
+            { "dashmult", "Dash multiplier" }, { "nosidecd", "No side dash cooldown" },
+            { "parkour", "Infinite Parkour" }, { "fly", "Fly" },
             { "walkjump", "WalkSpeed / Jump height" }, { "fakelag", "Fake lag" },
-            { "fps", "FPS boost" }, { "headless", "Headless & Korblox" }
+            { "skillcolors", "Skill colors" }, { "fps", "FPS boost" },
+            { "headless", "Headless & Korblox" }, { "rainbow", "Rainbow mode" }
         }
 
         local CFG, hidden = {}, {}
@@ -6708,7 +6814,6 @@ _G.KAMUI_BuildGUI = function(UI)
         local con = subCard("Arraylist / Content")
         cycleRow(con, "Text case", nil, "Case")
         cycleRow(con, "Sort", nil, "Sort")
-        cycleRow(con, "Details", "Keys = [V]   Values = (range, speed...)", "Details")
         cycleRow(con, "Suffix", "Tag added after each name", "Suffix")
 
         local ani = subCard("Arraylist / Animation")
@@ -6808,35 +6913,34 @@ _G.KAMUI_BuildGUI = function(UI)
             local out = {}
             local CC = _G.KAMUI_Combat or {}
             local M = _G.KAMUI_Movement or {}
-            local wantKeys = CFG.Details == "Keys" or CFG.Details == "Both"
-            local wantVals = CFG.Details == "Values" or CFG.Details == "Both"
-            local function add(id, cat, on, text, key, val)
+            local function add(id, cat, on, text)
                 if not on or hidden[id] then
                     return
-                end
-                if wantVals and val then
-                    text = text .. " (" .. val .. ")"
-                end
-                if wantKeys and key then
-                    text = text .. " [" .. tostring(key) .. "]"
                 end
                 if CFG.Suffix ~= "None" then
                     text = text .. " " .. CFG.Suffix
                 end
                 out[#out + 1] = { id = id, cat = cat, text = caseText(text), idx = #out + 1 }
             end
-            add("autobf", 2, CC.AutoBF, "Auto BF", nil, CC.AutoBFMode)
-            add("bfchain", 2, CC.ChainMode, "BF Chain")
-            add("targetlock", 2, CC.TargetLock, "BF TargetLock", nil, CC.TargetLockMode)
-            add("aimbot", 2, CC.Aimbot, "Aimbot", CC.AimKey, (CC.Smooth and CC.Smooth > 0) and ("smooth " .. fmtNum(CC.Smooth)) or nil)
-            add("block", 2, CC.Block, "Auto block", nil, CC.BlockRange and fmtNum(CC.BlockRange))
-            add("dashmult", 3, M.Enabled and M.Distance ~= 1, "Dash multiplier", nil, M.Distance and string.format("%.2fx", M.Distance))
+            -- Only main feature names are listed; modes, mobile controls,
+            -- keybinds, values, and other sub-options are intentionally omitted.
+            add("autoratio", 2, CC.AutoRatio, "Auto Ratio")
+            add("perfectswap", 2, CC.PerfectSwap, "Perfect Swap")
+            add("autobf", 2, CC.AutoBF, "Auto BF")
+            add("autoqte", 2, CC.AutoQTE, "Auto QTE")
+            add("aimbot", 2, CC.Aimbot, "Aimbot")
+            add("block", 2, CC.Block, "Auto block")
+            add("counter", 2, CC.Counter, "Auto counter")
+            add("dashmult", 3, M.Enabled, "Dash multiplier")
             add("nosidecd", 3, M.NoSideCD, "No side dash cooldown")
-            add("nostun", 3, M.NoStun, "No stun")
-            add("walkjump", 3, M.SJEnabled, "WalkSpeed / Jump height", nil, M.WalkSpeed and (fmtNum(M.WalkSpeed) .. " / " .. fmtNum(M.JumpPower)))
-            add("fakelag", 3, M.FakeLag, "Fake lag", M.FakeLagKey, M.FakeLagMs and (fmtNum(M.FakeLagMs) .. "ms") or nil)
+            add("parkour", 3, M.InfiniteParkour, "Infinite Parkour")
+            add("fly", 3, M.Fly, "Fly")
+            add("walkjump", 3, M.SJEnabled, "WalkSpeed / Jump height")
+            add("fakelag", 3, M.FakeLag, "Fake lag")
+            add("skillcolors", 4, SkillsColorEnabled, "Skill colors")
             add("fps", 4, potatoEnabled, "FPS boost")
             add("headless", 4, headlessKorbloxEnabled, "Headless & Korblox")
+            add("rainbow", 5, St.rainbow, "Rainbow mode")
             if #out == 0 and CFG.Draggable and not CFG.Title then
                 out[1] = { id = "__preview", cat = 0, text = caseText("Arraylist"), idx = 1 }
             end
@@ -7312,6 +7416,9 @@ do
     CC.SwitcherSwapDelay = 0.60 -- seconds from 3 to R
     CC.SwitcherKickDelay = 0.20 -- seconds from R to first 2
     CC.AutoBFDelay = 0.33 -- starting estimate in seconds; adjustable in Combat
+    CC.PerfectSwap = false -- manually swap, then time M1 from TodoClap
+    CC.PerfectSwapKey = nil -- unbound until the user chooses a key
+    CC.PerfectSwapMobile = false -- show the draggable PW button when enabled
     CC.AutoRatio = false -- manually start Ratio; auto-time the second Special
     CC.AutoQTE = false -- PC W/A/D and mobile QTE targets, off by default
     CC.QTEChance = 100 -- chance of selecting the correct key per attempt, percent
@@ -7322,6 +7429,78 @@ do
     CC.CounterFOV = false
     CC.CounterCamEnabled = true
     CC.CounterCamMode = "Legit"
+end
+
+-- Profiles register the real setters and repaint functions, not raw toggle values.
+_G.KAMUI_Profile = { entries = {}, groups = {}, counts = {}, profiles = {}, loading = false }
+do
+    local P = _G.KAMUI_Profile
+    function P.add(group, key, get, set, valid)
+        local id = group .. "." .. key
+        assert(not P.groups[id], "duplicate profile setting: " .. id)
+        local e = {group=group, key=key, get=get, set=set, valid=valid}
+        P.groups[id] = e
+        table.insert(P.entries, e)
+    end
+    function P.auto(group, label, get, set, valid)
+        if not group then return end
+        local base = label:gsub("[^%w]", "")
+        local id = group .. "." .. base
+        P.counts[id] = (P.counts[id] or 0) + 1
+        local key = base .. (P.counts[id] > 1 and tostring(P.counts[id]) or "")
+        P.add(group, key, get, set, valid)
+    end
+    function P.snapshot()
+        local out = {}
+        for _, e in ipairs(P.entries) do
+            out[e.group] = out[e.group] or {}
+            out[e.group][e.key] = e.get()
+        end
+        return out
+    end
+    -- Accept older saved profiles without restoring the removed No Stun feature.
+    function P.withoutRetired(data)
+        if type(data) ~= "table" or type(data.Movement) ~= "table" or data.Movement.NoStunToggle == nil then return data end
+        local clean, movement = {}, {}
+        for k,v in pairs(data) do clean[k]=v end
+        for k,v in pairs(data.Movement) do if k ~= "NoStunToggle" then movement[k]=v end end
+        clean.Movement=movement
+        return clean
+    end
+    function P.apply(data)
+        data = P.withoutRetired(data)
+        if type(data) ~= "table" then return false, "Invalid settings" end
+        for group, values in pairs(data) do
+            if type(group) ~= "string" or type(values) ~= "table" then return false, "Invalid group" end
+            for key, value in pairs(values) do
+                local e = P.groups[group .. "." .. tostring(key)]
+                if not e or type(value) ~= type(e.get()) or (e.valid and not e.valid(value)) then
+                    return false, "Invalid setting: " .. group .. "." .. tostring(key)
+                end
+            end
+        end
+        P.loading = true
+        for _, e in ipairs(P.entries) do
+            local group = data[e.group]
+            if group and group[e.key] ~= nil then
+                local ok, err = pcall(e.set, group[e.key])
+                if not ok then P.loading = false; return false, "Could not apply " .. e.group .. "." .. e.key .. ": " .. tostring(err) end
+            end
+        end
+        P.loading = false
+        for _, e in ipairs(P.entries) do
+            local group = data[e.group]
+            if group and group[e.key] ~= nil and e.get() ~= group[e.key] then
+                return false, "Setting could not be enabled: " .. e.group .. "." .. e.key
+            end
+        end
+        return true
+    end
+    function P.keyValid(v)
+        if v == "" then return true end
+        local ok, k = pcall(function() return Enum.KeyCode[v] end)
+        return ok and k ~= nil and k ~= Enum.KeyCode.Unknown
+    end
 end
 
 _G.KAMUI_BuildCombat = function(UI)
@@ -7396,6 +7575,9 @@ _G.KAMUI_BuildCombat = function(UI)
         hit.MouseButton1Click:Connect(function()
             set(not get())
             paint()
+        end)
+        _G.KAMUI_Profile.auto(targetCard and targetCard:GetAttribute("ProfileGroup"), text, get, function(v)
+            set(v); paint()
         end)
         return row, paint
     end
@@ -7525,6 +7707,9 @@ _G.KAMUI_BuildCombat = function(UI)
                 _G.KAMUI_SliderHeld = false
             end
         end)
+        _G.KAMUI_Profile.auto(targetCard and targetCard:GetAttribute("ProfileGroup"), text, get, function(v)
+            set(v); paint()
+        end, function(v) return v == v and v >= minV and v <= maxV end)
         return row
     end
 
@@ -7532,6 +7717,7 @@ _G.KAMUI_BuildCombat = function(UI)
     do
         if type(_G.KAMUI_RatioCleanup) == "function" then pcall(_G.KAMUI_RatioCleanup) end
         local ratioCard = UI.card(page, "Auto Ratio")
+        ratioCard:SetAttribute("ProfileGroup", "Ratio")
         local tracked = {}
         local alive, held = true, nil
         local function log(text)
@@ -7593,7 +7779,7 @@ _G.KAMUI_BuildCombat = function(UI)
                 if obj:IsA("BillboardGui") and obj.Name == "Ratio" then consider(obj) end
             end
         end
-        toggleRow("Auto Ratio", "Start Ratio yourself; times the second Special on PC and mobile", function()
+        toggleRow("Auto Ratio", "Use special, it does the rest for you.", function()
             return CC.AutoRatio
         end, function(v)
             CC.AutoRatio = v
@@ -7668,8 +7854,278 @@ _G.KAMUI_BuildCombat = function(UI)
         ScreenGui.Destroying:Connect(cleanup)
     end
 
+    ------------------------------------------------------------------ Perfect Swap
+    do
+        if type(_G.KAMUI_PerfectSwapCleanup) == "function" then pcall(_G.KAMUI_PerfectSwapCleanup) end
+        local swapCard = UI.card(page, "Perfect Swap")
+        swapCard:SetAttribute("ProfileGroup", "Swap")
+        local alive, held, epoch = true, nil, 0
+        local charConns, infoConn = {}, nil
+        local lastAttempt = -math.huge
+        local function log(text)
+            print("[KAMUI Perfect Swap] " .. text)
+            if _G.KAMUI_ParkourDiagnostic then _G.KAMUI_ParkourDiagnostic("Swap: " .. text) end
+        end
+        local function disconnectChar()
+            if infoConn then infoConn:Disconnect(); infoConn = nil end
+            for _, connection in ipairs(charConns) do pcall(function() connection:Disconnect() end) end
+            table.clear(charConns)
+        end
+        local function release()
+            local own = held
+            if not own then return end
+            held = nil
+            pcall(function()
+                if own.binding then own.binding:Fire(false) else own.action:Fire(false) end
+            end)
+            if own.binding then pcall(function() own.binding:Destroy() end) end
+        end
+        local function sendMelee()
+            if held then return false, "script Melee input already held" end
+            local storage = game:GetService("ReplicatedStorage")
+            local keybind = storage:FindFirstChild("Keybind")
+            local combat = keybind and keybind:FindFirstChild("Combat")
+            local action = combat and combat:FindFirstChild("Melee")
+            if not action or not action:IsA("InputAction") then return false, "Melee action not found" end
+            local typeOk, isBool = pcall(function() return action.Type == Enum.InputActionType.Bool end)
+            local stateOk, state = pcall(function() return action:GetState() end)
+            if not typeOk or not isBool or not stateOk then return false, "Melee type/state unavailable" end
+            if state == true then return false, "Melee is already held" end
+            local binding
+            local made, err = pcall(function()
+                binding = Instance.new("InputBinding")
+                binding.Name = "KAMUI_PerfectSwapMelee"
+                binding.Type = Enum.InputBindingType.Scriptable
+                binding.Parent = action
+            end)
+            local sent = false
+            if made then sent, err = pcall(function() binding:Fire(true) end) end
+            if sent then
+                held = {action = action, binding = binding}
+            else
+                if binding then pcall(function() binding:Destroy() end) end
+                local ok, legacyErr = pcall(function() action:Fire(true) end)
+                if not ok then return false, tostring(err) .. "; legacy: " .. tostring(legacyErr) end
+                held = {action = action}
+            end
+            local own = held
+            task.delay(0.04, function() if held == own then release() end end)
+            return true
+        end
+        local function bindCharacter(char)
+            epoch = epoch + 1
+            disconnectChar()
+            release()
+            local function bindInfo(info)
+                if infoConn then infoConn:Disconnect() end
+                infoConn = info.ChildAdded:Connect(function(marker)
+                    if not alive or not isCurrent() or not CC.PerfectSwap
+                        or player.Character ~= char or marker.Name ~= "TodoClap"
+                        or not marker:IsA("BoolValue") then return end
+                    -- Both recorded swaps had these local clap markers. Avoid
+                    -- treating an unrelated similarly named marker as a swap.
+                    if not info:FindFirstChild("ClapHold") or not info:FindFirstChild("ClapTarget") then
+                        log("TodoClap ignored: local clap context missing")
+                        return
+                    end
+                    local ownEpoch, markerAt = epoch, os.clock()
+                    log("TodoClap detected; timing M1")
+                    -- Trace: successful manual M1 occurred 11-18 ms after the
+                    -- marker at 18.8 and 5.8 studs. This is marker-relative,
+                    -- not a fixed delay from pressing Special.
+                    task.delay(0.015, function()
+                        if not alive or not isCurrent() or not CC.PerfectSwap or epoch ~= ownEpoch
+                            or player.Character ~= char or marker.Parent ~= info then return end
+                        lastAttempt = os.clock()
+                        local ok, err = sendMelee()
+                        if ok then
+                            log(string.format("M1 sent %.0f ms after marker; waiting for result", (os.clock() - markerAt) * 1000))
+                        else
+                            lastAttempt = -math.huge
+                            log("M1 not sent: " .. tostring(err))
+                        end
+                    end)
+                end)
+            end
+            local seenSounds = setmetatable({}, {__mode = "k"})
+            local function watchSound(obj)
+                if not obj:IsA("Sound") or obj.Name ~= "Perfect" or seenSounds[obj] then return end
+                seenSounds[obj] = true
+                charConns[#charConns + 1] = obj.Played:Connect(function()
+                    if alive and isCurrent() and CC.PerfectSwap and os.clock() - lastAttempt <= 1 then
+                        log("Perfect sound detected")
+                    end
+                end)
+            end
+            local info = char:FindFirstChild("Info")
+            if info then bindInfo(info) end
+            for _, obj in ipairs(char:GetDescendants()) do watchSound(obj) end
+            charConns[#charConns + 1] = char.ChildAdded:Connect(function(obj)
+                if obj.Name == "Info" then bindInfo(obj) end
+            end)
+            charConns[#charConns + 1] = char.DescendantAdded:Connect(watchSound)
+        end
+        -- One setter keeps the Combat toggle, keybind, and mobile button in sync.
+        local swapPaint, mobileButton, mobileDot, mobileStatus, mobileStroke
+        local pointer, pressAt, startPosition, moved = nil, nil, nil, false
+        local function paintMobile()
+            if not mobileButton then return end
+            mobileButton.Visible = CC.PerfectSwapMobile
+            mobileStatus.Text = CC.PerfectSwap and "ON" or "OFF"
+            mobileStatus.TextColor3 = CC.PerfectSwap and THEME.Text or THEME.MutedText
+            mobileDot.BackgroundColor3 = CC.PerfectSwap and THEME.BrightRed or Color3.fromRGB(70, 70, 74)
+            mobileStroke.Color = CC.PerfectSwap and THEME.Red or Color3.fromRGB(58, 10, 15)
+        end
+        local function setPerfectSwap(v)
+            CC.PerfectSwap = v and true or false
+            epoch = epoch + 1
+            lastAttempt = -math.huge
+            if not CC.PerfectSwap then release() end
+            if swapPaint then swapPaint() end
+            paintMobile()
+            log(CC.PerfectSwap and "ON; use a Switcher swap" or "OFF")
+        end
+        local _, paint = toggleRow("Perfect Swap", "Use Special yourself; times M1 on PC and mobile", function()
+            return CC.PerfectSwap
+        end, setPerfectSwap, swapCard)
+        swapPaint = paint
+
+        -- Keybind is initially unbound, avoiding conflicts with existing controls.
+        local keyRow = mk("Frame", {BackgroundTransparency = 1, BorderSizePixel = 0}, nil)
+        UI.addRow(swapCard, keyRow, UI.ROW)
+        label(keyRow, "Perfect Swap keybind", nil)
+        local keyBtn = mk("TextButton", {
+            BackgroundColor3 = CHIP, BorderSizePixel = 0, AutoButtonColor = false,
+            Position = UDim2.new(1, -92, 0.5, -13), Size = UDim2.fromOffset(80, 26),
+            Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = THEME.Text,
+            Text = "None"
+        }, keyRow)
+        UI.corner(keyBtn, 6)
+        UI.stroke(keyBtn, LINE)
+        _G.KAMUI_Profile.add("Swap", "Key", function() return CC.PerfectSwapKey or "" end,
+            function(v) CC.PerfectSwapKey = v ~= "" and v or nil; keyBtn.Text = CC.PerfectSwapKey or "None" end,
+            _G.KAMUI_Profile.keyValid)
+        local capturing = false
+        keyBtn.MouseButton1Click:Connect(function()
+            capturing = true
+            keyBtn.Text = "Press key..."
+        end)
+        local keyConn = UIS.InputBegan:Connect(function(input, processed)
+            if not alive or not isCurrent() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            if capturing then
+                capturing = false
+                if input.KeyCode == Enum.KeyCode.Backspace then
+                    CC.PerfectSwapKey = nil
+                elseif input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode ~= Enum.KeyCode.Unknown then
+                    CC.PerfectSwapKey = input.KeyCode.Name
+                end
+                keyBtn.Text = CC.PerfectSwapKey or "None"
+                return
+            end
+            if processed or UIS:GetFocusedTextBox() then return end
+            if CC.PerfectSwapKey and input.KeyCode.Name == CC.PerfectSwapKey then
+                setPerfectSwap(not CC.PerfectSwap)
+            end
+        end)
+
+        toggleRow("Mobile mode", "Shows a draggable PW ON/OFF button", function()
+            return CC.PerfectSwapMobile
+        end, function(v)
+            CC.PerfectSwapMobile = v
+            if not v then pointer = nil end
+            paintMobile()
+        end, swapCard)
+        mobileButton = Instance.new("TextButton")
+        mobileButton.Name = "PerfectSwapMobileButton"
+        mobileButton:SetAttribute("KamuiSkinned", true)
+        mobileButton.Size = UDim2.fromOffset(58, 58)
+        mobileButton.AnchorPoint = Vector2.new(0.5, 0.5)
+        mobileButton.Position = UDim2.new(0.72, 0, 0.48, 0)
+        mobileButton.BackgroundColor3 = THEME.BackgroundLight
+        mobileButton.BackgroundTransparency = 0
+        mobileButton.AutoButtonColor = false
+        mobileButton.Text = ""
+        mobileButton.Active = true
+        mobileButton.ZIndex = 50
+        mobileButton.Parent = RestoreGui
+        local circle = Instance.new("UICorner")
+        circle.CornerRadius, circle.Parent = UDim.new(1, 0), mobileButton
+        mobileStroke = Instance.new("UIStroke")
+        mobileStroke.Thickness, mobileStroke.Parent = 1, mobileButton
+        mobileDot = Instance.new("Frame")
+        mobileDot.Name = "StatusDot"
+        mobileDot.Size, mobileDot.Position = UDim2.fromOffset(6, 6), UDim2.new(0.5, -3, 0, 6)
+        mobileDot.BorderSizePixel, mobileDot.ZIndex, mobileDot.Parent = 0, 51, mobileButton
+        applyCorner(mobileDot, 3)
+        local mobileLabel = Instance.new("TextLabel")
+        mobileLabel.Name = "PWLabel"
+        mobileLabel.Size, mobileLabel.Position = UDim2.new(1, 0, 0, 22), UDim2.fromOffset(0, 13)
+        mobileLabel.BackgroundTransparency, mobileLabel.Text = 1, "PW"
+        mobileLabel.Font, mobileLabel.TextSize, mobileLabel.TextColor3 = Enum.Font.GothamBold, 15, THEME.Text
+        mobileLabel.ZIndex, mobileLabel.Parent = 51, mobileButton
+        mobileStatus = Instance.new("TextLabel")
+        mobileStatus.Name = "Status"
+        mobileStatus.Size, mobileStatus.Position = UDim2.new(1, 0, 0, 15), UDim2.fromOffset(0, 34)
+        mobileStatus.BackgroundTransparency, mobileStatus.Font, mobileStatus.TextSize = 1, Enum.Font.GothamMedium, 10
+        mobileStatus.ZIndex, mobileStatus.Parent = 51, mobileButton
+        paintMobile()
+
+        -- A tap toggles; dragging more than 8 pixels only repositions the button.
+        mobileButton.InputBegan:Connect(function(input)
+            if not alive or not isCurrent() or not CC.PerfectSwapMobile or pointer then return end
+            if input.UserInputType ~= Enum.UserInputType.Touch and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            pointer = input
+            pressAt = Vector2.new(input.Position.X, input.Position.Y)
+            startPosition = mobileButton.Position
+            moved = false
+        end)
+        local dragConn = UIS.InputChanged:Connect(function(input)
+            if not alive or not isCurrent() or not pointer then return end
+            local touch = pointer.UserInputType == Enum.UserInputType.Touch and input == pointer
+            local mouse = pointer.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement
+            if not touch and not mouse then return end
+            local delta = Vector2.new(input.Position.X, input.Position.Y) - pressAt
+            if delta.Magnitude > 8 then moved = true end
+            if moved then
+                mobileButton.Position = UDim2.new(startPosition.X.Scale, startPosition.X.Offset + delta.X,
+                    startPosition.Y.Scale, startPosition.Y.Offset + delta.Y)
+            end
+        end)
+        local endConn = UIS.InputEnded:Connect(function(input)
+            if not alive or not pointer then return end
+            local matches = input == pointer or (pointer.UserInputType == Enum.UserInputType.MouseButton1
+                and input.UserInputType == Enum.UserInputType.MouseButton1)
+            if not matches then return end
+            local endAt = Vector2.new(input.Position.X, input.Position.Y)
+            if pressAt and (endAt - pressAt).Magnitude > 8 then moved = true end
+            local shouldToggle = not moved and CC.PerfectSwapMobile and isCurrent()
+            pointer = nil
+            if shouldToggle then setPerfectSwap(not CC.PerfectSwap) end
+        end)
+        local characterConn = player.CharacterAdded:Connect(bindCharacter)
+        if player.Character then bindCharacter(player.Character) end
+        local function cleanup()
+            if not alive then return end
+            alive = false
+            epoch = epoch + 1
+            CC.PerfectSwap = false
+            characterConn:Disconnect()
+            keyConn:Disconnect()
+            dragConn:Disconnect()
+            endConn:Disconnect()
+            pointer = nil
+            disconnectChar()
+            release()
+            if mobileButton then mobileButton:Destroy() end
+            if _G.KAMUI_PerfectSwapCleanup == cleanup then _G.KAMUI_PerfectSwapCleanup = nil end
+        end
+        _G.KAMUI_PerfectSwapCleanup = cleanup
+        ScreenGui.Destroying:Connect(cleanup)
+    end
+
     ------------------------------------------------------------------ Auto BF card
     local bfCard = UI.card(page, "Auto BF")
+        bfCard:SetAttribute("ProfileGroup", "BF")
     local chainRows = {}
     local chainModeRow, chainModePaint
     local switcherRows = {}
@@ -7753,6 +8209,7 @@ _G.KAMUI_BuildCombat = function(UI)
         UI.corner(modeList, 7)
         UI.stroke(modeList, LINE)
         local modeOptions = {}
+        local modeAppliers = {}
         for i, name in ipairs({ "Vessel", "Switcher" }) do
             local option = mk("TextButton", {
                 Name = "Option" .. name, AutoButtonColor = false, ZIndex = 11,
@@ -7763,7 +8220,7 @@ _G.KAMUI_BuildCombat = function(UI)
             UI.corner(option, 6)
             UI.make("UIPadding", { PaddingLeft = UDim.new(0, 10) }, option)
             modeOptions[name] = option
-            option.MouseButton1Click:Connect(function()
+            local function applyOption()
                 if not isCurrent() then return end
                 setBFMode(name)
                 modeValue.Text = name
@@ -7775,8 +8232,12 @@ _G.KAMUI_BuildCombat = function(UI)
                 end
                 modeList.Visible = false
                 modeChevron.Rotation = 0
-            end)
+            end
+            modeAppliers[name] = applyOption
+            option.MouseButton1Click:Connect(applyOption)
         end
+        _G.KAMUI_Profile.add("BF", "AutoBFMode", function() return CC.AutoBFMode end,
+            function(v) modeAppliers[v]() end, function(v) return modeAppliers[v] ~= nil end)
         for name, btn in pairs(modeOptions) do
             local selected = name == CC.AutoBFMode
             btn.BackgroundTransparency = selected and 0 or 1
@@ -7845,7 +8306,7 @@ _G.KAMUI_BuildCombat = function(UI)
             _G.KAMUI_ParkourDiagnostic("Chain: " .. (v and "ON; use Divergent Fist to start" or "OFF"))
         end
     end, bfCard)
-    chainOnly(toggleRow("Feint mode", "Feint every two hits; press 3 again after cooldown", function()
+    chainOnly(toggleRow("Feint mode", "Feint every 2 landed BF.", function()
         return CC.FeintMode
     end, function(v)
         CC.FeintMode = v and true or false
@@ -7896,6 +8357,7 @@ _G.KAMUI_BuildCombat = function(UI)
         UI.corner(modeList, 7)
         UI.stroke(modeList, LINE)
         local modeOptions = {}
+        local modeAppliers = {}
         for i, name in ipairs({ "Legit", "Blatant" }) do
             local option = mk("TextButton", {
                 Name = "Option" .. name, AutoButtonColor = false, ZIndex = 11,
@@ -7906,7 +8368,7 @@ _G.KAMUI_BuildCombat = function(UI)
             UI.corner(option, 6)
             UI.make("UIPadding", { PaddingLeft = UDim.new(0, 10) }, option)
             modeOptions[name] = option
-            option.MouseButton1Click:Connect(function()
+            local function applyOption()
                 if not isCurrent() then return end
                 if CC.TargetLockMode ~= name and CC.TargetLockRelease then
                     CC.TargetLockRelease()
@@ -7921,8 +8383,12 @@ _G.KAMUI_BuildCombat = function(UI)
                 end
                 modeList.Visible = false
                 modeChevron.Rotation = 0
-            end)
+            end
+            modeAppliers[name] = applyOption
+            option.MouseButton1Click:Connect(applyOption)
         end
+        _G.KAMUI_Profile.add("BF", "TargetLockMode", function() return CC.TargetLockMode end,
+            function(v) modeAppliers[v]() end, function(v) return modeAppliers[v] ~= nil end)
         for name, btn in pairs(modeOptions) do
             local selected = name == CC.TargetLockMode
             btn.BackgroundTransparency = selected and 0 or 1
@@ -8028,6 +8494,7 @@ _G.KAMUI_BuildCombat = function(UI)
         UI.corner(modeList, 7)
         UI.stroke(modeList, LINE)
         local modeOptions = {}
+        local modeAppliers = {}
         for i, name in ipairs({ "Legit", "Blatant" }) do
             local option = mk("TextButton", {
                 Name = "Option" .. name, AutoButtonColor = false, ZIndex = 11,
@@ -8038,7 +8505,7 @@ _G.KAMUI_BuildCombat = function(UI)
             UI.corner(option, 6)
             UI.make("UIPadding", { PaddingLeft = UDim.new(0, 10) }, option)
             modeOptions[name] = option
-            option.MouseButton1Click:Connect(function()
+            local function applyOption()
                 if not isCurrent() then return end
                 if CC.SwitcherTargetMode ~= name and CC.SwitcherTargetRelease then
                     CC.SwitcherTargetRelease()
@@ -8053,8 +8520,12 @@ _G.KAMUI_BuildCombat = function(UI)
                 end
                 modeList.Visible = false
                 modeChevron.Rotation = 0
-            end)
+            end
+            modeAppliers[name] = applyOption
+            option.MouseButton1Click:Connect(applyOption)
         end
+        _G.KAMUI_Profile.add("BF", "SwitcherTargetMode", function() return CC.SwitcherTargetMode end,
+            function(v) modeAppliers[v]() end, function(v) return modeAppliers[v] ~= nil end)
         for name, btn in pairs(modeOptions) do
             local selected = name == CC.SwitcherTargetMode
             btn.BackgroundTransparency = selected and 0 or 1
@@ -8618,6 +9089,7 @@ _G.KAMUI_BuildCombat = function(UI)
     -- Other visible W/A/D labels are reported for diagnosis, but never pressed.
     do
         local qteCard = UI.card(page, "Auto QTE")
+        qteCard:SetAttribute("ProfileGroup", "QTE")
         local conn, held, lastScan, lastPress = nil, nil, 0, 0
         local pressToken = 0
         local qtePaint
@@ -8821,7 +9293,7 @@ _G.KAMUI_BuildCombat = function(UI)
             end)
         end
         local _
-        _, qtePaint = toggleRow("Auto QTE", "Answers PC prompts or mobile QTE targets", function()
+        _, qtePaint = toggleRow("Auto QTE", nil, function()
             return CC.AutoQTE
         end, function(v)
             CC.AutoQTE = v
@@ -8863,6 +9335,7 @@ _G.KAMUI_BuildCombat = function(UI)
 
     ------------------------------------------------------------------ Aimbot card
     local aimCard = UI.card(page, "Aimbot")
+        aimCard:SetAttribute("ProfileGroup", "Aimbot")
     local aimPaint = nil
     local aimTarget = nil -- sticky: the player the aimbot is locked on (cleared when it is turned on or they die)
     local mobBtn, mobDot, mobLabel, mobStroke = nil, nil, nil, nil
@@ -8911,6 +9384,9 @@ _G.KAMUI_BuildCombat = function(UI)
     }, krow)
     UI.corner(keyBtn, 6)
     UI.stroke(keyBtn, LINE)
+    _G.KAMUI_Profile.add("Aimbot", "Key", function() return CC.AimKey end,
+        function(v) CC.AimKey = v; keyBtn.Text = v end,
+        function(v) return v ~= "" and _G.KAMUI_Profile.keyValid(v) end)
     local capturing = false
     keyBtn.MouseButton1Click:Connect(function()
         capturing = true
@@ -8998,7 +9474,8 @@ _G.KAMUI_BuildCombat = function(UI)
 
     ------------------------------------------------------------------ Auto block card
     local blockCard = UI.card(page, "Auto block")
-    toggleRow("Auto block", "Filters common movement and defensive animations", function()
+        blockCard:SetAttribute("ProfileGroup", "Block")
+    toggleRow("Auto block", nil, function()
         return CC.Block
     end, function(v)
         CC.Block = v
@@ -9008,7 +9485,7 @@ _G.KAMUI_BuildCombat = function(UI)
         end
         if not v and _G.KAMUI_M1BackRelease then _G.KAMUI_M1BackRelease() end
     end, blockCard)
-    toggleRow("Mobile mode", "Use native block action; no button selection", function()
+    toggleRow("Mobile mode", nil, function()
         return CC.BlockMobile
     end, function(v)
         if _G.KAMUI_BlockRelease then _G.KAMUI_BlockRelease() end
@@ -9039,6 +9516,9 @@ _G.KAMUI_BuildCombat = function(UI)
         }, nrow)
         UI.corner(nbox, 6)
         UI.stroke(nbox, LINE)
+        _G.KAMUI_Profile.add("Block", "Range", function() return CC.BlockRange end,
+            function(v) CC.BlockRange = v; nbox.Text = string.format("%d", math.floor(v + 0.5)) end,
+            function(v) return v == v and v >= 4 and v <= 40 end)
         nbox.FocusLost:Connect(function()
             local n = tonumber(nbox.Text)
             if n then
@@ -9092,6 +9572,7 @@ _G.KAMUI_BuildCombat = function(UI)
         UI.corner(modeList, 7)
         UI.stroke(modeList, LINE)
         local modeOptions = {}
+        local modeAppliers = {}
         for i, name in ipairs({ "Legit", "Blatant" }) do
             local option = mk("TextButton", {
                 Name = "Option" .. name, AutoButtonColor = false, ZIndex = 11,
@@ -9102,7 +9583,7 @@ _G.KAMUI_BuildCombat = function(UI)
             UI.corner(option, 6)
             UI.make("UIPadding", { PaddingLeft = UDim.new(0, 10) }, option)
             modeOptions[name] = option
-            option.MouseButton1Click:Connect(function()
+            local function applyOption()
                 if not isCurrent() then return end
                 if CC.BlockCamMode ~= name and CC.BlockCamRelease then
                     CC.BlockCamRelease()
@@ -9117,8 +9598,12 @@ _G.KAMUI_BuildCombat = function(UI)
                 end
                 modeList.Visible = false
                 modeChevron.Rotation = 0
-            end)
+            end
+            modeAppliers[name] = applyOption
+            option.MouseButton1Click:Connect(applyOption)
         end
+        _G.KAMUI_Profile.add("Block", "BlockCamMode", function() return CC.BlockCamMode end,
+            function(v) modeAppliers[v]() end, function(v) return modeAppliers[v] ~= nil end)
         for name, btn in pairs(modeOptions) do
             local selected = name == CC.BlockCamMode
             btn.BackgroundTransparency = selected and 0 or 1
@@ -9170,6 +9655,7 @@ _G.KAMUI_BuildCombat = function(UI)
 
     ------------------------------------------------------------------ Auto counter card
     local counterCard = UI.card(page, "Auto counter")
+        counterCard:SetAttribute("ProfileGroup", "Counter")
     toggleRow("Auto counter", "Uses the selected character's counter skill", function()
         return CC.Counter
     end, function(v)
@@ -9215,6 +9701,7 @@ _G.KAMUI_BuildCombat = function(UI)
         UI.corner(modeList, 7)
         UI.stroke(modeList, LINE)
         local modeOptions = {}
+        local modeAppliers = {}
         for i, name in ipairs({ "Vessel", "Charles" }) do
             local option = mk("TextButton", {
                 Name = "Option" .. name, AutoButtonColor = false, ZIndex = 11,
@@ -9225,7 +9712,7 @@ _G.KAMUI_BuildCombat = function(UI)
             UI.corner(option, 6)
             UI.make("UIPadding", { PaddingLeft = UDim.new(0, 10) }, option)
             modeOptions[name] = option
-            option.MouseButton1Click:Connect(function()
+            local function applyOption()
                 if not isCurrent() then return end
                 if CC.CounterMode ~= name and _G.KAMUI_CounterRelease then
                     _G.KAMUI_CounterRelease()
@@ -9240,8 +9727,12 @@ _G.KAMUI_BuildCombat = function(UI)
                 end
                 modeList.Visible = false
                 modeChevron.Rotation = 0
-            end)
+            end
+            modeAppliers[name] = applyOption
+            option.MouseButton1Click:Connect(applyOption)
         end
+        _G.KAMUI_Profile.add("Counter", "CounterMode", function() return CC.CounterMode end,
+            function(v) modeAppliers[v]() end, function(v) return modeAppliers[v] ~= nil end)
         for name, btn in pairs(modeOptions) do
             local selected = name == CC.CounterMode
             btn.BackgroundTransparency = selected and 0 or 1
@@ -9302,6 +9793,9 @@ _G.KAMUI_BuildCombat = function(UI)
         }, nrow)
         UI.corner(nbox, 6)
         UI.stroke(nbox, LINE)
+        _G.KAMUI_Profile.add("Counter", "Range", function() return CC.CounterRange end,
+            function(v) CC.CounterRange = v; nbox.Text = string.format("%d", math.floor(v + 0.5)) end,
+            function(v) return v == v and v >= 4 and v <= 40 end)
         nbox.FocusLost:Connect(function()
             local n = tonumber(nbox.Text)
             if n then
@@ -9355,6 +9849,7 @@ _G.KAMUI_BuildCombat = function(UI)
         UI.corner(modeList, 7)
         UI.stroke(modeList, LINE)
         local modeOptions = {}
+        local modeAppliers = {}
         for i, name in ipairs({ "Legit", "Blatant" }) do
             local option = mk("TextButton", {
                 Name = "Option" .. name, AutoButtonColor = false, ZIndex = 11,
@@ -9365,7 +9860,7 @@ _G.KAMUI_BuildCombat = function(UI)
             UI.corner(option, 6)
             UI.make("UIPadding", { PaddingLeft = UDim.new(0, 10) }, option)
             modeOptions[name] = option
-            option.MouseButton1Click:Connect(function()
+            local function applyOption()
                 if not isCurrent() then return end
                 if CC.CounterCamMode ~= name and CC.CounterCamRelease then
                     CC.CounterCamRelease()
@@ -9380,8 +9875,12 @@ _G.KAMUI_BuildCombat = function(UI)
                 end
                 modeList.Visible = false
                 modeChevron.Rotation = 0
-            end)
+            end
+            modeAppliers[name] = applyOption
+            option.MouseButton1Click:Connect(applyOption)
         end
+        _G.KAMUI_Profile.add("Counter", "CounterCamMode", function() return CC.CounterCamMode end,
+            function(v) modeAppliers[v]() end, function(v) return modeAppliers[v] ~= nil end)
         for name, btn in pairs(modeOptions) do
             local selected = name == CC.CounterCamMode
             btn.BackgroundTransparency = selected and 0 or 1
@@ -11310,6 +11809,8 @@ _G.KAMUI_BuildMovement = function(UI)
             end
             paint()
         end)
+        _G.KAMUI_Profile.auto("Movement", o.label, o.get, function(v) o.set(v); paint() end,
+            function(v) return v == v and v >= o.min and v <= o.max end)
         return paint
     end
 
@@ -11401,6 +11902,8 @@ _G.KAMUI_BuildMovement = function(UI)
         snap = 1, snapZone = 0.15,
         isOn = function() return M.Enabled end
     })
+    _G.KAMUI_Profile.add("Movement", "DashEnabled", function() return M.Enabled end,
+        function(v) M.Enabled=v; paintToggle(false); paintDist() end)
     --// ===================== NO SIDE DASH COOLDOWN (toggle) =====================
     local srow = mk("TextButton", {
         Name = "NoSideDashCooldownToggle",
@@ -11451,6 +11954,8 @@ _G.KAMUI_BuildMovement = function(UI)
         end
     end
     paintSide(false)
+    _G.KAMUI_Profile.add("Movement", "NoSideCooldown", function() return M.NoSideCD end,
+        function(v) M.NoSideCD=v; paintSide(false) end)
     srow.MouseButton1Click:Connect(function()
         M.NoSideCD = not M.NoSideCD
         paintSide(true)
@@ -11530,21 +12035,15 @@ _G.KAMUI_BuildMovement = function(UI)
             set(not get())
             paint(true)
         end)
+        _G.KAMUI_Profile.auto("Movement", rowName, get, function(v) set(v); paint(false) end)
         return paint
     end
-
-    --// ===================== NO STUN =====================
-    local stunCard = UI.card(page, "No stun")
-    makeToggle(stunCard, "NoStunToggle", "No stun",
-        function() return M.NoStun end,
-        function(v) M.NoStun = v end)
 
     --// ===================== INFINITE PARKOUR =====================
     local parkourCard = UI.card(page, "INFINITE PARKOUR")
     makeToggle(parkourCard, "InfiniteParkourToggle", "Infinite Parkour",
         function() return M.InfiniteParkour end,
-        function(v) M.InfiniteParkour = v end,
-        "Resets the native wall-jump counter")
+        function(v) M.InfiniteParkour = v end)
 
     --// ===================== WALKSPEED / JUMP HEIGHT =====================
     local sjCard = UI.card(page, "WALKSPEED/JUMP HEIGHT")
@@ -11582,6 +12081,132 @@ _G.KAMUI_BuildMovement = function(UI)
         paintWalk()
         paintJump()
     end)
+
+    --// ===================== FLY =====================
+    do
+        local flyCard = UI.card(page, "FLY")
+        local flyPaint, speedPaint, keyBtn, mobileButton, mobileDot, mobileStatus, mobileStroke
+        local pointer, pressAt, startPosition, moved
+        local function paintFly()
+            if flyPaint then flyPaint(false) end
+            if speedPaint then speedPaint() end
+            if keyBtn then keyBtn.Text = M.FlyCapturing and "Press key..." or (M.FlyKey ~= "" and M.FlyKey or "None") end
+            if mobileButton then
+                mobileButton.Visible = M.FlyMobile
+                mobileStatus.Text = M.Fly and "ON" or "OFF"
+                mobileStatus.TextColor3 = M.Fly and THEME.Text or THEME.MutedText
+                mobileDot.BackgroundColor3 = M.Fly and THEME.BrightRed or Color3.fromRGB(70, 70, 74)
+                mobileStroke.Color = M.Fly and THEME.Red or Color3.fromRGB(58, 10, 15)
+            end
+        end
+        M.FlyPaint = paintFly
+        flyPaint = makeToggle(flyCard, "FlyToggle", "Fly",
+            function() return M.Fly end,
+            function(v) M.FlySet(v) end)
+        speedPaint = makeSlider(flyCard, {
+            label = "Fly speed", get = function() return M.FlySpeed end,
+            set = function(v) M.FlySpeed = math.clamp(v, 1, 200) end,
+            min = 1, max = 200, step = 1, fmt = "%g", isOn = function() return M.Fly end
+        })
+        local keyRow = mk("Frame", {Name = "FlyKeyRow", BackgroundTransparency = 1, BorderSizePixel = 0}, nil)
+        UI.addRow(flyCard, keyRow, UI.ROW)
+        mk("TextLabel", {
+            Name = "RowLabel", BackgroundTransparency = 1, Position = UDim2.new(0, 12, 0, 0),
+            Size = UDim2.new(1, -110, 1, 0), Font = Enum.Font.GothamMedium, TextSize = 12,
+            TextColor3 = THEME.Text, TextXAlignment = Enum.TextXAlignment.Left, Text = "Keybind"
+        }, keyRow)
+        keyBtn = mk("TextButton", {
+            Name = "FlyKeyButton", BackgroundColor3 = CHIP, BorderSizePixel = 0, AutoButtonColor = false,
+            AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -12, 0.5, 0),
+            Size = UDim2.new(0, 80, 0, 26), Font = Enum.Font.GothamMedium,
+            TextSize = 12, TextColor3 = THEME.Text, Text = "None"
+        }, keyRow)
+        UI.corner(keyBtn, 6)
+        UI.stroke(keyBtn, UI.LINE)
+        _G.KAMUI_Profile.add("Movement", "FlyKey", function() return M.FlyKey end,
+            function(v) M.FlyKey = v; M.FlyCapturing = false; paintFly() end, _G.KAMUI_Profile.keyValid)
+        keyBtn.MouseButton1Click:Connect(function()
+            M.FlyCapturing = true
+            paintFly()
+        end)
+        conns[#conns + 1] = UIS.InputBegan:Connect(function(input, processed)
+            if not isCurrent() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            if M.FlyCapturing then
+                M.FlyCapturing = false
+                if input.KeyCode == Enum.KeyCode.Backspace then M.FlyKey = ""
+                elseif input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode ~= Enum.KeyCode.Unknown then
+                    M.FlyKey = input.KeyCode.Name
+                end
+                paintFly()
+                return
+            end
+            if processed or UIS:GetFocusedTextBox() or M.BlinkCapturing or M.FakeLagCapturing then return end
+            if M.FlyKey ~= "" and input.KeyCode.Name == M.FlyKey then M.FlySet(not M.Fly) end
+        end)
+        makeToggle(flyCard, "FlyMobileToggle", "Mobile mode",
+            function() return M.FlyMobile end,
+            function(v) M.FlyMobile = v; if not v then pointer = nil end; paintFly() end)
+
+        mobileButton = Instance.new("TextButton")
+        mobileButton.Name = "FlyMobileButton"
+        mobileButton:SetAttribute("KamuiSkinned", true)
+        mobileButton.Size = UDim2.fromOffset(58, 58)
+        mobileButton.AnchorPoint = Vector2.new(0.5, 0.5)
+        mobileButton.Position = UDim2.new(0.72, 0, 0.60, 0)
+        mobileButton.BackgroundColor3 = THEME.BackgroundLight
+        mobileButton.BackgroundTransparency = 0
+        mobileButton.AutoButtonColor, mobileButton.Text, mobileButton.Active = false, "", true
+        mobileButton.ZIndex, mobileButton.Parent = 50, RestoreGui
+        UI.corner(mobileButton, 100)
+        mobileStroke = Instance.new("UIStroke")
+        mobileStroke.Thickness, mobileStroke.Parent = 1, mobileButton
+        mobileDot = Instance.new("Frame")
+        mobileDot.Name = "StatusDot"
+        mobileDot.Size, mobileDot.Position = UDim2.fromOffset(6, 6), UDim2.new(0.5, -3, 0, 6)
+        mobileDot.BorderSizePixel, mobileDot.ZIndex, mobileDot.Parent = 0, 51, mobileButton
+        UI.corner(mobileDot, 3)
+        local mobileLabel = Instance.new("TextLabel")
+        mobileLabel.Size, mobileLabel.Position = UDim2.new(1, 0, 0, 22), UDim2.fromOffset(0, 13)
+        mobileLabel.BackgroundTransparency, mobileLabel.Text = 1, "FLY"
+        mobileLabel.Font, mobileLabel.TextSize, mobileLabel.TextColor3 = Enum.Font.GothamBold, 14, THEME.Text
+        mobileLabel.ZIndex, mobileLabel.Parent = 51, mobileButton
+        mobileStatus = Instance.new("TextLabel")
+        mobileStatus.Size, mobileStatus.Position = UDim2.new(1, 0, 0, 15), UDim2.fromOffset(0, 34)
+        mobileStatus.BackgroundTransparency, mobileStatus.Font, mobileStatus.TextSize = 1, Enum.Font.GothamMedium, 10
+        mobileStatus.ZIndex, mobileStatus.Parent = 51, mobileButton
+        paintFly()
+        mobileButton.InputBegan:Connect(function(input)
+            if not isCurrent() or not M.FlyMobile or pointer then return end
+            if input.UserInputType ~= Enum.UserInputType.Touch and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            pointer, pressAt, startPosition, moved = input, Vector2.new(input.Position.X, input.Position.Y), mobileButton.Position, false
+        end)
+        conns[#conns + 1] = UIS.InputChanged:Connect(function(input)
+            if not isCurrent() or not pointer then return end
+            local touch = pointer.UserInputType == Enum.UserInputType.Touch and input == pointer
+            local mouse = pointer.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement
+            if not touch and not mouse then return end
+            local delta = Vector2.new(input.Position.X, input.Position.Y) - pressAt
+            if delta.Magnitude > 8 then moved = true end
+            if moved then
+                mobileButton.Position = UDim2.new(startPosition.X.Scale, startPosition.X.Offset + delta.X,
+                    startPosition.Y.Scale, startPosition.Y.Offset + delta.Y)
+            end
+        end)
+        conns[#conns + 1] = UIS.InputEnded:Connect(function(input)
+            if not pointer then return end
+            local matches = input == pointer or (pointer.UserInputType == Enum.UserInputType.MouseButton1
+                and input.UserInputType == Enum.UserInputType.MouseButton1)
+            if not matches then return end
+            if (Vector2.new(input.Position.X, input.Position.Y) - pressAt).Magnitude > 8 then moved = true end
+            local toggle = not moved and M.FlyMobile and isCurrent()
+            pointer = nil
+            if toggle then M.FlySet(not M.Fly) end
+        end)
+        M.FlyRemoveButton = function()
+            pointer = nil
+            if mobileButton then mobileButton:Destroy(); mobileButton = nil end
+        end
+    end
 
     --// ===================== FAKE LAG =====================
     local flCard = UI.card(page, "FAKE LAG")
@@ -11665,6 +12290,9 @@ _G.KAMUI_BuildMovement = function(UI)
             flMobDot.BackgroundColor3 = on and THEME.BrightRed or Color3.fromRGB(70, 70, 74)
         end
     end
+    _G.KAMUI_Profile.add("Movement", "FakeLagKey", function() return M.FakeLagKey end,
+        function(v) M.FakeLagKey=v; paintFlUI() end,
+        function(v) return v ~= "" and _G.KAMUI_Profile.keyValid(v) end)
     M.FakeLagPaint = paintFlUI
     flBtn.MouseButton1Click:Connect(function()
         M.FakeLagCapturing = true
@@ -11723,6 +12351,797 @@ _G.KAMUI_BuildMovement = function(UI)
     paintFlUI()
 end
 
+--// Profiles: original Saved / Import-Export layout, backed by the current feature controls.
+_G.KAMUI_BuildProfiles = function(UI)
+    local P = _G.KAMUI_Profile
+    local filename = "KAMUI_FeatureProfiles_v1.json"
+    local storage = type(isfile)=="function" and type(readfile)=="function" and type(writefile)=="function"
+    local statusLabel
+    local statusText = storage and "File storage available" or "Session only: executor file storage unavailable"
+    local function status(text)
+        statusText=text
+        if statusLabel then statusLabel.Text=text end
+        print("[KAMUI Profiles] " .. text)
+    end
+    local function encodeValue(v)
+        local kind=type(v)
+        if kind=="boolean" then return v and "true" or "false" end
+        if kind=="number" then return string.format("%.8g",v) end
+        if kind=="string" then
+            if v:find("[%c]") then error("Control characters are not supported") end
+            return '"' .. v:gsub("\\", "\\\\"):gsub('"','\\"') .. '"'
+        end
+        if kind~="table" then error("Unsupported profile value") end
+        local keys={}
+        for k in pairs(v) do
+            if type(k)~="string" or not k:match("^[%a_][%w_]*$") then error("Invalid profile field") end
+            keys[#keys+1]=k
+        end
+        table.sort(keys,function(a,b)
+            if a=="Name" then return b~="Name" end
+            if b=="Name" then return false end
+            return a<b
+        end)
+        local parts={}
+        for _,k in ipairs(keys) do parts[#parts+1]=k.."="..encodeValue(v[k]) end
+        return "{"..table.concat(parts,",").."}"
+    end
+    local function checksum(text)
+        local h=0
+        for i=1,#text do h=(h*31+text:byte(i))%65536 end
+        return string.format("%04X",h)
+    end
+    -- Parse data literals only; imported text is never executed.
+    local function decodeCode(code)
+        if type(code)~="string" or #code>32768 then return nil,"Code too long" end
+        local body,hash=code:match('^%s*KAMUI%.Load%((.*),%s*"(%x%x%x%x)"%s*%)%s*;?%s*$')
+        if not body or checksum(body)~=hash:upper() then return nil,"Invalid code or checksum" end
+        local pos=1
+        local parseValue
+        local function skip() while body:sub(pos,pos):match("%s") do pos=pos+1 end end
+        local function parseTable(depth)
+            if depth>4 or body:sub(pos,pos)~="{" then return nil end
+            pos=pos+1; skip()
+            local t={}
+            if body:sub(pos,pos)=="}" then pos=pos+1; return t end
+            local count=0
+            while pos<=#body do
+                skip()
+                local key=body:sub(pos):match("^[%a_][%w_]*")
+                if not key or t[key]~=nil then return nil end
+                count=count+1; if count>300 then return nil end
+                pos=pos+#key; skip()
+                if body:sub(pos,pos)~="=" then return nil end
+                pos=pos+1
+                local value=parseValue(depth)
+                if value==nil then return nil end
+                t[key]=value; skip()
+                local c=body:sub(pos,pos); pos=pos+1
+                if c=="}" then return t end
+                if c~="," then return nil end
+            end
+            return nil
+        end
+        parseValue=function(depth)
+            skip()
+            local ch=body:sub(pos,pos)
+            if ch=="{" then return parseTable(depth+1) end
+            if ch=='"' then
+                pos=pos+1
+                local chars={}
+                while pos<=#body do
+                    local c=body:sub(pos,pos); pos=pos+1
+                    if c=='"' then return table.concat(chars) end
+                    if c=="\\" then
+                        c=body:sub(pos,pos); pos=pos+1
+                        if c~='"' and c~="\\" then return nil end
+                    end
+                    if c:match("[%c]") then return nil end
+                    chars[#chars+1]=c
+                end
+                return nil
+            end
+            local tail=body:sub(pos)
+            local num=tail:match("^%-?%d+%.?%d*[eE][%+%-]?%d+") or tail:match("^%-?%d+%.?%d*")
+            if num then pos=pos+#num; local n=tonumber(num); if n and n==n and math.abs(n)<math.huge then return n end; return nil end
+            if tail:sub(1,4)=="true" then pos=pos+4; return true end
+            if tail:sub(1,5)=="false" then pos=pos+5; return false end
+            return nil
+        end
+        skip()
+        local data=parseValue(0); skip()
+        if type(data)~="table" or pos<=#body then return nil,"Invalid profile data" end
+        return data
+    end
+    local function payload(name,settings)
+        local result={}
+        if name then result.Name=name end
+        for group,values in pairs(settings) do result[group]=values end
+        return result
+    end
+    local function codeFor(name,settings)
+        local encoded=encodeValue(payload(name,settings))
+        return 'KAMUI.Load('..encoded..',"'..checksum(encoded)..'")'
+    end
+    local lastWritten
+    local function flush()
+        if not storage or P.loading or P.incomplete then return false end
+        local record={version=1,profiles=P.profiles,last=P.snapshot()}
+        local ok,content=pcall(function() return HttpService:JSONEncode(record) end)
+        if not ok then status("Could not encode profiles: "..tostring(content)); return false end
+        if content==lastWritten then return true end
+        local wrote,why=pcall(function()
+            writefile(filename,content)
+            if readfile(filename)~=content then error("file verification failed") end
+        end)
+        if not wrote then storage=false; status("Storage failed; session only: "..tostring(why)); return false end
+        lastWritten=content
+        return true
+    end
+    _G.KAMUI_ProfileFlush=flush
+    local disk
+    if storage then
+        local ok,exists=pcall(isfile,filename)
+        if not ok then storage=false; status("File check failed; session only")
+        else
+            local source=filename
+            if not exists then
+                -- Import only the previous experimental format; never overwrite the old script's file.
+                local checked,legacy=pcall(isfile,"KAMUI_Profiles.json")
+                if checked and legacy then source="KAMUI_Profiles.json"; exists=true end
+            end
+            if exists then
+                local decoded,record=pcall(function() return HttpService:JSONDecode(readfile(source)) end)
+                if decoded and type(record)=="table" and record.version==1 and type(record.profiles)=="table" then
+                    disk=record; P.profiles=record.profiles
+                elseif source==filename then
+                    storage=false; status("Profile file unreadable; not overwriting it")
+                end
+            end
+        end
+    end
+    -- Drop the retired field from previously saved named profiles too.
+    for name, data in pairs(P.profiles) do P.profiles[name]=P.withoutRetired(data) end
+    local Profiles=P.profiles
+    local CurrentProfile=nil
+    local defaults=P.snapshot()
+    if defaults.GUI then defaults.GUI.Font="Gotham" end
+    local function confirmStorage(action)
+        local saved=flush()
+        status(action..(saved and " — saved to file" or " — session only"))
+    end
+    local function saveProfilesToFile() return flush() end
+    local function loadProfileData(data) return P.apply(data) end
+    local function generateProfileCode() return codeFor(CurrentProfile,P.snapshot()) end
+    -- Recreate the same controls used by the supplied script; the original
+    -- layout below reparents them into its Saved and Import / export views.
+    local ProfileCodeInput=UI.make("TextBox", {
+        Name="ProfileCodeInput", Text="", ClearTextOnFocus=false, TextColor3=THEME.Text,
+        PlaceholderColor3=Color3.fromRGB(120,120,120)
+    },nil)
+    ProfileCodeInput:SetAttribute("KamuiNoDrag",true)
+    local GenerateCodeBtn=UI.make("TextButton",{Name="GenerateCodeBtn",Text="Generate code"},nil)
+    local LoadCodeBtn=UI.make("TextButton",{Name="LoadCodeBtn",Text="Load code"},nil)
+    local LoadDefaultBtn=UI.make("TextButton",{Name="LoadDefaultBtn",Text="Load default"},nil)
+    local ProfileListTitle=UI.make("TextLabel",{Text="Saved Profiles"},nil)
+    local ProfileList=UI.make("Frame",{Name="ProfileList",Visible=false},nil)
+    UI.make("UIListLayout",{Padding=UDim.new(0,0),SortOrder=Enum.SortOrder.LayoutOrder},ProfileList)
+    _G.KAMUI_ProfileIcons={Rename="107672478385801",Delete="118583346271786",Copy="106756826751440",Refresh="89724877180892"}
+    if not _G.KAMUI_SetImage then
+        _G.KAMUI_SetImage=function(label,id) label.Image="rbxassetid://"..tostring(id) end
+    end
+
+local function rebuildProfileList()
+    --// helpers live inside this function so no extra top-level locals are needed
+    local function naturalLess(x, y)
+        --// "Profile 2" comes before "Profile 10"
+        local px, nx = x:match("^(.-)%s*(%d+)$")
+        local py, ny = y:match("^(.-)%s*(%d+)$")
+        if px and py and px:lower() == py:lower() then
+            return tonumber(nx) < tonumber(ny)
+        end
+        return x:lower() < y:lower()
+    end
+
+    --// returns true on success, or false + reason ("empty" / "same" / "taken")
+    local function renameProfile(oldName, newName)
+        newName = newName:gsub("%c", ""):gsub("^%s+", ""):gsub("%s+$", "")
+        if #newName > 24 then
+            newName = newName:sub(1, 24)
+        end
+        if newName == "" then
+            return false, "empty"
+        end
+        if Profiles[oldName] == nil then
+            return false, "missing"
+        end
+        if newName == oldName then
+            return false, "same"
+        end
+        for existing in pairs(Profiles) do
+            if existing ~= oldName and existing:lower() == newName:lower() then
+                return false, "taken"
+            end
+        end
+        Profiles[newName] = Profiles[oldName]
+        Profiles[oldName] = nil
+        if CurrentProfile == oldName then
+            CurrentProfile = newName
+            ProfileCodeInput.Text = generateProfileCode()
+        end
+        saveProfilesToFile()
+        return true
+    end
+
+    for _, child in pairs(
+        ProfileList:GetChildren()
+    ) do
+        if child:IsA("GuiObject") then
+            child:Destroy()
+        end
+    end
+
+    local names = {}
+    for profileName in pairs(Profiles) do
+        table.insert(names, profileName)
+    end
+    table.sort(names, naturalLess)
+    local total = #names
+
+    for count, profileName in ipairs(names) do
+        local profileData = Profiles[profileName]
+        local row = Instance.new("Frame")
+        row.Parent = ProfileList
+        row.Size = UDim2.new(1, 0, 0, 38)
+        row.BackgroundTransparency = 1
+        row.BorderSizePixel = 0
+        if count < total then
+            local divider = Instance.new("Frame")
+            divider.Name = "Divider"
+            divider.Parent = row
+            divider.BackgroundColor3 = Color3.fromRGB(26, 26, 28)
+            divider.BorderSizePixel = 0
+            divider.Size = UDim2.new(1, -24, 0, 1)
+            divider.Position = UDim2.new(0, 12, 1, -1)
+        end
+
+        --// button layout (right to left): Delete, Rename, Load
+        local profIcons = _G.KAMUI_ProfileIcons or {}
+        local renId = tostring(profIcons.Rename or ""):match("%d+")
+        local delId = tostring(profIcons.Delete or ""):match("%d+")
+        local renW = renId and 26 or 56
+        local delW = delId and 26 or 48
+        local loadW = 46
+        local delX = -(8 + delW)
+        local renX = delX - 4 - renW
+        local loadX = renX - 6 - loadW
+
+        --// name (tap = load)
+        local loadBtn = Instance.new("TextButton")
+        loadBtn:SetAttribute("KamuiSkinned", true)
+        loadBtn.Parent = row
+        loadBtn.Size = UDim2.new(1, loadX - 8, 1, 0)
+        loadBtn.BackgroundTransparency = 1
+        loadBtn.TextColor3 = THEME.Text
+        loadBtn.Text = profileName
+        loadBtn.Font = Enum.Font.GothamMedium
+        loadBtn.TextSize = 12
+        loadBtn.TextXAlignment = Enum.TextXAlignment.Left
+        loadBtn.TextTruncate = Enum.TextTruncate.AtEnd
+        local loadPad = Instance.new("UIPadding")
+        loadPad.PaddingLeft = UDim.new(0, 12)
+        loadPad.Parent = loadBtn
+
+        --// name editor (shown while renaming)
+        local nameBox = Instance.new("TextBox")
+        nameBox:SetAttribute("KamuiSkinned", true)
+        nameBox.Parent = row
+        nameBox.Visible = false
+        nameBox.Position = UDim2.new(0, 8, 0.5, -13)
+        nameBox.Size = UDim2.new(1, loadX - 16, 0, 26)
+        nameBox.BackgroundColor3 = Color3.fromRGB(20, 20, 22)
+        nameBox.TextColor3 = THEME.Text
+        nameBox.Font = Enum.Font.GothamMedium
+        nameBox.TextSize = 12
+        nameBox.TextXAlignment = Enum.TextXAlignment.Left
+        nameBox.ClearTextOnFocus = false
+        nameBox.ClipsDescendants = true
+        nameBox.PlaceholderText = "Profile name"
+        nameBox.PlaceholderColor3 = THEME.MutedText
+        nameBox.Text = profileName
+        applyCorner(nameBox, 7)
+        local namePad = Instance.new("UIPadding")
+        namePad.PaddingLeft = UDim.new(0, 8)
+        namePad.PaddingRight = UDim.new(0, 8)
+        namePad.Parent = nameBox
+        local nameStroke = Instance.new("UIStroke")
+        nameStroke.Color = THEME.Red
+        nameStroke.Thickness = 1
+        nameStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        nameStroke.Parent = nameBox
+
+        local function makeChip(text, width, xOffset, bg, textColor, stroked)
+            local chip = Instance.new("TextButton")
+            chip:SetAttribute("KamuiSkinned", true)
+            chip.Parent = row
+            chip.Size = UDim2.new(0, width, 0, 26)
+            chip.Position = UDim2.new(1, xOffset, 0.5, -13)
+            chip.BackgroundColor3 = bg
+            chip.TextColor3 = textColor
+            chip.Text = text
+            chip.Font = Enum.Font.GothamMedium
+            chip.TextSize = 12
+            applyCorner(chip, 7)
+            if stroked then
+                local st = Instance.new("UIStroke")
+                st.Color = Color3.fromRGB(36, 36, 38)
+                st.Thickness = 1
+                st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+                st.Parent = chip
+            end
+            return chip
+        end
+        --// Rename / Delete are flat (icon or muted text) and light up on hover
+        local function flatChip(chip, iconId)
+            chip.BackgroundTransparency = 1
+            if iconId then
+                chip.Text = ""
+                local img = Instance.new("ImageLabel")
+                img.Name = "ChipIcon"
+                img.Parent = chip
+                img.BackgroundTransparency = 1
+                img.BorderSizePixel = 0
+                img.AnchorPoint = Vector2.new(0.5, 0.5)
+                img.Position = UDim2.new(0.5, 0, 0.5, 0)
+                img.Size = UDim2.new(0, 14, 0, 14)
+                _G.KAMUI_SetImage(img, iconId)
+                img.ImageColor3 = chip.TextColor3
+                img.Active = false
+            end
+            chip.MouseEnter:Connect(function()
+                chip.BackgroundColor3 = THEME.DarkRed
+                TweenService:Create(chip, TweenInfo.new(0.12), { BackgroundTransparency = 0.7 }):Play()
+            end)
+            chip.MouseLeave:Connect(function()
+                TweenService:Create(chip, TweenInfo.new(0.12), { BackgroundTransparency = 1 }):Play()
+            end)
+        end
+        local renameChip = makeChip("Rename", renW, renX, Color3.fromRGB(20, 20, 22), THEME.MutedText, false)
+        local loadChip = makeChip("Load", loadW, loadX, THEME.DarkRed, THEME.Text, false)
+        local deleteBtn = makeChip("Delete", delW, delX, Color3.fromRGB(20, 20, 22), THEME.BrightRed, false)
+        flatChip(renameChip, renId)
+        flatChip(deleteBtn, delId)
+        local loadStroke = Instance.new("UIStroke")
+        loadStroke.Color = Color3.fromRGB(90, 18, 24)
+        loadStroke.Thickness = 1
+        loadStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        loadStroke.Parent = loadChip
+
+        local function doLoad()
+            local ok, why = loadProfileData(profileData)
+            if not ok then status(why); return end
+            CurrentProfile = profileName
+            ProfileCodeInput.Text = generateProfileCode()
+            confirmStorage("Loaded " .. profileName)
+        end
+        loadBtn.MouseButton1Click:Connect(doLoad)
+        loadChip.MouseButton1Click:Connect(doLoad)
+
+        --// rename: tap Rename, type the new name, press Done / tap away
+        renameChip.MouseButton1Click:Connect(function()
+            nameBox.Text = profileName
+            nameBox.Visible = true
+            loadBtn.Visible = false
+            task.defer(function()
+                if nameBox.Parent then
+                    nameBox:CaptureFocus()
+                end
+            end)
+        end)
+        nameBox.FocusLost:Connect(function()
+            local typed = nameBox.Text
+            nameBox.Visible = false
+            loadBtn.Visible = true
+            local ok, why = renameProfile(profileName, typed)
+            if ok then
+                rebuildProfileList()
+            elseif why == "taken" then
+                loadBtn.Text = "Name already used"
+                loadBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+                task.delay(1.2, function()
+                    if loadBtn.Parent then
+                        loadBtn.Text = profileName
+                        loadBtn.TextColor3 = THEME.Text
+                    end
+                end)
+            end
+        end)
+
+        deleteBtn.MouseButton1Click:Connect(function()
+            Profiles[profileName] = nil
+            saveProfilesToFile()
+            if CurrentProfile ==
+                profileName then
+                CurrentProfile = nil
+                ProfileCodeInput.Text = ""
+            end
+            rebuildProfileList()
+        end)
+    end
+    ProfileList.Visible = total > 0
+    ProfileList.Size = UDim2.new(1, 0, 0, math.max(total * 38, 1))
+end
+
+
+local function buildOriginalLayout(UI)
+    local R = ProfilesContainer
+    local layout = UI.setupPage(R)
+    layout.Padding = UDim.new(0, 8)
+
+    --// view switch: Saved | Import / export
+    local switch = UI.make("Frame", {
+        Name = "ViewSwitch",
+        BackgroundColor3 = UI.CHIP,
+        BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 32),
+        LayoutOrder = 1
+    }, R)
+    UI.corner(switch, 8)
+    UI.stroke(switch, UI.LINE)
+    UI.make("UIPadding", {
+        PaddingLeft = UDim.new(0, 2),
+        PaddingRight = UDim.new(0, 2),
+        PaddingTop = UDim.new(0, 2),
+        PaddingBottom = UDim.new(0, 2)
+    }, switch)
+
+    local viewTabs = {}
+    local function makeViewTab(name, text, xScale, xOffset)
+        local b = UI.make("TextButton", {
+            Name = name,
+            BackgroundColor3 = THEME.DarkRed,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Size = UDim2.new(0.5, -1, 1, 0),
+            Position = UDim2.new(xScale, xOffset, 0, 0),
+            Font = Enum.Font.GothamMedium,
+            TextSize = 12,
+            TextColor3 = THEME.MutedText,
+            Text = text
+        }, switch)
+        UI.corner(b, 6)
+        viewTabs[name] = b
+        return b
+    end
+    makeViewTab("Saved", "Saved", 0, 0)
+    makeViewTab("Export", "Import / export", 0.5, 1)
+
+    --// page 1: saved profiles
+    local savedPage = UI.make("Frame", {
+        Name = "SavedPage",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = 2
+    }, R)
+    UI.make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, savedPage)
+
+    ProfileListTitle.Visible = false
+
+    ProfileList.Parent = savedPage
+    ProfileList.LayoutOrder = 1
+    ProfileList.BackgroundColor3 = UI.PANEL
+    ProfileList.BackgroundTransparency = 0
+    ProfileList.BorderSizePixel = 0
+    local listLayout = ProfileList:FindFirstChildOfClass("UIListLayout")
+    if listLayout then
+        listLayout.Padding = UDim.new(0, 0)
+    end
+    UI.corner(ProfileList, 10)
+    UI.stroke(ProfileList, UI.LINE)
+
+    local empty = UI.make("TextLabel", {
+        Name = "ProfilesEmpty",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 34),
+        LayoutOrder = 2,
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextColor3 = THEME.MutedText,
+        TextWrapped = true,
+        Text = "No saved profiles yet. Load a code to save one.",
+        Visible = not ProfileList.Visible
+    }, savedPage)
+    ProfileList:GetPropertyChangedSignal("Visible"):Connect(function()
+        empty.Visible = not ProfileList.Visible
+    end)
+
+    --// page 2: import / export (code box + Load)
+    local exportPage = UI.make("Frame", {
+        Name = "ExportPage",
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = 2,
+        Visible = false
+    }, R)
+    UI.make("UIListLayout", { Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder }, exportPage)
+
+    local codeRow = UI.make("Frame", {
+        Name = "CodeRow",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 36),
+        LayoutOrder = 1
+    }, exportPage)
+    ProfileCodeInput.Parent = codeRow
+    ProfileCodeInput.Position = UDim2.new(0, 0, 0, 0)
+    ProfileCodeInput.Size = UDim2.new(1, -108, 1, 0)
+    ProfileCodeInput.BackgroundColor3 = UI.CHIP
+    ProfileCodeInput.Font = Enum.Font.Gotham
+    ProfileCodeInput.TextSize = 12
+    ProfileCodeInput.TextXAlignment = Enum.TextXAlignment.Left
+    ProfileCodeInput.PlaceholderText = "Paste a profile code"
+    UI.make("UIPadding", { PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12) }, ProfileCodeInput)
+    UI.corner(ProfileCodeInput, 8)
+    ProfileCodeInput.ClipsDescendants = true
+    ProfileCodeInput.TextWrapped = false
+    ProfileCodeInput.TextTruncate = Enum.TextTruncate.AtEnd
+    ProfileCodeInput.TextYAlignment = Enum.TextYAlignment.Center
+    LoadCodeBtn.Parent = codeRow
+    LoadCodeBtn.Position = UDim2.new(1, -100, 0, 0)
+    LoadCodeBtn.Size = UDim2.new(0, 100, 1, 0)
+    UI.button(LoadCodeBtn, true)
+    LoadCodeBtn.TextXAlignment = Enum.TextXAlignment.Center
+    LoadCodeBtn.TextYAlignment = Enum.TextYAlignment.Center
+    LoadCodeBtn.TextWrapped = false
+    LoadCodeBtn.TextTruncate = Enum.TextTruncate.AtEnd
+
+    UI.make("TextLabel", {
+        Name = "ExportHint",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = 2,
+        Font = Enum.Font.Gotham,
+        TextSize = 11,
+        TextColor3 = THEME.MutedText,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = "Paste a code and press Load to save it as a profile. Generate code copies your current settings."
+    }, exportPage)
+
+    --// action row (always visible): Generate code | Load default
+    local btnRow = UI.make("Frame", {
+        Name = "ActionRow",
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 36),
+        LayoutOrder = 3
+    }, R)
+    GenerateCodeBtn.Parent = btnRow
+    GenerateCodeBtn.Position = UDim2.new(0, 0, 0, 0)
+    GenerateCodeBtn.Size = UDim2.new(0.5, -4, 1, 0)
+    UI.button(GenerateCodeBtn, false)
+    LoadDefaultBtn.Parent = btnRow
+    LoadDefaultBtn.Position = UDim2.new(0.5, 4, 0, 0)
+    LoadDefaultBtn.Size = UDim2.new(0.5, -4, 1, 0)
+    UI.button(LoadDefaultBtn, false)
+
+    --// optional icon in front of the button text. The icon and a copy of the text sit in a
+    --// centered horizontal row, so they never overlap whatever the font or text length is.
+    local btnIcons = _G.KAMUI_ProfileIcons or {}
+    local function decorateButton(btn, rawId)
+        local id = tostring(rawId or ""):match("%d+")
+        if not id then
+            return
+        end
+        local ICON, GAP = 14, 6
+        local holder = UI.make("Frame", {
+            Name = "IconRow",
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Active = false,
+            Size = UDim2.new(1, 0, 1, 0),
+            ZIndex = btn.ZIndex + 1
+        }, btn)
+        local img = UI.make("ImageLabel", {
+            Name = "BtnIcon",
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Size = UDim2.new(0, ICON, 0, ICON),
+            ImageColor3 = THEME.Text,
+            Active = false,
+            ZIndex = btn.ZIndex + 1
+        }, holder)
+        _G.KAMUI_SetImage(img, id)
+        local lbl = UI.make("TextLabel", {
+            Name = "BtnText",
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            TextWrapped = false,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Center,
+            ZIndex = btn.ZIndex + 1
+        }, holder)
+        lbl:SetAttribute("KamuiKeepFont", true) -- font follows the button (synced below)
+
+        --// The icon + text group is centered with plain fixed positions (no auto-size / list
+        --// layout): the text width is measured, the icon is placed right before the first
+        --// letter, and the text starts right after the icon. They can never overlap.
+        --// The button's own text is moved into the label and the button text is emptied, so
+        --// only ONE copy of the text can ever be on screen (other code that sets btn.Text,
+        --// like "Code generated", is picked up here and moved over the same way).
+        local shown = btn.Text
+        local function sync()
+            if btn.Text ~= "" then
+                shown = btn.Text
+                btn.Text = ""
+            end
+
+            lbl.Text = shown
+            lbl.Font = btn.Font
+            lbl.TextSize = btn.TextSize
+            lbl.TextColor3 = btn.TextColor3
+
+            local width = #shown * btn.TextSize * 0.55
+            local ok, bounds = pcall(function()
+                return game:GetService("TextService"):GetTextSize(
+                    shown, btn.TextSize, btn.Font, Vector2.new(10000, 1000)
+                )
+            end)
+            if ok and bounds then
+                width = bounds.X
+            end
+            width = math.ceil(width) + 2
+
+            local left = -math.floor((ICON + GAP + width) / 2)
+            img.Position = UDim2.new(0.5, left, 0.5, -ICON / 2)
+            lbl.Position = UDim2.new(0.5, left + ICON + GAP, 0, 0)
+            lbl.Size = UDim2.new(0, width, 1, 0)
+        end
+        btn.TextTransparency = 1 -- the real text stays on the button (other code sets it), just hidden
+        sync()
+        for _, prop in ipairs({ "Text", "Font", "TextSize", "TextColor3" }) do
+            btn:GetPropertyChangedSignal(prop):Connect(sync)
+        end
+    end
+    decorateButton(GenerateCodeBtn, btnIcons.Copy)
+    decorateButton(LoadDefaultBtn, btnIcons.Refresh)
+
+    --// switching
+    local function showView(name)
+        savedPage.Visible = name == "Saved"
+        exportPage.Visible = name == "Export"
+        for n, b in pairs(viewTabs) do
+            local on = n == name
+            TweenService:Create(b, TweenInfo.new(0.15, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                BackgroundTransparency = on and 0 or 1,
+                TextColor3 = on and THEME.Text or THEME.MutedText
+            }):Play()
+        end
+    end
+    viewTabs.Saved.MouseButton1Click:Connect(function()
+        showView("Saved")
+    end)
+    viewTabs.Export.MouseButton1Click:Connect(function()
+        showView("Export")
+    end)
+    -- generating a code shows it in the code box
+    GenerateCodeBtn.MouseButton1Click:Connect(function()
+        showView("Export")
+    end)
+    showView("Saved")
+end
+
+    buildOriginalLayout(UI)
+    statusLabel=UI.make("TextLabel", {
+        Name="ProfileStorageStatus", BackgroundTransparency=1, BorderSizePixel=0,
+        Size=UDim2.new(1,0,0,26), LayoutOrder=4, Font=Enum.Font.Gotham,
+        TextSize=10, TextColor3=THEME.MutedText, TextWrapped=true,
+        TextXAlignment=Enum.TextXAlignment.Left, Text=statusText
+    },ProfilesContainer)
+    local function cleanName(value)
+        if type(value)~="string" then return nil end
+        local n=value:gsub("%c",""):gsub("^%s+",""):gsub("%s+$","")
+        if #n>24 then n=n:sub(1,24) end
+        return n~="" and n or nil
+    end
+    local function nameTaken(name)
+        for k in pairs(Profiles) do
+            if type(k)=="string" and k:lower()==name:lower() then return k end
+        end
+        return nil
+    end
+    local function importProfile(data)
+        if P.incomplete then return false,"Some tabs failed to initialize" end
+        if type(data)~="table" then return false,"Invalid profile" end
+        local incomingName=data.Name~=nil and cleanName(data.Name) or nil
+        if data.Name~=nil and not incomingName then return false,"Invalid profile name" end
+        local settings={}
+        for group,values in pairs(data) do if group~="Name" then settings[group]=values end end
+        settings=P.withoutRetired(settings)
+        if not next(settings) then return false,"Profile has no settings" end
+        local ok,why=P.apply(settings)
+        if not ok then return false,why end
+        local name=incomingName
+        if name then
+            local existing=nameTaken(name)
+            if existing then
+                local same,a=pcall(encodeValue,Profiles[existing])
+                local same2,b=pcall(encodeValue,settings)
+                if same and same2 and a==b then name=existing
+                else
+                    local base=name; local suffix=2
+                    repeat name=base.." "..suffix; suffix=suffix+1 until not nameTaken(name)
+                end
+            end
+        else
+            local i=1
+            repeat name="Profile "..i; i=i+1 until not nameTaken(name)
+        end
+        Profiles[name]=settings; CurrentProfile=name
+        ProfileCodeInput.Text=codeFor(name,P.snapshot())
+        rebuildProfileList()
+        confirmStorage("Loaded "..name)
+        return true
+    end
+    GenerateCodeBtn.MouseButton1Click:Connect(function()
+        if P.incomplete then status("Some tabs failed to initialize"); return end
+        ProfileCodeInput.Text=generateProfileCode()
+        if type(setclipboard)=="function" then
+            local copied=pcall(setclipboard,ProfileCodeInput.Text)
+            status(copied and "Code copied" or "Select the code to copy it")
+        else status("Select the code to copy it") end
+        GenerateCodeBtn.Text="Code generated"
+        task.delay(1.2,function() if GenerateCodeBtn.Parent then GenerateCodeBtn.Text="Generate code" end end)
+    end)
+    LoadCodeBtn.MouseButton1Click:Connect(function()
+        local data,why=decodeCode(ProfileCodeInput.Text)
+        if not data then status(why); return end
+        local ok,err=importProfile(data)
+        if not ok then status(err); return end
+        LoadCodeBtn.Text="Profile loaded"
+        task.delay(1.2,function() if LoadCodeBtn.Parent then LoadCodeBtn.Text="Load code" end end)
+    end)
+    LoadDefaultBtn.MouseButton1Click:Connect(function()
+        if P.incomplete then status("Some tabs failed to initialize"); return end
+        local ok,why=P.apply(defaults)
+        if not ok then status(why); return end
+        CurrentProfile=nil; ProfileCodeInput.Text=""
+        confirmStorage("Defaults loaded")
+        LoadDefaultBtn.Text="Defaults loaded"
+        task.delay(1.2,function() if LoadDefaultBtn.Parent then LoadDefaultBtn.Text="Load default" end end)
+    end)
+    local api={}
+    api.Load=function(data,hash)
+        local ok,encoded=pcall(encodeValue,data)
+        if not ok or type(hash)~="string" or checksum(encoded)~=hash:upper() then
+            return false,"Invalid profile checksum"
+        end
+        local loaded,why=importProfile(data)
+        if not loaded then status(why) end
+        return loaded,why
+    end
+    _G.KAMUI=api
+    if type(getgenv)=="function" then pcall(function() getgenv().KAMUI=api end) end
+    rebuildProfileList()
+    if P.incomplete then status("A tab failed to initialize; profile restore disabled")
+    elseif disk and type(disk.last)=="table" then
+        local ok,why=P.apply(disk.last)
+        if not ok then storage=false; status("Restore failed; file preserved: "..tostring(why))
+        else status("Previous settings restored") end
+    end
+    task.spawn(function()
+        while isCurrent() and ScreenGui.Parent do
+            task.wait(1)
+            if isCurrent() then flush() end
+        end
+    end)
+end
+
+
 _G.KAMUI_ContentInit = function()
     local ok, UI = pcall(_G.KAMUI_UIKit)
     if not ok then
@@ -11733,8 +13152,11 @@ _G.KAMUI_ContentInit = function()
         local ok2, err = pcall(_G["KAMUI_Build" .. name], UI)
         if not ok2 then
             warn("[dw] " .. name .. " tab redesign failed:", err)
+            _G.KAMUI_Profile.incomplete = true
         end
     end
+    local ok3, err3 = pcall(_G.KAMUI_BuildProfiles, UI)
+    if not ok3 then warn("[KAMUI] Profiles failed:", err3) end
 end
 _G.KAMUI_ContentInit()
 
@@ -11742,146 +13164,3 @@ _G.KAMUI_ContentInit()
 task.delay(3, function()
     pcall(_G.KAMUI_FetchModule, "Music")
 end)
-
---// WALL-JUMP DIAGNOSTIC: local observation only. Never changes movement.
-do
-    local frame = Instance.new("Frame")
-    frame.Name = "KAMUI_WallJumpDiagnostic"
-    frame.Size = UDim2.fromOffset(560, 310)
-    frame.Position = UDim2.fromOffset(18, 110)
-    frame.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
-    frame.BorderSizePixel = 0
-    frame.Active, frame.Draggable = true, true
-    frame.ZIndex = 100
-    frame.Parent = RestoreGui
-    applyCorner(frame, 9)
-    local outline = Instance.new("UIStroke")
-    outline.Color, outline.Thickness, outline.Parent = Color3.fromRGB(210, 24, 30), 1, frame
-    local title = Instance.new("TextLabel")
-    title.Size, title.Position = UDim2.new(1, -120, 0, 27), UDim2.fromOffset(10, 3)
-    title.BackgroundTransparency, title.TextXAlignment = 1, Enum.TextXAlignment.Left
-    title.Font, title.TextSize, title.TextColor3 = Enum.Font.Code, 14, Color3.fromRGB(245, 245, 245)
-    title.Text, title.ZIndex, title.Parent = "KAMUI - AUTO RATIO V1", 101, frame
-    local body = Instance.new("TextLabel")
-    body.Size, body.Position = UDim2.new(1, -20, 1, -39), UDim2.fromOffset(10, 34)
-    body.BackgroundTransparency, body.TextColor3 = 1, Color3.fromRGB(235, 235, 235)
-    body.Font, body.TextSize, body.TextWrapped = Enum.Font.Code, 12, true
-    body.TextXAlignment, body.TextYAlignment = Enum.TextXAlignment.Left, Enum.TextYAlignment.Top
-    body.ZIndex, body.Parent = 101, frame
-    local lines, allConns, charConns = {}, {}, {}
-    local attempts, parkourSounds, changes, stopped = 0, 0, 0, false
-    local function refresh()
-        body.Text = table.concat(lines, "\n")
-    end
-    local function log(text)
-        if stopped or not isCurrent() then return end
-        -- This temporary build retains QTE messages for a focused test.
-        local entry = tostring(text)
-        if not entry:find("Ratio:", 1, true)
-            and not entry:find("Cleared.", 1, true) then return end
-        -- SwingForce is updated every frame and buried the Auto BF messages.
-        if tostring(text):find("Value SwingForce/", 1, true)
-            or tostring(text):find("Value MovementForce/", 1, true) then return end
-        lines[#lines + 1] = tostring(text)
-        while #lines > 14 do table.remove(lines, 1) end
-        refresh()
-    end
-    -- Infinite Parkour writes its decisions into the existing diagnostic window.
-    _G.KAMUI_ParkourDiagnostic = log
-    local function button(text, x)
-        local b = Instance.new("TextButton")
-        b.Size, b.Position = UDim2.fromOffset(46, 24), UDim2.new(1, x, 0, 5)
-        b.BackgroundColor3, b.TextColor3 = Color3.fromRGB(44, 20, 23), Color3.fromRGB(255, 255, 255)
-        b.Font, b.TextSize, b.Text, b.ZIndex, b.Parent = Enum.Font.GothamMedium, 12, text, 102, frame
-        applyCorner(b, 5)
-        return b
-    end
-    local function disconnect(list)
-        for _, c in ipairs(list) do pcall(function() c:Disconnect() end) end
-        table.clear(list)
-    end
-    local function stop()
-        if stopped then return end
-        stopped = true
-        if _G.KAMUI_ParkourDiagnostic == log then _G.KAMUI_ParkourDiagnostic = nil end
-        disconnect(charConns); disconnect(allConns)
-        if frame.Parent then frame:Destroy() end
-    end
-    local clear, close = button("Clear", -102), button("X", -52)
-    allConns[#allConns + 1] = clear.Activated:Connect(function()
-        attempts, parkourSounds, changes = 0, 0, 0
-        table.clear(lines)
-        log("Cleared. Perform the action you want to test.")
-    end)
-    allConns[#allConns + 1] = close.Activated:Connect(stop)
-    local function scalar(value)
-        return type(value) == "number" or type(value) == "boolean"
-    end
-    local function shortName(obj)
-        local parent = obj.Parent
-        return (parent and parent.Name or "?") .. "/" .. obj.Name
-    end
-    local function watchAttributes(obj, bucket)
-        local previous = obj:GetAttributes()
-        bucket[#bucket + 1] = obj.AttributeChanged:Connect(function(name)
-            if stopped or not isCurrent() then return end
-            local value, old = obj:GetAttribute(name), previous[name]
-            previous[name] = value
-            if scalar(value) or scalar(old) then
-                changes = changes + 1
-                log("Attr " .. shortName(obj) .. "." .. name .. ": " .. tostring(old) .. " -> " .. tostring(value))
-            end
-        end)
-    end
-    watchAttributes(player, allConns)
-    local function bindCharacter(char)
-        disconnect(charConns)
-        local watched = setmetatable({}, { __mode = "k" })
-        local function watch(obj)
-            if watched[obj] then return end
-            watched[obj] = true
-            watchAttributes(obj, charConns)
-            if obj:IsA("IntValue") or obj:IsA("NumberValue") or obj:IsA("BoolValue") then
-                local last = obj.Value
-                charConns[#charConns + 1] = obj:GetPropertyChangedSignal("Value"):Connect(function()
-                    if stopped or not isCurrent() or player.Character ~= char then return end
-                    local value = obj.Value
-                    changes = changes + 1
-                    log("Value " .. shortName(obj) .. ": " .. tostring(last) .. " -> " .. tostring(value))
-                    last = value
-                end)
-            end
-        end
-        watch(char)
-        for _, obj in ipairs(char:GetDescendants()) do watch(obj) end
-        charConns[#charConns + 1] = char.DescendantAdded:Connect(function(obj)
-            if stopped or not isCurrent() then return end
-            watch(obj)
-            if string.lower(obj.Name):find("parkour", 1, true) and obj:IsA("Sound") then
-                parkourSounds = parkourSounds + 1
-                log("Parkour sound appeared")
-            elseif obj:IsA("IntValue") or obj:IsA("NumberValue") or obj:IsA("BoolValue") then
-                changes = changes + 1
-                log("Value added " .. shortName(obj) .. "=" .. tostring(obj.Value))
-            end
-        end)
-        charConns[#charConns + 1] = char.DescendantRemoving:Connect(function(obj)
-            if stopped or not isCurrent() then return end
-            if obj:IsA("IntValue") or obj:IsA("NumberValue") or obj:IsA("BoolValue") then
-                changes = changes + 1
-                log("Value removed " .. shortName(obj))
-            end
-        end)
-        log("Character ready. Press Clear before the test.")
-    end
-    allConns[#allConns + 1] = UIS.InputBegan:Connect(function(input)
-        if not isCurrent() or UIS:GetFocusedTextBox() then return end
-        if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.Space then
-            attempts = attempts + 1
-            log("Space #" .. attempts)
-        end
-    end)
-    allConns[#allConns + 1] = player.CharacterAdded:Connect(bindCharacter)
-    allConns[#allConns + 1] = RestoreGui.Destroying:Connect(stop)
-    if player.Character then bindCharacter(player.Character) else log("Waiting for character.") end
-end
