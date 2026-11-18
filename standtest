@@ -6,6 +6,7 @@
 --//  * .awakening presses G (awakening), .annoy <name> follows the target's back and M1s them once a second
 --//  * .hide puts the stand lying under the map (it still follows and still attacks from underneath), .show brings it back
 --//  * .attack loops skills 1-4 on the target (keeps going through respawns) until .stop
+--//  * .attack uses a rigid position lock behind the target (no weld / no target physics changes)
 --//  * M1 punches keep going in between, so whenever skills are on cooldown you are still hitting
 --// Mobile friendly (touch drag, scales down on small screens). Hotkeys on PC: see TOGGLE_KEY / SWAP_KEY.
 
@@ -18,7 +19,7 @@ local LocalPlayer = Players.LocalPlayer
 local TOGGLE_KEY = Enum.KeyCode.Z -- pause / resume following (set to nil to disable)
 local SWAP_KEY = Enum.KeyCode.X   -- swap left / right (set to nil to disable)
 local FILE = "Stand_Settings.json"
-local ATTACK_DIST = 3  -- studs behind the victim's back while attacking
+local ATTACK_DIST = 3  -- rigid attack offset, in studs behind the target; lower = closer
 local HIDE_DEPTH = 6   -- studs under the target / owner while hidden (.hide)
 local ATTACK_TIME = 0  -- seconds before the stand returns on its own (0 = loop until .stop)
 local SKILL_DELAY = 0.35 -- seconds between skill presses (1 > 2 > 3 > 4 > 1 ...)
@@ -245,6 +246,7 @@ end
 
 local refreshInfo = function() end -- assigned once the Stand card exists
 local setHidden = function() end   -- assigned further down
+local releaseAttackAttachment = function() end -- assigned with the movement helpers
 local function styleRows()
     for pl, r in pairs(rows) do
         local on = pl == State.owner
@@ -261,6 +263,7 @@ local function selectOwner(p)
     end
     State.mode = "follow"
     State.victim = nil
+    releaseAttackAttachment()
     snap = true
     styleRows()
     refreshInfo()
@@ -572,6 +575,89 @@ local function releaseHidden()
         hum.PlatformStand = false
     end
 end
+--// Attack attachment is a local pose lock, not a weld to the other player.
+--// The target's parts, humanoid and velocities are never written to.
+--// Reuse hideStore so .hide/.show cannot overwrite original collision values.
+local attackAttached = false
+local attachmentHumanoid = nil
+local attachmentAutoRotate = nil
+local ATTACH_RENDER_KEY = "StandAttackAttachment_" .. tostring(LocalPlayer.UserId)
+
+releaseAttackAttachment = function()
+    if not attackAttached and not attachmentHumanoid then
+        return
+    end
+    if attachmentHumanoid and attachmentHumanoid.Parent and attachmentAutoRotate ~= nil then
+        attachmentHumanoid.AutoRotate = attachmentAutoRotate
+    end
+    attachmentHumanoid = nil
+    attachmentAutoRotate = nil
+    attackAttached = false
+    if not State.hidden then
+        releaseHidden()
+    end
+end
+
+local function attackGoal(targetRoot)
+    if State.hidden then
+        return CFrame.new(targetRoot.Position - Vector3.new(0, HIDE_DEPTH, 0))
+            * targetRoot.CFrame.Rotation * CFrame.Angles(math.rad(90), 0, 0)
+    end
+    local pos = (targetRoot.CFrame * CFrame.new(0, 0, ATTACK_DIST)).Position
+    -- A zero offset must not ask lookAt to face a coincident point.
+    local facing = targetRoot.Position
+    if (facing - pos).Magnitude < 0.001 then
+        facing = pos + targetRoot.CFrame.LookVector
+    end
+    return CFrame.lookAt(pos, facing)
+end
+
+local function updateAttackAttachment(preparePhysics)
+    if not State.active or State.mode ~= "attack"
+        or not State.owner or not State.owner.Parent then
+        releaseAttackAttachment()
+        return false
+    end
+    local victim = State.victim
+    local targetChar = victim and victim.Parent and victim.Character
+    local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
+    local targetHum = targetChar and targetChar:FindFirstChildOfClass("Humanoid")
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not (root and hum and hum.Health > 0 and targetRoot and targetHum and targetHum.Health > 0) then
+        -- Keep the selected victim in State: reattach when either character respawns.
+        releaseAttackAttachment()
+        return false
+    end
+    if attachmentHumanoid ~= hum then
+        releaseAttackAttachment()
+        attachmentHumanoid = hum
+        attachmentAutoRotate = hum.AutoRotate
+    end
+    attackAttached = true
+    hum.AutoRotate = false
+    if preparePhysics then
+        -- Stop our controls and collisions from fighting the target-relative pose.
+        hum:Move(Vector3.zero, false)
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                if hideStore[part] == nil then
+                    hideStore[part] = part.CanCollide
+                end
+                part.CanCollide = false
+            end
+        end
+        if State.hidden then
+            enforceHidden(char, hum)
+        end
+    end
+    root.CFrame = attackGoal(targetRoot)
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+    return true
+end
+
 setHidden = function(on)
     if State.hidden == on then
         return
@@ -579,9 +665,12 @@ setHidden = function(on)
     State.hidden = on
     snap = true
     if not on then
+        if attackAttached and attachmentHumanoid and attachmentHumanoid.Parent then
+            attachmentHumanoid.PlatformStand = false
+        end
         -- the stand jumps back above the floor first, collisions come back a moment later
         task.delay(0.2, function()
-            if not State.hidden then
+            if not State.hidden and not attackAttached then
                 releaseHidden()
             end
         end)
@@ -597,6 +686,7 @@ end
 local function endAttack(msg)
     State.mode = "follow"
     State.victim = nil
+    releaseAttackAttachment()
     snap = false
     setStatus(msg or boundText())
 end
@@ -639,15 +729,9 @@ connect(RunService.Heartbeat, function(dt)
         if not vHrp or (vHum and vHum.Health <= 0) then
             return -- target is dead / respawning: wait here, the loop resumes when they are back
         end
-        -- stay right behind the victim's back (+Z = behind them), facing them, and keep tracking as they turn
-        if State.hidden then
-            -- hidden: lie directly under the target, face up at them
-            goal = CFrame.new(vHrp.Position - Vector3.new(0, HIDE_DEPTH, 0)) * vHrp.CFrame.Rotation * CFrame.Angles(math.rad(90), 0, 0)
-        else
-            local pos = (vHrp.CFrame * CFrame.new(0, 0, ATTACK_DIST)).Position
-            goal = CFrame.lookAt(pos, vHrp.Position)
-        end
-        smooth = math.min(State.smooth, 0.3)
+        -- .attack is rigid; .annoy keeps its original smooth following behavior.
+        goal = attackGoal(vHrp)
+        smooth = State.mode == "attack" and 0 or math.min(State.smooth, 0.3)
 
         local now = os.clock()
 
@@ -710,6 +794,18 @@ connect(RunService.Heartbeat, function(dt)
     hrp.AssemblyAngularVelocity = Vector3.zero
 end)
 
+-- Keep the lock stable across physics, character movement, and the rendered frame.
+-- Combat inputs/timers still run only in the original Heartbeat callback above.
+connect(RunService.PreSimulation, function()
+    updateAttackAttachment(true)
+end)
+connect(RunService.PostSimulation, function()
+    updateAttackAttachment(false)
+end)
+RunService:BindToRenderStep(ATTACH_RENDER_KEY, Enum.RenderPriority.Character.Value + 1, function()
+    updateAttackAttachment(false)
+end)
+
 ----------------------------------------------------------------
 -- logic: chat commands from the owner
 ----------------------------------------------------------------
@@ -756,6 +852,8 @@ local function handleCommand(msg)
         m1Acc = 0
         lockUntil = 0
         skillIdx = 1
+        snap = true
+        updateAttackAttachment(true)
         setStatus("Attacking " .. v.DisplayName .. " (skills + M1)")
     elseif cmd == "annoy" then
         local v = findPlayer(arg)
@@ -764,6 +862,7 @@ local function handleCommand(msg)
             return
         end
         State.mode = "annoy"
+        releaseAttackAttachment()
         State.victim = v
         attackStart = os.clock()
         m1Acc = 0
@@ -822,7 +921,11 @@ end)
 
 -- if you respawn while summoned, jump straight back to the owner's side
 connect(LocalPlayer.CharacterAdded, function()
+    releaseAttackAttachment()
     snap = true
+end)
+connect(LocalPlayer.CharacterRemoving, function()
+    releaseAttackAttachment()
 end)
 
 connect(Players.PlayerAdded, rebuildList)
@@ -845,6 +948,7 @@ connect(UIS.InputBegan, function(input, processed)
             setStatus("Pick an owner first", true)
         elseif State.active then
             State.active = false
+            releaseAttackAttachment()
             refreshInfo()
             setStatus("Stand paused")
         else
@@ -873,6 +977,10 @@ rebuildList()
 
 _G.Stand_Cleanup = function()
     State.active = false
+    pcall(function()
+        RunService:UnbindFromRenderStep(ATTACH_RENDER_KEY)
+    end)
+    releaseAttackAttachment()
     pcall(function()
         State.hidden = false
         releaseHidden()
