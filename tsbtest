@@ -12686,7 +12686,7 @@ _G.KAMUI_BuildCombat = function(UI)
                 if dashStatus.Parent and statusVersion == version then dashStatus.Visible = false end
             end)
         end
-        mobileButton.MouseButton1Click:Connect(function()
+        local function activateMobileDash()
             if not isCurrent() then showDashStatus("Script is no longer active"); return end
             if not SA.Mobile then showDashStatus("Mobile mode is off"); return end
             if not SA.Enabled then showDashStatus("Side dash assist is off"); return end
@@ -12739,6 +12739,25 @@ _G.KAMUI_BuildCombat = function(UI)
                 mobilePending = false
                 showDashStatus("No game dash detected after touch")
             end)
+        end
+        -- Detect a tap separately from dragging, including touch on mobile.
+        local dashTouch, dashTouchStart = nil, nil
+        mobileButton.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch
+                or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                dashTouch = input
+                dashTouchStart = Vector2.new(input.Position.X, input.Position.Y)
+            end
+        end)
+        UIS.InputEnded:Connect(function(input)
+            if not dashTouch or not dashTouchStart then return end
+            local matches = input == dashTouch or (dashTouch.UserInputType == Enum.UserInputType.MouseButton1
+                and input.UserInputType == Enum.UserInputType.MouseButton1)
+            if not matches then return end
+            local finish = Vector2.new(input.Position.X, input.Position.Y)
+            local wasTap = (finish - dashTouchStart).Magnitude <= 18
+            dashTouch, dashTouchStart = nil, nil
+            if wasTap then activateMobileDash() end
         end)
         UIS.InputBegan:Connect(function(input, processed)
             if not isCurrent() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
