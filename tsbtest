@@ -12625,13 +12625,13 @@ _G.KAMUI_BuildCombat = function(UI)
         local function showDashStatus(text)
             statusVersion = statusVersion + 1
             local version = statusVersion
-            dashStatus.Text = "DASH TEST B01\nSide dash: " .. text
+            dashStatus.Text = "DASH TEST B02\nSide dash: " .. text
             dashStatus.Visible = true
             task.delay(30, function()
                 if dashStatus.Parent and statusVersion == version then dashStatus.Visible = false end
             end)
         end
-        showDashStatus("Loaded B01: PC-style mobile steering")
+        showDashStatus("Loaded B02: mobile side direction test")
         -- Temporary separate signal diagnostic, kept available for mobile testing.
         dashCheckButton = Instance.new("TextButton")
         dashCheckButton.Name = "DashCheckButton"
@@ -12642,7 +12642,7 @@ _G.KAMUI_BuildCombat = function(UI)
         dashCheckButton.TextColor3 = Color3.new(1, 1, 1)
         dashCheckButton.Font = Enum.Font.Gotham
         dashCheckButton.TextSize = 12
-        dashCheckButton.Text = "Dash check B01"
+        dashCheckButton.Text = "Dash check B02"
         dashCheckButton.ZIndex = 50
         dashCheckButton.Visible = SA.Mobile
         dashCheckButton.MouseButton1Click:Connect(function()
@@ -12670,76 +12670,173 @@ _G.KAMUI_BuildCombat = function(UI)
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health <= 0 then showDashStatus("Character not ready"); return end
             if findMover(root) then showDashStatus("Existing dash detected; wait and retry"); return end
-            if not closestTarget(root) then showDashStatus("No living player target found"); return end
+            local target = closestTarget(root)
+            if not target then showDashStatus("No living player target found"); return end
+            local cam = Workspace.CurrentCamera
+            if not cam then showDashStatus("Camera not ready"); return end
             local pg = player:FindFirstChildOfClass("PlayerGui")
             local touch = pg and pg:FindFirstChild("TouchGui")
-            local controls = touch and touch:FindFirstChild("TouchControlFrame")
-            local jump = controls and controls:FindFirstChild("JumpButton")
+            local guiControls = touch and touch:FindFirstChild("TouchControlFrame")
+            local jump = guiControls and guiControls:FindFirstChild("JumpButton")
             local button = jump and jump:FindFirstChild("DashButton")
             if not button or not button:IsA("GuiButton") then showDashStatus("Game DashButton not found"); return end
+
+            -- Use the same initial Side hook / Behind arc direction as the PC path.
+            local right = flat(target.CFrame.RightVector)
+            if right.Magnitude < 0.01 then showDashStatus("Target direction unavailable"); return end
+            right = right.Unit
+            local sideSign = flat(root.Position - target.Position):Dot(right) < 0 and -1 or 1
+            local delta
+            if SA.Mode == "Behind" then
+                local radial = flat(root.Position - target.Position)
+                local forward = flat(target.CFrame.LookVector)
+                if radial.Magnitude < 0.1 or forward.Magnitude < 0.01 then
+                    showDashStatus("Too close to calculate behind dash"); return
+                end
+                local back = -forward.Unit
+                local startAngle = math.atan2(radial.Z, radial.X)
+                local endAngle = math.atan2(back.Z, back.X)
+                local side = right * sideSign
+                local sideAngle = math.atan2(side.Z, side.X)
+                local ccw = (endAngle - startAngle) % (2 * math.pi)
+                local viaSide = (sideAngle - startAngle) % (2 * math.pi)
+                local sweep = viaSide <= ccw and ccw or ccw - 2 * math.pi
+                if math.abs(sweep) > 0.1 then
+                    local unit = radial.Unit
+                    delta = Vector3.new(-unit.Z, 0, unit.X) * (sweep > 0 and 1 or -1)
+                else
+                    delta = flat(target.Position - forward.Unit * 3.5 - root.Position)
+                end
+            else
+                local toward = flat(target.Position - root.Position)
+                if toward.Magnitude < 0.1 then showDashStatus("Too close to calculate side dash"); return end
+                toward = toward.Unit
+                local flank = Vector3.new(-toward.Z, 0, toward.X)
+                if flank:Dot(right * sideSign) < 0 then flank = -flank end
+                delta = flat(target.Position) + flank * 5 + toward * 1.2 - flat(root.Position)
+            end
+            if delta.Magnitude < 0.1 then showDashStatus("Dash direction unavailable"); return end
+            local dashDirection = delta.Unit
+            local rightDashFacing = Vector3.new(dashDirection.Z, 0, -dashDirection.X)
+            local useRight = flat(cam.CFrame.LookVector):Dot(rightDashFacing) >= 0
+            local cameraFacing = useRight and rightDashFacing or -rightDashFacing
+            local pitch = math.clamp(cam.CFrame.LookVector.Y, -0.99, 0.99)
+            local inputVector = Vector3.new(useRight and 1 or -1, 0, 0)
+
+            -- Try the Roblox touch controller's camera-relative movement vector.
+            -- Humanoid:Move is a fallback when its internals are unavailable.
+            local touchController, originalMove
+            pcall(function()
+                local ps = player:FindFirstChild("PlayerScripts")
+                local module = ps and ps:FindFirstChild("PlayerModule")
+                local controls = module and require(module):GetControls()
+                local active = controls and controls.activeController
+                if active and typeof(active.moveVector) == "Vector3" then
+                    touchController = active
+                    originalMove = active.moveVector
+                end
+            end)
             local pos, size = button.AbsolutePosition, button.AbsoluteSize
             local x, y = pos.X + size.X / 2, pos.Y + size.Y / 2
             mobilePending = true
-            _G.KAMUI_MarkScriptDash()
-            local fired, reason = false, "No supported signal function"
-            -- The inspector found a handler on MouseButton1Down, rather than
-            -- Activated or MouseButton1Click. Try that exact game event.
-            if type(firesignal) == "function" then
-                local ok, err = pcall(function() firesignal(button.MouseButton1Down, x, y) end)
-                fired, reason = ok, tostring(err)
-            end
-            if not fired and type(getconnections) == "function" then
-                local ok, connections = pcall(function() return getconnections(button.MouseButton1Down) end)
-                if ok and connections then
-                    for _, connection in ipairs(connections) do
-                        if connection.Enabled ~= false then
-                            local success, err = pcall(function() connection:Fire(x, y) end)
-                            if success then fired = true else reason = tostring(err) end
+            local binding = "KAMUI_MobileDashPrep_" .. tostring(scriptId)
+            local prepared, prepCleaned = false, false
+            local function cleanupPrep()
+                if prepCleaned then return end
+                prepCleaned = true
+                pcall(function() RunService:UnbindFromRenderStep(binding) end)
+                if touchController then
+                    pcall(function()
+                        if touchController.moveVector == inputVector then
+                            touchController.moveVector = originalMove
                         end
-                    end
-                elseif not ok then
-                    reason = tostring(connections)
+                    end)
                 end
             end
-            if not fired then
+            local bound, bindError = pcall(function()
+                RunService:BindToRenderStep(binding, Enum.RenderPriority.Character.Value + 1, function()
+                    if not isCurrent() or not SA.Enabled or not SA.Mobile or player.Character ~= char
+                        or not root.Parent or Workspace.CurrentCamera ~= cam then return end
+                    local at = cam.CFrame.Position
+                    local look = cameraFacing * math.sqrt(1 - pitch * pitch) + Vector3.new(0, pitch, 0)
+                    cam.CFrame = CFrame.lookAt(at, at + look)
+                    if touchController then
+                        pcall(function() touchController.moveVector = inputVector end)
+                    end
+                    local ok = pcall(function() hum:Move(dashDirection, false) end)
+                    if ok then prepared = true end
+                end)
+            end)
+            if not bound then
                 mobilePending = false
-                showDashStatus("Could not fire game button: " .. reason)
+                showDashStatus("Could not prepare side input: " .. tostring(bindError))
                 return
             end
-            -- Pair the press with a release so it is not left down. This does
-            -- not synthesize keyboard input or change the player's touch mode.
-            task.delay(0.06, function()
-                if type(firesignal) == "function" then
-                    local ok = pcall(function() firesignal(button.MouseButton1Up, x, y) end)
-                    if ok then return end
+            showDashStatus(touchController and "Preparing touch joystick direction..." or "Preparing humanoid direction (joystick unavailable)...")
+            task.spawn(function()
+                task.wait(0.08)
+                if not isCurrent() or not SA.Mobile or not SA.Enabled or player.Character ~= char or not root.Parent then
+                    cleanupPrep(); mobilePending = false; return
                 end
-                if type(getconnections) == "function" then
-                    local ok, connections = pcall(function() return getconnections(button.MouseButton1Up) end)
+                if not prepared then
+                    cleanupPrep(); mobilePending = false
+                    showDashStatus("Could not prepare movement direction"); return
+                end
+                _G.KAMUI_MarkScriptDash()
+                local fired, reason = false, "No supported signal function"
+                if type(firesignal) == "function" then
+                    local ok, err = pcall(function() firesignal(button.MouseButton1Down, x, y) end)
+                    fired, reason = ok, tostring(err)
+                end
+                if not fired and type(getconnections) == "function" then
+                    local ok, connections = pcall(function() return getconnections(button.MouseButton1Down) end)
                     if ok and connections then
                         for _, connection in ipairs(connections) do
-                            if connection.Enabled ~= false then pcall(function() connection:Fire(x, y) end) end
+                            if connection.Enabled ~= false then
+                                local success, err = pcall(function() connection:Fire(x, y) end)
+                                if success then fired = true else reason = tostring(err) end
+                            end
+                        end
+                    elseif not ok then reason = tostring(connections) end
+                end
+                if not fired then
+                    cleanupPrep(); mobilePending = false
+                    showDashStatus("Could not fire game button: " .. reason); return
+                end
+                task.delay(0.06, function()
+                    if type(firesignal) == "function" then
+                        local ok = pcall(function() firesignal(button.MouseButton1Up, x, y) end)
+                        if ok then return end
+                    end
+                    if type(getconnections) == "function" then
+                        local ok, connections = pcall(function() return getconnections(button.MouseButton1Up) end)
+                        if ok and connections then
+                            for _, connection in ipairs(connections) do
+                                if connection.Enabled ~= false then pcall(function() connection:Fire(x, y) end) end
+                            end
                         end
                     end
-                end
-            end)
-            showDashStatus("Game button fired; waiting for dash...")
-            task.spawn(function()
+                end)
+                -- Do not leave the joystick direction forced if the dash never starts.
+                task.delay(0.15, cleanupPrep)
                 local deadline = os.clock() + 0.8
                 while isCurrent() and SA.Mobile and SA.Enabled and player.Character == char
                     and root.Parent and os.clock() < deadline do
                     local mover = findMover(root)
                     if mover then
+                        cleanupPrep()
                         if not SA.Busy then
                             dashOnce(mover)
-                            showDashStatus(SA.Busy and "Dash detected; PC-style steering started" or "Dash detected; assist could not start")
+                            showDashStatus(SA.Busy and ("Dash detected; steering. Input: " .. (touchController and "joystick" or "humanoid fallback")) or "Dash detected; assist could not start")
                         end
                         mobilePending = false
                         return
                     end
                     RunService.Heartbeat:Wait()
                 end
+                cleanupPrep()
                 mobilePending = false
-                showDashStatus("No dash mover detected after game button")
+                showDashStatus("No dash mover detected after side input")
             end)
         end
         -- Detect a tap separately from dragging, including touch on mobile.
