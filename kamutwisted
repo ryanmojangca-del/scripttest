@@ -37,6 +37,18 @@ local Settings = {
     RotateChar = true,   -- turn the character with the camera (works without shift lock)
     CooldownGuard = false, -- true = client-side 5s dash lock (the server enforces the real one)
 }
+-- Mobile defaults apply to fresh settings; saved values still take precedence.
+if _G.KAMUI_TwistedMobile then
+    Settings.Angle = 70
+    Settings.BackAngle = 100
+    Settings.DashAt = 0
+    Settings.BackAt = 0.2
+end
+
+-- Capture this launch mode's defaults before loading saved settings.
+local DefaultSettings = {}
+for key, value in pairs(Settings) do DefaultSettings[key] = value end
+
 --// values survive closing and reopening the window
 local saved = _G.KAMUI_TrueTwistedSettings
 if type(saved) == "table" and saved.Version == Settings.Version then
@@ -230,6 +242,7 @@ local function applyCorner(obj, radius)
     local c = Instance.new("UICorner")
     c.CornerRadius = UDim.new(0, radius or 8)
     c.Parent = obj
+    return c
 end
 local function addStroke(obj, color, thickness, transparency)
     local s = Instance.new("UIStroke")
@@ -263,6 +276,128 @@ local function fmt(v)
     return string.format("%g", v)
 end
 
+-- Shared Kamui color and border styling, without changing the main GUI registry.
+local THEME = {
+    Background = Color3.fromRGB(6,6,7), BackgroundLight = Color3.fromRGB(13,13,14),
+    BackgroundMedium = Color3.fromRGB(20,20,22), Red = Color3.fromRGB(205,18,20),
+    BrightRed = Color3.fromRGB(240,30,24), DarkRed = Color3.fromRGB(52,8,12),
+    Text = Color3.fromRGB(240,236,236), MutedText = Color3.fromRGB(150,145,146),
+}
+local TUI = {
+    Line = Color3.fromRGB(36,36,38), Div = Color3.fromRGB(26,26,28),
+    Chip = Color3.fromRGB(20,20,22), Head = Color3.fromRGB(105,105,108),
+    OffTrack = Color3.fromRGB(42,42,45), OffKnob = Color3.fromRGB(189,184,184),
+    White = Color3.fromRGB(255,255,255), colorUpdates = {},
+}
+function TUI.mk(class, props, parent)
+    local obj = Instance.new(class)
+    for k,v in pairs(props) do obj[k] = v end
+    if class == "TextButton" or class == "TextBox" or class == "Frame" then
+        obj:SetAttribute("KamuiSkinned", true)
+    end
+    obj.Parent = parent
+    return obj
+end
+function TUI.stroke(obj, color, thickness, transparency)
+    local st = Instance.new("UIStroke")
+    st.Color, st.Thickness, st.Transparency = color, thickness or 1, transparency or 0
+    st.Parent = obj
+    return st
+end
+function TUI.onColor(fn)
+    table.insert(TUI.colorUpdates, fn)
+    pcall(fn)
+end
+function TUI.refreshTheme()
+    local state = _G.KAMUI_GuiState
+    if type(state) == "table" and type(state.h) == "number"
+        and type(state.s) == "number" and type(state.v) == "number" then
+        local h, sat, val = state.h, state.s, state.v
+        if state.rainbow then
+            h = (state.phase or h) % 1
+            sat, val = math.max(sat, 0.7), math.max(val, 0.85)
+        end
+        local bh, bs, bv = Color3.fromRGB(205,18,20):ToHSV()
+        local function mapped(source)
+            local oh, osat, oval = source:ToHSV()
+            local dh = oh - bh
+            if dh > 0.5 then dh = dh - 1 elseif dh < -0.5 then dh = dh + 1 end
+            return Color3.fromHSV((h + dh) % 1, math.clamp(osat*sat/bs,0,1), math.clamp(oval*val/bv,0,1))
+        end
+        THEME.Red = mapped(Color3.fromRGB(205,18,20))
+        THEME.BrightRed = mapped(Color3.fromRGB(240,30,24))
+        THEME.DarkRed = mapped(Color3.fromRGB(52,8,12))
+    end
+    if TUI.lastRed == THEME.Red and TUI.lastBright == THEME.BrightRed and TUI.lastDark == THEME.DarkRed then return end
+    TUI.lastRed, TUI.lastBright, TUI.lastDark = THEME.Red, THEME.BrightRed, THEME.DarkRed
+    PAL.Red, PAL.Bright, PAL.DarkRed = THEME.Red, THEME.BrightRed, THEME.DarkRed
+    for _,fn in ipairs(TUI.colorUpdates) do pcall(fn) end
+end
+function TUI.logo(parent, pos, size, z)
+    local light, accent = _G.KAMUI_LogoLight, _G.KAMUI_LogoAccent
+    if not (light and accent) then return end
+    TUI.mk("ImageLabel", {Name="LogoLight", Image=light, BackgroundTransparency=1,
+        Position=pos, Size=size, ScaleType=Enum.ScaleType.Fit, ZIndex=z}, parent)
+    local a = TUI.mk("ImageLabel", {Name="LogoAccent", Image=accent, BackgroundTransparency=1,
+        Position=pos, Size=size, ScaleType=Enum.ScaleType.Fit, ZIndex=z+1}, parent)
+    a:SetAttribute("KamuiKeepColor", true)
+    TUI.onColor(function() if a.Parent then a.ImageColor3 = THEME.BrightRed end end)
+end
+-- Match the main GUI's rotating gradient and layered inner/outer glow.
+function TUI.makeBorder(window, radius, windowScale)
+    local gradients, glowStrokes, baseAlpha = {}, {}, {}
+    local sourceSequence = _G.KAMUI_BorderSeq or ColorSequence.new(THEME.Red)
+    local function gradient(stroke)
+        local g = Instance.new("UIGradient")
+        g.Color, g.Parent = sourceSequence, stroke
+        table.insert(gradients, g)
+    end
+    local function layer(parent, offset, thickness, transparency, layerRadius, z)
+        local frame = TUI.mk("Frame", {Name="TwistedGlowLayer", BackgroundTransparency=1,
+            BorderSizePixel=0, Active=false, ZIndex=z, Position=UDim2.fromOffset(offset,offset),
+            Size=UDim2.new(1,-2*offset,1,-2*offset)}, parent)
+        local corner = applyCorner(frame, math.max(layerRadius,2))
+        local st = TUI.stroke(frame, Color3.new(1,1,1), thickness, transparency)
+        st:SetAttribute("KamuiKeepColor", true)
+        gradient(st)
+        table.insert(glowStrokes, {stroke=st, corner=corner, offset=offset})
+        table.insert(baseAlpha, transparency)
+    end
+    local edge = TUI.stroke(window, Color3.new(1,1,1), 1.5, 0.05)
+    edge.Name = "TwistedGradientEdge"; edge:SetAttribute("KamuiKeepColor", true)
+    edge.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; gradient(edge)
+    for k=1,3 do layer(window,k,1.5,0.3+(k-1)*0.15,radius-k,window.ZIndex) end
+    local holder = TUI.mk("Frame", {Name="TwistedOuterGlow", BackgroundTransparency=1,
+        BorderSizePixel=0, Active=false, ClipsDescendants=false,
+        ZIndex=math.max(0,window.ZIndex-1), Visible=false}, gui)
+    local holderScale = Instance.new("UIScale"); holderScale.Parent = holder
+    for k=1,5 do layer(holder,-k,2,0.22+(k-1)*0.14,radius+k,holder.ZIndex) end
+    local corner = window:FindFirstChildOfClass("UICorner")
+    conns[#conns+1] = RunService.RenderStepped:Connect(function()
+        if not window.Parent then holder.Visible=false; return end
+        holder.Visible = window.Visible
+        if not window.Visible then return end
+        holder.AnchorPoint, holder.Position, holder.Size, holder.Rotation = window.AnchorPoint, window.Position, window.Size, window.Rotation
+        holderScale.Scale = windowScale and windowScale.Scale or 1
+        local rounded = corner and corner.CornerRadius.Offset or radius
+        local t = os.clock(); local pulse = 0.5 + 0.5 * math.sin(t*2)
+        local source = _G.KAMUI_BorderGradients and _G.KAMUI_BorderGradients[1]
+        local seq = source and source.Parent and source.Color or ColorSequence.new(THEME.Red)
+        local rotation = source and source.Parent and source.Rotation or ((t*60)%360)
+        for _,g in ipairs(gradients) do g.Color, g.Rotation = seq, rotation end
+        edge.Transparency = 0.05 + 0.1*pulse
+        for i,entry in ipairs(glowStrokes) do
+            entry.stroke.Transparency = math.clamp(baseAlpha[i]-0.12*pulse,0,1)
+            entry.corner.CornerRadius = UDim.new(0,math.max(rounded-entry.offset,2))
+        end
+    end)
+end
+TUI.refreshTheme()
+conns[#conns+1] = RunService.RenderStepped:Connect(function()
+    if gui.Parent then TUI.refreshTheme() end
+end)
+
+
 --// mode helpers (filled in below once the window exists)
 local refreshMode
 local twistBtnRef
@@ -292,6 +427,7 @@ local function makeSwitch(parent, size, position, z)
         BorderSizePixel = 0,
         ZIndex = z + 1,
     }, hit)
+    trackF:SetAttribute("KamuiKeepColor", true)
     applyCorner(trackF, 10)
     local knob = mk("Frame", {
         Name = "Knob",
@@ -305,6 +441,7 @@ local function makeSwitch(parent, size, position, z)
         knob.Position = on and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
         knob.BackgroundColor3 = on and PAL.White or PAL.OffKnob
     end)
+    TUI.onColor(function() paintSwitches() end)
     hit.MouseButton1Click:Connect(function()
         Settings.TouchMode = not Settings.TouchMode
         refreshMode()
@@ -312,7 +449,7 @@ local function makeSwitch(parent, size, position, z)
     return hit
 end
 
-local W, H = 270, 354
+local W, H = 460, 488
 local main = mk("Frame", {
     Name = "Main",
     Size = UDim2.fromOffset(W, H),
@@ -321,24 +458,12 @@ local main = mk("Frame", {
     BackgroundTransparency = 0.06,
     BorderSizePixel = 0,
     Active = true,
-    ClipsDescendants = true,
+    ClipsDescendants = false,
+    ZIndex = 2,
 }, gui)
-applyCorner(main, 16)
-addStroke(main, Color3.fromRGB(40, 40, 42), 1.2, 0)
-addStroke(main, PAL.Red, 1.5, 0.8)
-local bgImage = mk("ImageLabel", {
-    Name = "BackgroundImage",
-    Size = UDim2.new(1, 0, 1, 0),
-    BackgroundTransparency = 1,
-    BorderSizePixel = 0,
-    Image = "rbxassetid://135016327821234",
-    ImageTransparency = 0.86,
-    ScaleType = Enum.ScaleType.Crop,
-    Active = false,
-    Selectable = false,
-    ZIndex = 0,
-}, main)
-applyCorner(bgImage, 16)
+applyCorner(main, 14)
+
+
 --// responsive scale (same idea as the main window): fit small screens, never above 1x
 do
     local vp = gui.AbsoluteSize
@@ -350,79 +475,92 @@ do
     local us = Instance.new("UIScale")
     us.Scale = sc
     us.Parent = main
+    TUI.makeBorder(main, 14, us)
     main.Position = UDim2.new(0.5, -(W / 2) * sc, 0.4, -(H / 2) * sc)
 end
 
---// top bar: dot + title on the left, close button on the right
-local topBar = mk("Frame", {
-    Name = "TopBar",
-    Size = UDim2.new(1, 0, 0, 34),
-    BackgroundTransparency = 1,
-    BorderSizePixel = 0,
-    Active = true,
-    ZIndex = 5,
-}, main)
-local titleDot = mk("Frame", {
-    Name = "TitleDot",
-    Size = UDim2.fromOffset(6, 6),
-    Position = UDim2.new(0, 14, 0.5, -3),
-    BackgroundColor3 = PAL.Red,
-    BorderSizePixel = 0,
-    ZIndex = 6,
-}, topBar)
-applyCorner(titleDot, 3)
-mk("TextLabel", {
-    Name = "Title",
-    Text = "True twisted",
-    Size = UDim2.new(1, -80, 1, 0),
-    Position = UDim2.fromOffset(28, 0),
-    BackgroundTransparency = 1,
-    Font = Enum.Font.GothamMedium,
-    TextSize = 12,
-    TextColor3 = PAL.Text,
-    TextXAlignment = Enum.TextXAlignment.Left,
-    ZIndex = 6,
-}, topBar)
-local closeBtn = mk("TextButton", {
-    Name = "CloseButton",
-    Text = "×",
-    Size = UDim2.fromOffset(24, 24),
-    Position = UDim2.new(1, -34, 0.5, -12),
-    BackgroundColor3 = PAL.Chip,
-    BorderSizePixel = 0,
-    AutoButtonColor = false,
-    Font = Enum.Font.GothamBold,
-    TextSize = 14,
-    TextColor3 = PAL.Muted,
-    ZIndex = 7,
-}, topBar)
-applyCorner(closeBtn, 7)
-addStroke(closeBtn, PAL.Line, 1, 0)
-closeBtn.MouseEnter:Connect(function()
-    TweenSvc:Create(closeBtn, pressInfo, { TextColor3 = PAL.Bright }):Play()
+-- Header follows the main Kamui Client styling.
+local topBar = mk("Frame", {Name="TopBar", Size=UDim2.new(1,0,0,44),
+    BackgroundTransparency=1, BorderSizePixel=0, Active=true, ZIndex=5}, main)
+TUI.logo(topBar, UDim2.fromOffset(13,11), UDim2.fromOffset(22,22), 6)
+local brand=mk("TextLabel", {Name="Brand", Text="Kamui Client", BackgroundTransparency=1,
+    Position=UDim2.fromOffset(39,0), Size=UDim2.fromOffset(91,44), TextSize=12,
+    Font=Enum.Font.GothamBold, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=6}, topBar)
+brand:SetAttribute("KamuiKeepColor",true)
+TUI.onColor(function() brand.TextColor3=PAL.Bright end)
+mk("Frame", {BackgroundColor3=PAL.Line, BorderSizePixel=0, Position=UDim2.fromOffset(137,11),
+    Size=UDim2.fromOffset(1,22),ZIndex=6},topBar)
+mk("TextLabel", {Name="Title",Text="True twisted",BackgroundTransparency=1,
+    Position=UDim2.fromOffset(148,0),Size=UDim2.new(1,-225,1,0),TextSize=12,
+    Font=Enum.Font.Gotham,TextColor3=PAL.Text,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=6},topBar)
+local closeBtn=mk("TextButton", {Name="CloseButton", Text="×", BackgroundTransparency=1,
+    Position=UDim2.new(1,-39,0,8), Size=UDim2.fromOffset(30,28),TextSize=16,
+    Font=Enum.Font.Gotham,TextColor3=PAL.Muted,AutoButtonColor=false,ZIndex=7},topBar)
+local minimize=mk("TextButton", {Name="MinimizeButton",Text="−",BackgroundTransparency=1,
+    Position=UDim2.new(1,-70,0,8),Size=UDim2.fromOffset(30,28),TextSize=17,
+    Font=Enum.Font.Gotham,TextColor3=PAL.Muted,AutoButtonColor=false,ZIndex=7},topBar)
+closeBtn.MouseButton1Click:Connect(function() if _G.KAMUI_TwistedCleanup then _G.KAMUI_TwistedCleanup() end end)
+mk("Frame", {Name="TopDivider",Size=UDim2.new(1,0,0,1),Position=UDim2.fromOffset(0,44),
+    BackgroundColor3=PAL.Div,BorderSizePixel=0,ZIndex=5},main)
+local function heading(text,y)
+    mk("TextLabel", {Text=text, BackgroundTransparency=1,Position=UDim2.fromOffset(17,y),
+        Size=UDim2.new(1,-34,0,15),TextSize=10,Font=Enum.Font.Gotham,
+        TextColor3=PAL.Head,TextXAlignment=Enum.TextXAlignment.Left,ZIndex=4},main)
+end
+heading("TRUE TWISTED",53)
+heading("TWIST SETTINGS",137)
+heading("MODE",337)
+-- Main-script-style PC minimize pill. Mobile settings simply hide back to the compact panel.
+local pill=mk("Frame", {Name="MiniPill",BackgroundColor3=PAL.Panel,BorderSizePixel=0,
+    Size=UDim2.fromOffset(270,36),Visible=false,Active=true,ZIndex=10},gui)
+applyCorner(pill,18)
+local pillScale=Instance.new("UIScale"); pillScale.Parent=pill
+local mainScale=main:FindFirstChildOfClass("UIScale"); pillScale.Scale=mainScale and mainScale.Scale or 1
+TUI.makeBorder(pill,18,pillScale)
+local dot=mk("Frame", {Position=UDim2.new(0,14,0.5,-3),Size=UDim2.fromOffset(7,7),
+    BorderSizePixel=0,ZIndex=11},pill)
+dot:SetAttribute("KamuiKeepColor",true); applyCorner(dot,7)
+mk("TextLabel", {Text="KAMUI",BackgroundTransparency=1,Position=UDim2.fromOffset(29,0),
+    Size=UDim2.fromOffset(53,36),Font=Enum.Font.GothamMedium,TextSize=12,TextColor3=PAL.Text,
+    TextXAlignment=Enum.TextXAlignment.Left,ZIndex=11},pill)
+mk("TextLabel", {Text="True twisted",BackgroundTransparency=1,Position=UDim2.fromOffset(84,0),
+    Size=UDim2.new(1,-150,1,0),Font=Enum.Font.Gotham,TextSize=11,TextColor3=PAL.Muted,
+    TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=11},pill)
+local expand=mk("TextButton", {Text="",AutoButtonColor=false,Position=UDim2.new(1,-62,0.5,-12),
+    Size=UDim2.fromOffset(24,24),BorderSizePixel=0,ZIndex=12},pill)
+expand:SetAttribute("KamuiKeepColor",true); applyCorner(expand,12)
+local sq=mk("Frame", {BackgroundTransparency=1,AnchorPoint=Vector2.new(0.5,0.5),
+    Position=UDim2.fromScale(0.5,0.5),Size=UDim2.fromOffset(9,9),ZIndex=13},expand)
+applyCorner(sq,2); addStroke(sq,PAL.Text,1.5,0)
+local pillClose=mk("TextButton", {Text="×",AutoButtonColor=false,BackgroundTransparency=1,
+    Position=UDim2.new(1,-32,0.5,-12),Size=UDim2.fromOffset(24,24),Font=Enum.Font.GothamMedium,
+    TextSize=16,TextColor3=PAL.Muted,ZIndex=12},pill)
+TUI.onColor(function() dot.BackgroundColor3=PAL.Bright; expand.BackgroundColor3=PAL.DarkRed end)
+minimize.MouseButton1Click:Connect(function()
+    if _G.KAMUI_TwistedMobile then main.Visible=false; return end
+    pill.Position=main.Position; main.Visible=false; pill.Visible=true
 end)
-closeBtn.MouseLeave:Connect(function()
-    TweenSvc:Create(closeBtn, pressInfo, { TextColor3 = PAL.Muted }):Play()
-end)
-closeBtn.MouseButton1Click:Connect(function()
-    if _G.KAMUI_TwistedCleanup then
-        _G.KAMUI_TwistedCleanup()
-    end
-end)
-mk("Frame", {
-    Name = "TopDivider",
-    Size = UDim2.new(1, -24, 0, 1),
-    Position = UDim2.new(0, 12, 0, 34),
-    BackgroundColor3 = PAL.Div,
-    BorderSizePixel = 0,
-    ZIndex = 5,
-}, main)
+expand.MouseButton1Click:Connect(function() main.Position=pill.Position; pill.Visible=false; main.Visible=true end)
+pillClose.MouseButton1Click:Connect(function() if _G.KAMUI_TwistedCleanup then _G.KAMUI_TwistedCleanup() end end)
+do
+    local dragging,start,startPos=false,nil,nil
+    pill.InputBegan:Connect(function(input)
+        if isPress(input) then dragging,start,startPos=true,input.Position,pill.Position end
+    end)
+    conns[#conns+1]=UserInputService.InputEnded:Connect(function(input) if isPress(input) then dragging=false end end)
+    conns[#conns+1]=UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then
+            local d=input.Position-start
+            pill.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y)
+        end
+    end)
+end
 
 --// run pad: tap the pad to run it, tap the key chip to rebind
 local pad = mk("Frame", {
     Name = "RunPad",
-    Size = UDim2.new(1, -24, 0, 52),
-    Position = UDim2.fromOffset(12, 44),
+    Size = UDim2.new(1, -34, 0, 54),
+    Position = UDim2.fromOffset(17, 72),
     BackgroundColor3 = PAL.Panel,
     BorderSizePixel = 0,
     ZIndex = 3,
@@ -438,8 +576,10 @@ local ring = mk("Frame", {
     ZIndex = 4,
 }, pad)
 applyCorner(ring, 15)
-addStroke(ring, Color3.fromRGB(74, 13, 18), 1, 0)
-mk("TextLabel", {
+local ringStroke = addStroke(ring, PAL.DarkRed, 1, 0)
+ringStroke:SetAttribute("KamuiKeepColor",true)
+TUI.onColor(function() ringStroke.Color=PAL.DarkRed end)
+local ringText = mk("TextLabel", {
     Name = "IconFallback",
     Size = UDim2.new(1, 0, 1, 0),
     BackgroundTransparency = 1,
@@ -449,6 +589,8 @@ mk("TextLabel", {
     TextColor3 = PAL.Bright,
     ZIndex = 5,
 }, ring)
+ringText:SetAttribute("KamuiKeepColor",true)
+TUI.onColor(function() ringText.TextColor3=PAL.Bright end)
 mk("TextLabel", {
     Name = "PadLabel",
     Text = "True twisted",
@@ -531,25 +673,28 @@ end)
 local ROW_H = 34
 local card = mk("Frame", {
     Name = "Settings",
-    Size = UDim2.new(1, -24, 0, ROW_H * 7),
-    Position = UDim2.fromOffset(12, 104),
+    Size = UDim2.new(1, -34, 0, ROW_H * 5),
+    Position = UDim2.fromOffset(17, 155),
     BackgroundColor3 = PAL.Panel,
     BorderSizePixel = 0,
     ZIndex = 3,
 }, main)
 applyCorner(card, 10)
 addStroke(card, PAL.Line, 1, 0)
+local modeCard = mk("Frame", {Name="Mode", Size=UDim2.new(1,-34,0,ROW_H*2),
+    Position=UDim2.fromOffset(17,355),BackgroundColor3=PAL.Panel,BorderSizePixel=0,ZIndex=3},main)
+applyCorner(modeCard,10); addStroke(modeCard,PAL.Line,1,0)
 
 local function makeRow(index, label)
     local row = mk("Frame", {
         Name = "Row" .. index,
         Size = UDim2.new(1, 0, 0, ROW_H),
-        Position = UDim2.fromOffset(0, (index - 1) * ROW_H),
+        Position = UDim2.fromOffset(0, ((index <= 5 and index or index - 5) - 1) * ROW_H),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         ZIndex = 4,
-    }, card)
-    if index > 1 then
+    }, index <= 5 and card or modeCard)
+    if index > 1 and index ~= 6 then
         mk("Frame", {
             Name = "Divider",
             Size = UDim2.new(1, -20, 0, 1),
@@ -574,6 +719,9 @@ local function makeRow(index, label)
     return row
 end
 
+local repaintDirection
+local numberBoxes = {}
+
 --// row 1: direction (Right / Left)
 do
     local row = makeRow(1, "Direction")
@@ -591,6 +739,7 @@ do
     local function paint()
         for name, b in pairs(btns) do
             local on = Settings.Direction == name
+            b.BackgroundColor3 = PAL.Red
             b.BackgroundTransparency = on and 0 or 1
             b.TextColor3 = on and PAL.White or PAL.Muted
         end
@@ -608,6 +757,7 @@ do
             TextSize = 11,
             ZIndex = 6,
         }, holder)
+        b:SetAttribute("KamuiKeepColor",true)
         applyCorner(b, 5)
         btns[name] = b
         b.MouseButton1Click:Connect(function()
@@ -615,7 +765,9 @@ do
             paint()
         end)
     end
+    repaintDirection = paint
     paint()
+    TUI.onColor(paint)
 end
 
 --// rows 2-5: number boxes
@@ -635,6 +787,7 @@ local function numberRow(index, label, key, minV, maxV)
         ClearTextOnFocus = false,
         ZIndex = 5,
     }, row)
+    numberBoxes[key] = box
     applyCorner(box, 6)
     addStroke(box, PAL.Line, 1, 0)
     box.FocusLost:Connect(function()
@@ -676,8 +829,46 @@ refreshMode = function()
     end
 end
 
---// key capture + keybind
+-- Reset in place so the shared saved-settings table and all controls stay in sync.
 local waitingForKey = false
+local function resetDefaults()
+    local focused = UserInputService:GetFocusedTextBox()
+    if focused and focused:IsDescendantOf(gui) then
+        pcall(function() focused:ReleaseFocus() end)
+    end
+    waitingForKey = false
+    for key, value in pairs(DefaultSettings) do Settings[key] = value end
+    for key, box in pairs(numberBoxes) do box.Text = fmt(Settings[key]) end
+    keyButton.Text = keyName(Settings.Key)
+    if repaintDirection then repaintDirection() end
+    refreshMode()
+end
+
+local function makeResetButton(parent, size, position, z)
+    local button = mk("TextButton", {
+        Name = "ResetToDefault", Text = "Reset to default", Size = size, Position = position,
+        BackgroundColor3 = PAL.Chip, BorderSizePixel = 0, AutoButtonColor = false,
+        Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = PAL.Text, ZIndex = z,
+    }, parent)
+    applyCorner(button, 7)
+    local stroke = addStroke(button, PAL.Line, 1, 0)
+    stroke:SetAttribute("KamuiKeepColor", true)
+    button.MouseButton1Down:Connect(function()
+        button.BackgroundColor3 = PAL.Panel
+        stroke.Color = PAL.Red
+    end)
+    local function release()
+        button.BackgroundColor3 = PAL.Chip
+        stroke.Color = PAL.Line
+    end
+    button.MouseButton1Up:Connect(release)
+    button.MouseLeave:Connect(release)
+    button.MouseButton1Click:Connect(function() release(); resetDefaults() end)
+    return button
+end
+makeResetButton(main, UDim2.new(1,-34,0,32), UDim2.fromOffset(17,433), 5)
+
+--// key capture + keybind
 keyButton.MouseButton1Click:Connect(function()
     waitingForKey = true
     keyButton.Text = "..."
@@ -842,7 +1033,7 @@ if _G.KAMUI_TwistedMobile then
     twistBtn.Visible = Settings.TouchMode
     local twistStroke = addStroke(twistBtn, PAL.Line, 1, 0)
     strokes[#strokes + 1] = twistStroke
-    mk("TextLabel", {
+    local twistIcon = mk("TextLabel", {
         Name = "Icon",
         Size = UDim2.new(1, 0, 0, 22),
         Position = UDim2.fromOffset(0, 7),
@@ -873,6 +1064,8 @@ if _G.KAMUI_TwistedMobile then
         ZIndex = 11,
     }, twistBtn)
     applyCorner(accent, 2)
+    twistIcon:SetAttribute("KamuiKeepColor",true); accent:SetAttribute("KamuiKeepColor",true)
+    TUI.onColor(function() twistIcon.TextColor3=PAL.Bright; accent.BackgroundColor3=PAL.Red end)
     movable(twistBtn, twistBtn, function()
         task.spawn(executeTrueTwisted)
         twistBtn.BackgroundColor3 = PAL.DarkRed
@@ -883,7 +1076,7 @@ if _G.KAMUI_TwistedMobile then
 
     local panel = mk("Frame", {
         Name = "TwistMobilePanel",
-        Size = UDim2.fromOffset(176, 98),
+        Size = UDim2.fromOffset(248, 146),
         Position = UDim2.new(0, 80, 0.28, 0),
         BackgroundColor3 = PAL.Panel,
         BackgroundTransparency = 0.05,
@@ -891,11 +1084,12 @@ if _G.KAMUI_TwistedMobile then
         ZIndex = 10,
     }, gui)
     applyCorner(panel, 10)
+    TUI.makeBorder(panel, 10, nil)
     local panelStroke = addStroke(panel, PAL.Line, 1, 0)
     mk("Frame", {
         Name = "Divider",
         Size = UDim2.new(1, -20, 0, 1),
-        Position = UDim2.new(0, 10, 0, 30),
+        Position = UDim2.new(0, 10, 0, 36),
         BackgroundColor3 = PAL.Div,
         BorderSizePixel = 0,
         ZIndex = 11,
@@ -918,28 +1112,32 @@ if _G.KAMUI_TwistedMobile then
     end
     local header = mk("Frame", {
         Name = "Header",
-        Size = UDim2.new(1, -90, 0, 30),
+        Size = UDim2.new(1, -100, 0, 36),
         BackgroundTransparency = 1,
         BorderSizePixel = 0,
         ZIndex = 11,
     }, panel)
+    TUI.logo(header, UDim2.fromOffset(9,9), UDim2.fromOffset(18,18), 12)
     mk("TextLabel", {
         Name = "Title",
-        Size = UDim2.new(1, -12, 1, 0),
-        Position = UDim2.new(0, 12, 0, 0),
+        Size = UDim2.new(1, -32, 1, 0),
+        Position = UDim2.new(0, 32, 0, 0),
         BackgroundTransparency = 1,
         Font = Enum.Font.GothamMedium,
         TextSize = 11,
-        TextColor3 = PAL.Head,
+        TextColor3 = PAL.Text,
         TextXAlignment = Enum.TextXAlignment.Left,
-        Text = "TRUE TWISTED",
+        Text = "True twisted",
         ZIndex = 12,
     }, header)
     movable(header, panel, nil)
-    local moveChip, moveStroke = chip("Move", 44, -80)
-    local closeChip = chip("x", 24, -32)
-    moveChip.MouseButton1Click:Connect(function()
-        editing = not editing
+    local moveChip, moveStroke = chip("Move", 42, -96)
+    local miniChip = chip("−", 22, -50)
+    local closeChip = chip("×", 22, -26)
+    moveChip:SetAttribute("KamuiKeepColor",true); moveStroke:SetAttribute("KamuiKeepColor",true)
+    for _,st in ipairs(strokes) do st:SetAttribute("KamuiKeepColor",true) end
+    panelStroke:SetAttribute("KamuiKeepColor",true)
+    local function paintEdit()
         moveChip.Text = editing and "Done" or "Move"
         moveChip.BackgroundColor3 = editing and PAL.Red or PAL.Chip
         moveChip.TextColor3 = editing and PAL.White or PAL.Muted
@@ -948,7 +1146,9 @@ if _G.KAMUI_TwistedMobile then
             st.Color = editing and PAL.Red or PAL.Line
         end
         panelStroke.Color = editing and PAL.Red or PAL.Line
-    end)
+    end
+    TUI.onColor(paintEdit)
+    moveChip.MouseButton1Click:Connect(function() editing=not editing; paintEdit() end)
     closeChip.MouseButton1Click:Connect(function()
         if _G.KAMUI_TwistedCleanup then
             _G.KAMUI_TwistedCleanup()
@@ -959,7 +1159,7 @@ if _G.KAMUI_TwistedMobile then
     mk("TextLabel", {
         Name = "SettingsLabel",
         Size = UDim2.new(0, 110, 0, 34),
-        Position = UDim2.new(0, 12, 0, 31),
+        Position = UDim2.new(0, 12, 0, 37),
         BackgroundTransparency = 1,
         Font = Enum.Font.GothamMedium,
         TextSize = 12,
@@ -971,7 +1171,7 @@ if _G.KAMUI_TwistedMobile then
     local showBtn = mk("TextButton", {
         Name = "ShowSettings",
         Size = UDim2.fromOffset(56, 24),
-        Position = UDim2.new(1, -68, 0, 36),
+        Position = UDim2.new(1, -68, 0, 42),
         BackgroundColor3 = PAL.Chip,
         BorderSizePixel = 0,
         AutoButtonColor = false,
@@ -987,12 +1187,15 @@ if _G.KAMUI_TwistedMobile then
         main.Visible = not main.Visible
         showBtn.Text = main.Visible and "Hide" or "Open"
     end)
+    conns[#conns+1] = main:GetPropertyChangedSignal("Visible"):Connect(function()
+        showBtn.Text = main.Visible and "Hide" or "Open"
+    end)
 
     --// touch mode row: manual (tap the button) or auto after the 4th M1
     mk("Frame", {
         Name = "Divider2",
         Size = UDim2.new(1, -20, 0, 1),
-        Position = UDim2.new(0, 10, 0, 65),
+        Position = UDim2.new(0, 10, 0, 72),
         BackgroundColor3 = PAL.Div,
         BorderSizePixel = 0,
         ZIndex = 11,
@@ -1000,7 +1203,7 @@ if _G.KAMUI_TwistedMobile then
     mk("TextLabel", {
         Name = "TouchLabel",
         Size = UDim2.new(0, 110, 0, 32),
-        Position = UDim2.new(0, 12, 0, 66),
+        Position = UDim2.new(0, 12, 0, 73),
         BackgroundTransparency = 1,
         Font = Enum.Font.GothamMedium,
         TextSize = 12,
@@ -1009,7 +1212,37 @@ if _G.KAMUI_TwistedMobile then
         Text = "Touch mode",
         ZIndex = 12,
     }, panel)
-    makeSwitch(panel, UDim2.fromOffset(70, 32), UDim2.new(1, -70, 0, 66), 12)
+    makeSwitch(panel, UDim2.fromOffset(70, 32), UDim2.new(1, -70, 0, 73), 12)
+    makeResetButton(panel, UDim2.new(1,-20,0,29), UDim2.fromOffset(10,110), 12)
+
+    -- Compact circular restore control; minimizing does not hide the action button.
+    local mini=mk("TextButton", {Name="TwistMobileMini",Text="",Size=UDim2.fromOffset(48,48),
+        BackgroundColor3=PAL.Panel,BorderSizePixel=0,AutoButtonColor=false,Visible=false,ZIndex=10},gui)
+    applyCorner(mini,24); TUI.makeBorder(mini,24,nil)
+    TUI.logo(mini,UDim2.fromOffset(13,6),UDim2.fromOffset(22,22),11)
+    mk("TextLabel", {Text="−",Size=UDim2.new(1,0,0,15),Position=UDim2.fromOffset(0,28),
+        BackgroundTransparency=1,Font=Enum.Font.Gotham,TextSize=14,TextColor3=PAL.Text,ZIndex=12},mini)
+    local miniDragging,miniStart,miniPos,miniMoved,miniInput=false,nil,nil,false,nil
+    mini.InputBegan:Connect(function(input)
+        if isPress(input) then miniDragging=true; miniStart=input.Position; miniPos=mini.Position; miniMoved=false; miniInput=input end
+    end)
+    conns[#conns+1]=UserInputService.InputChanged:Connect(function(input)
+        if miniDragging and ((miniInput.UserInputType==Enum.UserInputType.MouseButton1 and input.UserInputType==Enum.UserInputType.MouseMovement) or input==miniInput) then
+            local d=input.Position-miniStart
+            if d.Magnitude>3 then miniMoved=true end
+            mini.Position=UDim2.new(miniPos.X.Scale,miniPos.X.Offset+d.X,miniPos.Y.Scale,miniPos.Y.Offset+d.Y)
+        end
+    end)
+    conns[#conns+1]=UserInputService.InputEnded:Connect(function(input)
+        if miniDragging and (input==miniInput or (miniInput.UserInputType==Enum.UserInputType.MouseButton1 and input.UserInputType==Enum.UserInputType.MouseButton1)) then
+            miniDragging=false
+            if not miniMoved and mini.Visible then panel.Position=mini.Position; mini.Visible=false; panel.Visible=true end
+        end
+    end)
+    miniChip.MouseButton1Click:Connect(function()
+        if editing then editing=false; paintEdit() end
+        main.Visible=false; mini.Position=panel.Position; panel.Visible=false; mini.Visible=true
+    end)
 end
 refreshMode()
 print("KAMUI True twisted loaded")
