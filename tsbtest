@@ -1,0 +1,1251 @@
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local CoreGui = game:GetService("CoreGui")
+local localPlayer = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local DataPing = Stats.Network.ServerStatsItem["Data Ping"]
+local Settings = {
+    TrueM1Reset = { Enabled = true, Key = Enum.KeyCode.R, AutoRotate = true, },
+    EmoteDash = { Enabled = true, Key = Enum.KeyCode.C, Delay = 0.032, Type = "Right", },
+}
+local currentCharacter
+local currentHumanoid
+local currentRootPart
+local currentCommunicate
+local currentAnimator
+local keySpace = Enum.KeyCode.Space
+local keyQ = Enum.KeyCode.Q
+local keyW = Enum.KeyCode.W
+local keyS = Enum.KeyCode.S
+local keyD = Enum.KeyCode.D
+local keyA = Enum.KeyCode.A
+local animId2 = "10480793962"
+local animId3 = "10480796021"
+local leftclick = {
+    holdM1 = { Goal = "LeftClick" },
+    releaseM1 = { Goal = "LeftClickRelease" },
+    backDash = { Dash = Enum.KeyCode.S, Key = Enum.KeyCode.Q, Goal = "KeyPress" },
+    frontDash = { Dash = Enum.KeyCode.W, Key = Enum.KeyCode.Q, Goal = "KeyPress", },
+}
+local dashBusy = false
+--// Virtual keys we press are remembered, so a macro that gets cut short (death,
+--// respawn, error) can never leave a key stuck down. Releases only what is held.
+local heldKeys = {}
+local conns = {}
+local mobileCancel = function() end
+local function sendKeyEvent(key)
+    heldKeys[key] = true
+    VirtualInputManager:SendKeyEvent(true, key, false, game)
+end
+local function tapKey(key)
+    heldKeys[key] = nil
+    VirtualInputManager:SendKeyEvent(false, key, false, game)
+end
+local function releaseHeldKeys()
+    for key in pairs(heldKeys) do
+        heldKeys[key] = nil
+        pcall(function()
+            VirtualInputManager:SendKeyEvent(false, key, false, game)
+        end)
+    end
+end
+local function setupCharacter(character)
+    mobileCancel()
+    releaseHeldKeys()
+    camera = workspace.CurrentCamera
+    currentCharacter = character
+    currentHumanoid = character:WaitForChild("Humanoid", 10)
+    currentRootPart = character:WaitForChild("HumanoidRootPart", 10)
+    currentCommunicate = character:WaitForChild("Communicate", 10)
+    currentAnimator = currentHumanoid and currentHumanoid:WaitForChild("Animator", 10)
+end
+if localPlayer.Character then
+    setupCharacter(localPlayer.Character)
+end
+conns[#conns + 1] = localPlayer.CharacterAdded:Connect(setupCharacter)
+local function tapKeyWithDelay(key)
+    sendKeyEvent(key)
+    task.wait()
+    tapKey(key)
+end
+local function performFrontDash()
+    if not currentCommunicate or dashBusy then
+        return
+    end
+    currentCommunicate:FireServer(leftclick.frontDash)
+    if not workspace:GetAttribute("NoDashCooldown") then
+        dashBusy = true
+        task.delay(5, function()
+            dashBusy = false
+        end)
+    end
+end
+local function stopAnimation(animationId)
+    if not currentAnimator then
+        return
+    end
+    for _, track in ipairs(currentAnimator:GetPlayingAnimationTracks()) do
+        if track.Animation and track.Animation.AnimationId == "rbxassetid://" .. tostring(animationId) then
+            track:Stop()
+        end
+    end
+end
+local function makeRotCFrame(position, yaw, pitch)
+    local currentCamera = workspace.CurrentCamera
+    if currentCamera then
+        currentCamera.CFrame = CFrame.new(position) * CFrame.Angles(0, yaw, 0) * CFrame.Angles(pitch, 0, 0)
+    end
+end
+local function computeLockAngles(angle, targetPosition, useCharacter, useCamera, _, smoothing)
+    if not useCharacter and not useCamera and not angle then
+        useCharacter = true
+    end
+    smoothing = smoothing or 1
+    if not currentRootPart or not currentHumanoid then
+        return
+    end
+    local cameraCFrame = camera.CFrame
+    local cameraPosition = cameraCFrame.Position
+    local rotateCharacter = useCharacter or useCamera
+    local rotateCamera = not useCharacter or useCamera
+    local position = cameraPosition
+    if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCenter then
+        position = position - cameraCFrame.RightVector * 1.75
+    end
+    local pitch = math.asin(cameraCFrame.LookVector.Y)
+    local baseYaw
+    local targetYaw
+    if targetPosition then
+        local direction
+        if rotateCharacter then
+            direction = (targetPosition - currentRootPart.Position).Unit
+            baseYaw = math.atan2(-currentRootPart.CFrame.LookVector.X, -currentRootPart.CFrame.LookVector.Z)
+        else
+            direction = (targetPosition - position).Unit
+            baseYaw = math.atan2(-cameraCFrame.LookVector.X, -cameraCFrame.LookVector.Z)
+        end
+        targetYaw = math.atan2(-direction.X, -direction.Z)
+    else
+        local lookVector = rotateCharacter and currentRootPart.CFrame.LookVector or cameraCFrame.LookVector
+        baseYaw = math.atan2(-lookVector.X, -lookVector.Z)
+        targetYaw = baseYaw + math.rad(angle)
+    end
+    local delta = math.atan2(math.sin(targetYaw - baseYaw), math.cos(targetYaw - baseYaw))
+    local finalYaw = baseYaw + delta * smoothing
+    if rotateCharacter then
+        currentHumanoid.AutoRotate = false
+        currentRootPart.CFrame = CFrame.new(currentRootPart.Position) * CFrame.Angles(0, finalYaw, 0)
+        if not rotateCamera then
+            return
+        end
+    end
+    makeRotCFrame(cameraPosition, finalYaw, pitch)
+end
+local function pingScaledDelay()
+    local ok, ping = pcall(function()
+        return DataPing:GetValue()
+    end)
+    if not ok or type(ping) ~= "number" then
+        return 50
+    end
+    return ping
+end
+local function pingCompensatedRange(value)
+    local adjusted = value + (pingScaledDelay() - 50) * -0.0003846
+    return adjusted, value - adjusted
+end
+local function autoCounterClicks()
+    if not currentCommunicate then
+        return
+    end
+    task.wait()
+    currentCommunicate:FireServer(leftclick.holdM1)
+    task.wait()
+    currentCommunicate:FireServer(leftclick.releaseM1)
+    task.wait()
+end
+local function executeTrueM1Reset()
+    if not Settings.TrueM1Reset.Enabled then
+        return
+    end
+    if not currentCharacter or not currentHumanoid or not currentRootPart or not currentCommunicate then
+        return
+    end
+    local delay = pingCompensatedRange(0.28)
+    local startChar = currentCharacter
+    autoCounterClicks()
+    task.wait(delay)
+    if currentCharacter ~= startChar or not currentHumanoid or currentHumanoid.Health <= 0 then
+        return
+    end
+    if Settings.TrueM1Reset.AutoRotate then
+        computeLockAngles(-90)
+    end
+    sendKeyEvent(keyD)
+    tapKeyWithDelay(keyQ)
+    task.wait(delay)
+    tapKey(keyD)
+    if Settings.TrueM1Reset.AutoRotate then
+        computeLockAngles(90)
+    end
+    performFrontDash()
+end
+local function executeEmoteDash()
+    if not Settings.EmoteDash.Enabled then
+        return
+    end
+    if not currentCharacter or not currentHumanoid or not currentRootPart then
+        return
+    end
+    tapKey(keyW)
+    tapKey(keyS)
+    if Settings.EmoteDash.Type == "Straight" then
+        computeLockAngles(90)
+    end
+    if Settings.EmoteDash.Type == "Straight" or Settings.EmoteDash.Type == "Right" then
+        sendKeyEvent(keyD)
+    elseif Settings.EmoteDash.Type == "Left" then
+        sendKeyEvent(keyA)
+    end
+    currentHumanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    task.wait(0.005)
+    tapKeyWithDelay(keyQ)
+    task.wait(Settings.EmoteDash.Delay)
+    local dodgeVelocity = currentRootPart:FindFirstChild("dodgevelocity")
+    if dodgeVelocity then
+        dodgeVelocity:Destroy()
+        stopAnimation(animId2)
+        stopAnimation(animId3)
+    end
+    tapKey(keyD)
+    tapKey(keyA)
+    if Settings.EmoteDash.Type == "Straight" then
+        computeLockAngles(-90)
+    end
+end
+-- Mobile-only input path: use the game's existing DashButton rather than
+-- virtual keyboard events, so activating a macro does not switch away from touch.
+local mobileOp = nil
+local function mobileMessage(message)
+    warn("[KAMUI mobile] " .. tostring(message))
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title="Kamui mobile", Text=tostring(message), Duration=5,
+        })
+    end)
+end
+local function gameButtonSignal(button, signalName)
+    if not button or not button.Parent then return false, "Game button disappeared" end
+    local ok, signal = pcall(function() return button[signalName] end)
+    if not ok or not signal then return false, "Game button signal unavailable" end
+    local connections
+    if type(getconnections) == "function" then
+        local got, result = pcall(getconnections, signal)
+        if got and type(result) == "table" then
+            connections = result
+            local count = 0
+            for _,c in ipairs(result) do if c.Enabled ~= false then count = count + 1 end end
+            if count == 0 then return false, "No active " .. signalName .. " handler" end
+        end
+    end
+    local pos,size=button.AbsolutePosition,button.AbsoluteSize
+    local x,y=pos.X+size.X/2,pos.Y+size.Y/2
+    if type(firesignal) == "function" then
+        local fired,err=pcall(firesignal,signal,x,y)
+        if fired then return true end
+        if not connections then return false,tostring(err) end
+    end
+    if connections then
+        local fired,reason=false,"Game button handler could not be fired"
+        for _,c in ipairs(connections) do
+            if c.Enabled ~= false then
+                local worked,err=pcall(function() c:Fire(x,y) end)
+                if worked then fired=true else reason=tostring(err) end
+            end
+        end
+        return fired,reason
+    end
+    return false,"Executor cannot fire game button handlers"
+end
+local function stopMobileOperation(op)
+    if not op or op.stopped then return end
+    op.stopped = true
+    if op.binding then pcall(function() RunService:UnbindFromRenderStep(op.binding) end) end
+    if op.controller then
+        pcall(function()
+            if op.controller.moveVector == op.inputVector then op.controller.moveVector = op.originalMove end
+        end)
+    end
+    if op.dashHeld then
+        op.dashHeld = false
+        pcall(function() gameButtonSignal(op.button,"MouseButton1Up") end)
+    end
+    if op.punchHeld then
+        op.punchHeld = false
+        pcall(function() gameButtonSignal(op.punchButton,"MouseButton1Up") end)
+    end
+    if mobileOp == op then mobileOp = nil end
+end
+mobileCancel = function() stopMobileOperation(mobileOp) end
+local function newMobileOperation()
+    if mobileOp then return nil,"A macro is already running" end
+    local char=currentCharacter
+    local hum=currentHumanoid
+    local root=currentRootPart
+    if not char or localPlayer.Character ~= char or not hum or hum.Health <= 0 or not root or not root.Parent then
+        return nil,"Character not ready"
+    end
+    local pg=localPlayer:FindFirstChildOfClass("PlayerGui")
+    local touch=pg and pg:FindFirstChild("TouchGui")
+    local controls=touch and touch:FindFirstChild("TouchControlFrame")
+    local jump=controls and controls:FindFirstChild("JumpButton")
+    local button=jump and jump:FindFirstChild("DashButton")
+    if not button or not button:IsA("GuiButton") then return nil,"Game dash button not found" end
+    if type(firesignal) ~= "function" and type(getconnections) ~= "function" then
+        return nil,"Executor cannot fire game button handlers"
+    end
+    local punch=jump and jump:FindFirstChild("PunchButton")
+    local op={character=char,humanoid=hum,root=root,button=button,punchButton=punch,stopped=false,
+        binding="KAMUI_M1MobileDash_" .. tostring(math.floor(os.clock()*1000000))}
+    mobileOp=op
+    return op
+end
+local function mobileValid(op)
+    return op and mobileOp==op and not op.stopped and localPlayer.Character==op.character
+        and op.root.Parent and op.humanoid.Parent and op.humanoid.Health>0
+end
+local function prepareMobileSideDash(op, right)
+    if not mobileValid(op) then return false,"Character changed" end
+    op.inputVector=Vector3.new(right and 1 or -1,0,0)
+    pcall(function()
+        local ps=localPlayer:FindFirstChild("PlayerScripts")
+        local module=ps and ps:FindFirstChild("PlayerModule")
+        local controls=module and require(module):GetControls()
+        local active=controls and controls.activeController
+        if active and typeof(active.moveVector)=="Vector3" then
+            op.controller,op.originalMove=active,active.moveVector
+        end
+    end)
+    local prepared=false
+    local bound,err=pcall(function()
+        RunService:BindToRenderStep(op.binding,Enum.RenderPriority.Character.Value+1,function()
+            if not mobileValid(op) then return end
+            if op.controller then pcall(function() op.controller.moveVector=op.inputVector end) end
+            local cam=workspace.CurrentCamera
+            if not cam then return end
+            local side=cam.CFrame.RightVector
+            local flat=Vector3.new(side.X,0,side.Z)
+            if flat.Magnitude>0.001 then
+                op.humanoid:Move(flat.Unit*(right and 1 or -1),false)
+                prepared=true
+            end
+        end)
+    end)
+    if not bound then return false,"Could not prepare touch movement: " .. tostring(err) end
+    task.wait(0.08)
+    if not mobileValid(op) then return false,"Character changed" end
+    if not prepared then return false,"Could not prepare side direction" end
+    return true
+end
+local function startMobileDash(op)
+    if not mobileValid(op) then return false,"Character changed" end
+    local ok,err=gameButtonSignal(op.button,"MouseButton1Down")
+    if not ok then return false,err end
+    op.dashHeld=true
+    task.delay(0.06,function()
+        if op.dashHeld then
+            op.dashHeld=false
+            pcall(function() gameButtonSignal(op.button,"MouseButton1Up") end)
+        end
+    end)
+    return true
+end
+local function executeMobileM1Reset()
+    if not Settings.TrueM1Reset.Enabled or not currentCommunicate then return end
+    local op,reason=newMobileOperation()
+    if not op then mobileMessage(reason); return end
+    local rotated=false
+    local ok,err=pcall(function()
+        local delay=math.max(0,pingCompensatedRange(0.28))
+        -- Use the game's real touch M1 press/release handlers, matching the
+        -- original three-frame click sequence without virtual mouse input.
+        if not op.punchButton or not op.punchButton:IsA("GuiButton") then
+            error("Game M1 button not found")
+        end
+        task.wait()
+        if not mobileValid(op) then return end
+        local m1Down,whyDown=gameButtonSignal(op.punchButton,"MouseButton1Down")
+        if not m1Down then error("M1 press: " .. tostring(whyDown)) end
+        op.punchHeld=true
+        task.wait()
+        if not mobileValid(op) then return end
+        local m1Up,whyUp=gameButtonSignal(op.punchButton,"MouseButton1Up")
+        if not m1Up then error("M1 release: " .. tostring(whyUp)) end
+        op.punchHeld=false
+        task.wait()
+        if not mobileValid(op) then return end
+        -- Prepare movement during the existing delay rather than adding 0.08s to it.
+        if delay > 0.08 then task.wait(delay-0.08) end
+        if not mobileValid(op) then return end
+        if Settings.TrueM1Reset.AutoRotate then computeLockAngles(-90); rotated=true end
+        local ready,why=prepareMobileSideDash(op,true)
+        if not ready then error(why) end
+        local fired,whyDash=startMobileDash(op)
+        if not fired then error(whyDash) end
+        task.wait(delay)
+        if not mobileValid(op) then return end
+        stopMobileOperation(op)
+        if rotated then computeLockAngles(90); rotated=false end
+        performFrontDash()
+    end)
+    if rotated and mobileValid(op) then pcall(function() computeLockAngles(90) end) end
+    stopMobileOperation(op)
+    if not ok then mobileMessage("M1 reset stopped: " .. tostring(err)) end
+end
+local function executeMobileEmoteDash()
+    if not Settings.EmoteDash.Enabled then return end
+    local op,reason=newMobileOperation()
+    if not op then mobileMessage(reason); return end
+    local rotated=false
+    local ok,err=pcall(function()
+        if Settings.EmoteDash.Type=="Straight" then computeLockAngles(90); rotated=true end
+        local ready,why=prepareMobileSideDash(op,Settings.EmoteDash.Type~="Left")
+        if not ready then error(why) end
+        op.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        task.wait(0.005)
+        if not mobileValid(op) then return end
+        local fired,whyDash=startMobileDash(op)
+        if not fired then error(whyDash) end
+        task.wait(Settings.EmoteDash.Delay)
+        if not mobileValid(op) then return end
+        local dodgeVelocity=op.root:FindFirstChild("dodgevelocity")
+        if dodgeVelocity then
+            dodgeVelocity:Destroy(); stopAnimation(animId2); stopAnimation(animId3)
+        end
+        stopMobileOperation(op)
+        if rotated then computeLockAngles(-90); rotated=false end
+    end)
+    if rotated and mobileValid(op) then pcall(function() computeLockAngles(-90) end) end
+    stopMobileOperation(op)
+    if not ok then mobileMessage("Emote dash stopped: " .. tostring(err)) end
+end
+
+do
+    local rawM1Reset, rawEmoteDash = executeTrueM1Reset, executeEmoteDash
+    executeTrueM1Reset = function()
+        local action = _G.KAMUI_M1Mobile and executeMobileM1Reset or rawM1Reset
+        local ok, err = pcall(action)
+        if not ok then
+            releaseHeldKeys()
+            error(err, 0)
+        end
+    end
+    executeEmoteDash = function()
+        local action = _G.KAMUI_M1Mobile and executeMobileEmoteDash or rawEmoteDash
+        local ok, err = pcall(action)
+        if not ok then
+            releaseHeldKeys()
+            error(err, 0)
+        end
+    end
+end
+if _G.KAMUI_M1Cleanup then
+    pcall(_G.KAMUI_M1Cleanup)
+end
+local oldGui = CoreGui:FindFirstChild("KAMUI_MacroOnly")
+if oldGui then
+    oldGui:Destroy()
+end
+local gui = Instance.new("ScreenGui")
+gui.Name = "KAMUI_MacroOnly"
+gui.ResetOnSpawn = false
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.Parent = CoreGui
+_G.KAMUI_M1Cleanup = function()
+    mobileCancel()
+    releaseHeldKeys()
+    for _, c in ipairs(conns) do
+        pcall(function()
+            c:Disconnect()
+        end)
+    end
+    table.clear(conns)
+    if gui then
+        gui:Destroy()
+    end
+end
+local function applyCorner(obj, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius or 8)
+    c.Parent = obj
+    return c
+end
+local function addStroke(obj, color, thickness, transparency)
+    local s = Instance.new("UIStroke")
+    s.Color = color
+    s.Thickness = thickness or 1
+    s.Transparency = transparency or 0
+    s.Parent = obj
+    return s
+end
+-- Shared Kamui color and border styling, without changing the main GUI registry.
+local THEME = {
+    Background = Color3.fromRGB(6,6,7), BackgroundLight = Color3.fromRGB(13,13,14),
+    BackgroundMedium = Color3.fromRGB(20,20,22), Red = Color3.fromRGB(205,18,20),
+    BrightRed = Color3.fromRGB(240,30,24), DarkRed = Color3.fromRGB(52,8,12),
+    Text = Color3.fromRGB(240,236,236), MutedText = Color3.fromRGB(150,145,146),
+}
+local MUI = {
+    Line = Color3.fromRGB(36,36,38), Div = Color3.fromRGB(26,26,28),
+    Chip = Color3.fromRGB(20,20,22), Head = Color3.fromRGB(105,105,108),
+    OffTrack = Color3.fromRGB(42,42,45), OffKnob = Color3.fromRGB(189,184,184),
+    White = Color3.fromRGB(255,255,255), colorUpdates = {},
+}
+function MUI.mk(class, props, parent)
+    local obj = Instance.new(class)
+    for k,v in pairs(props) do obj[k] = v end
+    if class == "TextButton" or class == "TextBox" or class == "Frame" then
+        obj:SetAttribute("KamuiSkinned", true)
+    end
+    obj.Parent = parent
+    return obj
+end
+function MUI.stroke(obj, color, thickness, transparency)
+    local st = Instance.new("UIStroke")
+    st.Color, st.Thickness, st.Transparency = color, thickness or 1, transparency or 0
+    st.Parent = obj
+    return st
+end
+function MUI.onColor(fn)
+    table.insert(MUI.colorUpdates, fn)
+    pcall(fn)
+end
+function MUI.refreshTheme()
+    local state = _G.KAMUI_GuiState
+    if type(state) == "table" and type(state.h) == "number"
+        and type(state.s) == "number" and type(state.v) == "number" then
+        local h, sat, val = state.h, state.s, state.v
+        if state.rainbow then
+            h = (state.phase or h) % 1
+            sat, val = math.max(sat, 0.7), math.max(val, 0.85)
+        end
+        local bh, bs, bv = Color3.fromRGB(205,18,20):ToHSV()
+        local function mapped(source)
+            local oh, osat, oval = source:ToHSV()
+            local dh = oh - bh
+            if dh > 0.5 then dh = dh - 1 elseif dh < -0.5 then dh = dh + 1 end
+            return Color3.fromHSV((h + dh) % 1, math.clamp(osat*sat/bs,0,1), math.clamp(oval*val/bv,0,1))
+        end
+        THEME.Red = mapped(Color3.fromRGB(205,18,20))
+        THEME.BrightRed = mapped(Color3.fromRGB(240,30,24))
+        THEME.DarkRed = mapped(Color3.fromRGB(52,8,12))
+    end
+    if MUI.lastRed == THEME.Red and MUI.lastBright == THEME.BrightRed and MUI.lastDark == THEME.DarkRed then return end
+    MUI.lastRed, MUI.lastBright, MUI.lastDark = THEME.Red, THEME.BrightRed, THEME.DarkRed
+    for _,fn in ipairs(MUI.colorUpdates) do pcall(fn) end
+end
+function MUI.logo(parent, pos, size, z)
+    local light, accent = _G.KAMUI_LogoLight, _G.KAMUI_LogoAccent
+    if not (light and accent) then return end
+    MUI.mk("ImageLabel", {Name="LogoLight", Image=light, BackgroundTransparency=1,
+        Position=pos, Size=size, ScaleType=Enum.ScaleType.Fit, ZIndex=z}, parent)
+    local a = MUI.mk("ImageLabel", {Name="LogoAccent", Image=accent, BackgroundTransparency=1,
+        Position=pos, Size=size, ScaleType=Enum.ScaleType.Fit, ZIndex=z+1}, parent)
+    a:SetAttribute("KamuiKeepColor", true)
+    MUI.onColor(function() if a.Parent then a.ImageColor3 = THEME.BrightRed end end)
+end
+-- Match the main GUI's rotating gradient and layered inner/outer glow.
+function MUI.makeBorder(window, radius, windowScale)
+    local gradients, glowStrokes, baseAlpha = {}, {}, {}
+    local sourceSequence = _G.KAMUI_BorderSeq or ColorSequence.new(THEME.Red)
+    local function gradient(stroke)
+        local g = Instance.new("UIGradient")
+        g.Color, g.Parent = sourceSequence, stroke
+        table.insert(gradients, g)
+    end
+    local function layer(parent, offset, thickness, transparency, layerRadius, z)
+        local frame = MUI.mk("Frame", {Name="M1GlowLayer", BackgroundTransparency=1,
+            BorderSizePixel=0, Active=false, ZIndex=z, Position=UDim2.fromOffset(offset,offset),
+            Size=UDim2.new(1,-2*offset,1,-2*offset)}, parent)
+        local corner = applyCorner(frame, math.max(layerRadius,2))
+        local st = MUI.stroke(frame, Color3.new(1,1,1), thickness, transparency)
+        st:SetAttribute("KamuiKeepColor", true)
+        gradient(st)
+        table.insert(glowStrokes, {stroke=st, corner=corner, offset=offset})
+        table.insert(baseAlpha, transparency)
+    end
+    local edge = MUI.stroke(window, Color3.new(1,1,1), 1.5, 0.05)
+    edge.Name = "M1GradientEdge"; edge:SetAttribute("KamuiKeepColor", true)
+    edge.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; gradient(edge)
+    for k=1,3 do layer(window,k,1.5,0.3+(k-1)*0.15,radius-k,window.ZIndex) end
+    local holder = MUI.mk("Frame", {Name="M1OuterGlow", BackgroundTransparency=1,
+        BorderSizePixel=0, Active=false, ClipsDescendants=false,
+        ZIndex=math.max(0,window.ZIndex-1), Visible=false}, gui)
+    local holderScale = Instance.new("UIScale"); holderScale.Parent = holder
+    for k=1,5 do layer(holder,-k,2,0.22+(k-1)*0.14,radius+k,holder.ZIndex) end
+    local corner = window:FindFirstChildOfClass("UICorner")
+    conns[#conns+1] = RunService.RenderStepped:Connect(function()
+        if not window.Parent then holder.Visible=false; return end
+        holder.Visible = window.Visible
+        if not window.Visible then return end
+        holder.AnchorPoint, holder.Position, holder.Size, holder.Rotation = window.AnchorPoint, window.Position, window.Size, window.Rotation
+        holderScale.Scale = windowScale and windowScale.Scale or 1
+        local rounded = corner and corner.CornerRadius.Offset or radius
+        local t = os.clock(); local pulse = 0.5 + 0.5 * math.sin(t*2)
+        local source = _G.KAMUI_BorderGradients and _G.KAMUI_BorderGradients[1]
+        local seq = source and source.Parent and source.Color or ColorSequence.new(THEME.Red)
+        local rotation = source and source.Parent and source.Rotation or ((t*60)%360)
+        for _,g in ipairs(gradients) do g.Color, g.Rotation = seq, rotation end
+        edge.Transparency = 0.05 + 0.1*pulse
+        for i,entry in ipairs(glowStrokes) do
+            entry.stroke.Transparency = math.clamp(baseAlpha[i]-0.12*pulse,0,1)
+            entry.corner.CornerRadius = UDim.new(0,math.max(rounded-entry.offset,2))
+        end
+    end)
+end
+MUI.refreshTheme()
+conns[#conns+1] = RunService.RenderStepped:Connect(function()
+    if gui.Parent then MUI.refreshTheme() end
+end)
+
+local main, topBar
+local sharedIcons
+local trueM1Row, trueM1FeatureButton, trueM1KeyButton
+local emoteDashRow, emoteDashFeatureButton, dashKeyButton
+local autoRotateRow, autoRotateFeatureButton, autoRotateButton
+local function currentKeyName(key)
+    return key and key.Name or "None"
+end
+do
+    local ICON_IDS = {M1Reset="95331377933228", EmoteDash="78821444430794"}
+    sharedIcons = ICON_IDS
+    local mk = MUI.mk
+    local W,H = 460,310
+    main = mk("Frame", {Name="Main", Size=UDim2.fromOffset(W,H),
+        BackgroundColor3=THEME.Background, BorderSizePixel=0, Active=true,
+        ClipsDescendants=false, ZIndex=2}, gui)
+    applyCorner(main,14)
+    local viewport = gui.AbsoluteSize
+    if viewport.X == 0 or viewport.Y == 0 then
+        viewport = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
+    end
+    local sc = math.clamp(math.min((viewport.X-24)/W,(viewport.Y-24)/H),0.55,1)
+    local mainScale = Instance.new("UIScale"); mainScale.Scale=sc; mainScale.Parent=main
+    main.Position = UDim2.new(0.5,-W*sc/2,0.4,-H*sc/2)
+    MUI.makeBorder(main,14,mainScale)
+    topBar = mk("Frame", {Name="TopBar", Size=UDim2.new(1,0,0,44),
+        BackgroundTransparency=1, BorderSizePixel=0, Active=true, ZIndex=5}, main)
+    MUI.logo(topBar,UDim2.fromOffset(13,11),UDim2.fromOffset(22,22),6)
+    local brand = mk("TextLabel", {Name="Brand", Text="Kamui Client", BackgroundTransparency=1,
+        Position=UDim2.fromOffset(39,0), Size=UDim2.fromOffset(91,44), TextSize=12,
+        Font=Enum.Font.GothamBold, TextXAlignment=Enum.TextXAlignment.Left, ZIndex=6}, topBar)
+    brand:SetAttribute("KamuiKeepColor",true)
+    MUI.onColor(function() brand.TextColor3=THEME.BrightRed end)
+    mk("Frame", {BackgroundColor3=MUI.Line, BorderSizePixel=0, Position=UDim2.fromOffset(137,11),
+        Size=UDim2.fromOffset(1,22), ZIndex=6},topBar)
+    mk("TextLabel", {Name="Title", Text="M1 reset and emote dash", BackgroundTransparency=1,
+        Position=UDim2.fromOffset(148,0), Size=UDim2.new(1,-225,1,0), TextSize=12,
+        Font=Enum.Font.Gotham, TextColor3=THEME.Text, TextXAlignment=Enum.TextXAlignment.Left,
+        TextTruncate=Enum.TextTruncate.AtEnd, ZIndex=6},topBar)
+    local close=mk("TextButton", {Name="CloseButton", Text="×", BackgroundTransparency=1,
+        Position=UDim2.new(1,-39,0,8), Size=UDim2.fromOffset(30,28), TextSize=16,
+        Font=Enum.Font.Gotham, TextColor3=THEME.MutedText, ZIndex=7},topBar)
+    local minimize=mk("TextButton", {Name="MinimizeButton", Text="−", BackgroundTransparency=1,
+        Position=UDim2.new(1,-70,0,8), Size=UDim2.fromOffset(30,28), TextSize=17,
+        Font=Enum.Font.Gotham, TextColor3=THEME.MutedText, ZIndex=7},topBar)
+    close.MouseButton1Click:Connect(function() if _G.KAMUI_M1Cleanup then _G.KAMUI_M1Cleanup() end end)
+    mk("Frame", {BackgroundColor3=MUI.Div, BorderSizePixel=0, Position=UDim2.fromOffset(0,44),
+        Size=UDim2.new(1,0,0,1), ZIndex=5},main)
+    local function heading(text,y)
+        return mk("TextLabel", {Text=text, BackgroundTransparency=1, Position=UDim2.fromOffset(16,y),
+            Size=UDim2.new(1,-32,0,16), TextSize=10, Font=Enum.Font.Gotham,
+            TextColor3=MUI.Head, TextXAlignment=Enum.TextXAlignment.Left,ZIndex=4},main)
+    end
+    heading("MACROS",53)
+    local function makePad(rowName,label,iconId,position,keyText)
+        local pad=mk("Frame", {Name=rowName, Size=UDim2.new(0.5,-18,0,126), Position=position,
+            BackgroundColor3=THEME.BackgroundLight, BorderSizePixel=0, ZIndex=3},main)
+        applyCorner(pad,9); local padStroke=MUI.stroke(pad,MUI.Line,1,0)
+        padStroke:SetAttribute("KamuiKeepColor",true)
+        local ring=mk("Frame", {Name="IconRing", Size=UDim2.fromOffset(38,38),
+            AnchorPoint=Vector2.new(0.5,0), Position=UDim2.new(0.5,0,0,12),
+            BackgroundColor3=Color3.fromRGB(19,13,15), BorderSizePixel=0,ZIndex=4},pad)
+        applyCorner(ring,19)
+        local ringStroke=MUI.stroke(ring,THEME.DarkRed,1,0)
+        ringStroke:SetAttribute("KamuiKeepColor",true)
+        local icon=mk("ImageLabel", {Name="Icon", Image="rbxassetid://"..iconId,
+            Size=UDim2.fromOffset(22,22), AnchorPoint=Vector2.new(0.5,0.5),
+            Position=UDim2.fromScale(0.5,0.5), BackgroundTransparency=1,
+            ScaleType=Enum.ScaleType.Fit,ZIndex=5},ring)
+        icon:SetAttribute("KamuiKeepColor",true)
+        MUI.onColor(function() icon.ImageColor3=THEME.BrightRed; ringStroke.Color=THEME.DarkRed end)
+        mk("TextLabel", {Name="PadLabel",Text=label,Size=UDim2.new(1,0,0,19),
+            Position=UDim2.fromOffset(0,57),BackgroundTransparency=1,Font=Enum.Font.GothamMedium,
+            TextSize=12,TextColor3=THEME.Text,ZIndex=4},pad)
+        local action=mk("TextButton", {Name="Function",Text="",Size=UDim2.fromScale(1,1),
+            BackgroundTransparency=1,BorderSizePixel=0,AutoButtonColor=false,ZIndex=5},pad)
+        local key=mk("TextButton", {Name="Keybind",Text=keyText,Size=UDim2.fromOffset(40,25),
+            AnchorPoint=Vector2.new(0.5,0),Position=UDim2.new(0.5,0,0,84),BackgroundColor3=MUI.Chip,
+            BorderSizePixel=0,AutoButtonColor=false,Font=Enum.Font.GothamMedium,
+            TextSize=12,TextColor3=THEME.Text,ZIndex=6},pad)
+        applyCorner(key,6); MUI.stroke(key,MUI.Line,1,0)
+        action.MouseButton1Down:Connect(function() pad.BackgroundColor3=THEME.BackgroundMedium; padStroke.Color=THEME.Red end)
+        local function release() pad.BackgroundColor3=THEME.BackgroundLight; padStroke.Color=MUI.Line end
+        action.MouseButton1Up:Connect(release); action.MouseLeave:Connect(release)
+        return pad,action,key
+    end
+    trueM1Row,trueM1FeatureButton,trueM1KeyButton=makePad("M1ResetRow","M1 reset",ICON_IDS.M1Reset,
+        UDim2.fromOffset(13,73),currentKeyName(Settings.TrueM1Reset.Key))
+    emoteDashRow,emoteDashFeatureButton,dashKeyButton=makePad("EmoteDashRow","Emote dash",ICON_IDS.EmoteDash,
+        UDim2.new(0.5,5,0,73),currentKeyName(Settings.EmoteDash.Key))
+    heading("M1 RESET",211)
+    autoRotateRow=mk("Frame", {Name="AutoRotateRow",Size=UDim2.new(1,-26,0,50),
+        Position=UDim2.fromOffset(13,231),BackgroundColor3=THEME.BackgroundLight,BorderSizePixel=0,ZIndex=3},main)
+    applyCorner(autoRotateRow,9); MUI.stroke(autoRotateRow,MUI.Line,1,0)
+    autoRotateFeatureButton=mk("TextLabel", {Name="Function",Text="Auto rotate",
+        Size=UDim2.new(1,-70,1,0),Position=UDim2.fromOffset(12,0),BackgroundTransparency=1,
+        Font=Enum.Font.GothamMedium,TextSize=12,TextColor3=THEME.Text,
+        TextXAlignment=Enum.TextXAlignment.Left,ZIndex=4},autoRotateRow)
+    local track=mk("Frame", {Name="AutoRotateTrack",Size=UDim2.fromOffset(36,20),
+        Position=UDim2.new(1,-48,0.5,-10),BorderSizePixel=0,ZIndex=4},autoRotateRow)
+    track:SetAttribute("KamuiKeepColor",true); applyCorner(track,10)
+    local knob=mk("Frame", {Name="Knob",Size=UDim2.fromOffset(14,14),BorderSizePixel=0,ZIndex=5},track)
+    applyCorner(knob,7)
+    autoRotateButton=mk("TextButton", {Name="Value",Text=Settings.TrueM1Reset.AutoRotate and "ON" or "OFF",
+        Size=UDim2.fromScale(1,1),BackgroundTransparency=1,TextTransparency=1,BorderSizePixel=0,
+        AutoButtonColor=false,ZIndex=6},autoRotateRow)
+    local function paintAutoRotate()
+        local on=autoRotateButton.Text=="ON"
+        track.BackgroundColor3=on and THEME.Red or MUI.OffTrack
+        knob.BackgroundColor3=on and MUI.White or MUI.OffKnob
+        knob.Position=on and UDim2.new(1,-17,0.5,-7) or UDim2.new(0,3,0.5,-7)
+    end
+    autoRotateButton:GetPropertyChangedSignal("Text"):Connect(paintAutoRotate)
+    MUI.onColor(paintAutoRotate); paintAutoRotate()
+    -- PC minimize pill, matching the main window's compact draggable pill.
+    local pill=mk("Frame", {Name="MiniPill", BackgroundColor3=THEME.BackgroundLight,BorderSizePixel=0,
+        Size=UDim2.fromOffset(270,36), Visible=false,Active=true,ZIndex=10},gui)
+    applyCorner(pill,18)
+    local pillScale=Instance.new("UIScale"); pillScale.Scale=sc; pillScale.Parent=pill
+    MUI.makeBorder(pill,18,pillScale)
+    local dot=mk("Frame", {Position=UDim2.new(0,14,0.5,-3),Size=UDim2.fromOffset(7,7),
+        BorderSizePixel=0,ZIndex=11},pill)
+    dot:SetAttribute("KamuiKeepColor",true); applyCorner(dot,7)
+    mk("TextLabel", {Text="KAMUI",BackgroundTransparency=1,Position=UDim2.fromOffset(29,0),
+        Size=UDim2.new(0,53,1,0),Font=Enum.Font.GothamMedium,TextSize=12,TextColor3=THEME.Text,
+        TextXAlignment=Enum.TextXAlignment.Left,ZIndex=11},pill)
+    mk("TextLabel", {Text="M1 & Emote",BackgroundTransparency=1,Position=UDim2.fromOffset(84,0),
+        Size=UDim2.new(1,-150,1,0),Font=Enum.Font.Gotham,TextSize=11,TextColor3=THEME.MutedText,
+        TextXAlignment=Enum.TextXAlignment.Left,TextTruncate=Enum.TextTruncate.AtEnd,ZIndex=11},pill)
+    local expand=mk("TextButton", {Text="",AutoButtonColor=false,Position=UDim2.new(1,-62,0.5,-12),
+        Size=UDim2.fromOffset(24,24),BorderSizePixel=0,ZIndex=12},pill)
+    expand:SetAttribute("KamuiKeepColor",true); applyCorner(expand,12)
+    local sq=mk("Frame", {BackgroundTransparency=1,AnchorPoint=Vector2.new(0.5,0.5),
+        Position=UDim2.fromScale(0.5,0.5),Size=UDim2.fromOffset(9,9),ZIndex=13},expand)
+    applyCorner(sq,2); MUI.stroke(sq,THEME.Text,1.5,0)
+    local pillClose=mk("TextButton", {Text="×",AutoButtonColor=false,BackgroundTransparency=1,
+        Position=UDim2.new(1,-32,0.5,-12),Size=UDim2.fromOffset(24,24),Font=Enum.Font.GothamMedium,
+        TextSize=16,TextColor3=THEME.MutedText,ZIndex=12},pill)
+    MUI.onColor(function() dot.BackgroundColor3=THEME.BrightRed; expand.BackgroundColor3=THEME.DarkRed end)
+    minimize.MouseButton1Click:Connect(function() pill.Position=main.Position; main.Visible=false; pill.Visible=true end)
+    expand.MouseButton1Click:Connect(function() main.Position=pill.Position; pill.Visible=false; main.Visible=true end)
+    pillClose.MouseButton1Click:Connect(function() if _G.KAMUI_M1Cleanup then _G.KAMUI_M1Cleanup() end end)
+    local dragging,start,startPos=false,nil,nil
+    pill.InputBegan:Connect(function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then
+            dragging,start,startPos=true,input.Position,pill.Position
+        end
+    end)
+    conns[#conns+1]=UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch then dragging=false end
+    end)
+    conns[#conns+1]=UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType==Enum.UserInputType.MouseMovement or input.UserInputType==Enum.UserInputType.Touch) then
+            local d=input.Position-start
+            pill.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y)
+        end
+    end)
+end
+local function refreshKeyLabels()
+    dashKeyButton.Text = currentKeyName(Settings.EmoteDash.Key)
+    trueM1KeyButton.Text = currentKeyName(Settings.TrueM1Reset.Key)
+end
+refreshKeyLabels()
+local waitingFor = nil
+local function beginKeyCapture(which)
+    waitingFor = which
+    if which == "M1" then
+        trueM1KeyButton.Text = "..."
+    else
+        dashKeyButton.Text = "..."
+    end
+end
+trueM1FeatureButton.MouseButton1Click:Connect(function()
+    if Settings.TrueM1Reset.Enabled then
+        task.spawn(function()
+            local ok, err = pcall(executeTrueM1Reset)
+            if not ok then
+                warn("[KAMUI Macro] M1 Reset click error:", err)
+            end
+        end)
+    end
+end)
+emoteDashFeatureButton.MouseButton1Click:Connect(function()
+    if Settings.EmoteDash.Enabled then
+        task.spawn(executeEmoteDash)
+    end
+end)
+dashKeyButton.MouseButton1Click:Connect(function()
+    beginKeyCapture("Emote")
+end)
+trueM1KeyButton.MouseButton1Click:Connect(function()
+    beginKeyCapture("M1")
+end)
+local function refreshAutoRotate()
+    autoRotateButton.Text = Settings.TrueM1Reset.AutoRotate and "ON" or "OFF"
+end
+refreshAutoRotate()
+autoRotateButton.MouseButton1Click:Connect(function()
+    Settings.TrueM1Reset.AutoRotate = not Settings.TrueM1Reset.AutoRotate
+    refreshAutoRotate()
+    if currentHumanoid and not Settings.TrueM1Reset.AutoRotate then
+        currentHumanoid.AutoRotate = true
+    end
+end)
+conns[#conns + 1] = UserInputService.InputBegan:Connect(function(input, processed)
+    if waitingFor then
+        if input.UserInputType == Enum.UserInputType.Keyboard then
+            if waitingFor == "M1" then
+                Settings.TrueM1Reset.Key = input.KeyCode
+            else
+                Settings.EmoteDash.Key = input.KeyCode
+            end
+            waitingFor = nil
+            refreshKeyLabels()
+        end
+        return
+    end
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then
+        return
+    end
+    if Settings.TrueM1Reset.Enabled
+        and Settings.TrueM1Reset.Key
+        and input.KeyCode == Settings.TrueM1Reset.Key then
+        task.spawn(function()
+            local ok, err = pcall(executeTrueM1Reset)
+            if not ok then
+                warn("[KAMUI Macro] True M1 Reset error:", err)
+            end
+        end)
+    end
+    if Settings.EmoteDash.Enabled
+        and Settings.EmoteDash.Key
+        and input.KeyCode == Settings.EmoteDash.Key then
+        task.spawn(executeEmoteDash)
+    end
+end)
+local dragging = false
+local dragStart
+local startPosition
+conns[#conns + 1] = topBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPosition = main.Position
+    end
+end)
+conns[#conns + 1] = UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+conns[#conns + 1] = UserInputService.InputChanged:Connect(function(input)
+    if dragging
+        and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(
+            startPosition.X.Scale,
+            startPosition.X.Offset + delta.X,
+            startPosition.Y.Scale,
+            startPosition.Y.Offset + delta.Y
+        )
+    end
+end)
+--============================================================
+-- MOBILE MODE (Others -> M1 reset and emote dash -> Mobile -> Open)
+-- Same look as the main KAMUI menu: dark cards, thin borders, red only
+-- as an accent. Two touch buttons fire on touch-down; the card holds
+-- the Auto rotate switch. "Move" lets you drag the buttons and card.
+--============================================================
+if _G.KAMUI_M1Mobile then
+    main.Visible = false
+
+    local TweenSvc = game:GetService("TweenService")
+    local PANEL = Color3.fromRGB(13, 13, 14)
+    local CHIP = Color3.fromRGB(20, 20, 22)
+    local LINE = Color3.fromRGB(36, 36, 38)
+    local DIV = Color3.fromRGB(26, 26, 28)
+    local HEAD = Color3.fromRGB(105, 105, 108)
+    local MUTED = Color3.fromRGB(150, 145, 146)
+    local TEXT = Color3.fromRGB(240, 236, 236)
+    local RED = Color3.fromRGB(205, 18, 20)
+    local BRIGHT = Color3.fromRGB(240, 30, 24)
+    local DARK_RED = Color3.fromRGB(52, 8, 12)
+    local OFF_TRACK = Color3.fromRGB(42, 42, 45)
+    local OFF_KNOB = Color3.fromRGB(189, 184, 184)
+    local WHITE = Color3.fromRGB(255, 255, 255)
+    local editing = false
+    local strokes = {}
+
+    --// builds an instance; flags it so the main script's skin pass leaves it alone
+    local function mkm(class, props, parent)
+        local o = Instance.new(class)
+        for k, v in pairs(props) do
+            o[k] = v
+        end
+        if class == "TextButton" or class == "TextBox" or class == "Frame" then
+            o:SetAttribute("KamuiSkinned", true)
+        end
+        o.Parent = parent
+        return o
+    end
+
+    local function addBorder(obj, color)
+        local st = Instance.new("UIStroke")
+        st.Color = color
+        st.Thickness = 1
+        st.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        st:SetAttribute("KamuiKeepColor", true)
+        st.Parent = obj
+        return st
+    end
+
+    local function isPress(input)
+        return input.UserInputType == Enum.UserInputType.Touch
+            or input.UserInputType == Enum.UserInputType.MouseButton1
+    end
+
+    --// press = action, or drag when "Move" mode is on
+    local function movable(handle, target, onPress)
+        local dragging, dragStart, startPos, dragInput = false, nil, nil, nil
+        handle.InputBegan:Connect(function(input)
+            if not isPress(input) then
+                return
+            end
+            if editing then
+                dragging = true
+                dragStart = input.Position
+                startPos = target.Position
+                input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then
+                        dragging = false
+                    end
+                end)
+            elseif onPress then
+                onPress()
+            end
+        end)
+        handle.InputChanged:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch then
+                dragInput = input
+            end
+        end)
+        conns[#conns + 1] = UserInputService.InputChanged:Connect(function(input)
+            if dragging and input == dragInput then
+                local d = input.Position - dragStart
+                target.Position = UDim2.new(
+                    startPos.X.Scale, startPos.X.Offset + d.X,
+                    startPos.Y.Scale, startPos.Y.Offset + d.Y
+                )
+            end
+        end)
+    end
+
+    --// touch button: icon + short label + red accent bar (fires on touch-down)
+    local function touchButton(name, label, iconId, fallback, x, action)
+        local b = mkm("TextButton", {
+            Name = name,
+            Size = UDim2.fromOffset(60, 60),
+            Position = UDim2.new(0, x, 0.28, 0),
+            BackgroundColor3 = PANEL,
+            BackgroundTransparency = 0.05,
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Text = "",
+            ZIndex = 10,
+        }, gui)
+        applyCorner(b, 12)
+        local st = addBorder(b, LINE)
+        strokes[#strokes + 1] = st
+        local id = tostring(iconId or ""):match("%d+")
+        if id then
+            local icon = mkm("ImageLabel", {
+                Name = "Icon",
+                Size = UDim2.fromOffset(22, 22),
+                Position = UDim2.new(0.5, -11, 0, 7),
+                BackgroundTransparency = 1,
+                Image = "rbxassetid://" .. id,
+                ImageColor3 = BRIGHT,
+                ScaleType = Enum.ScaleType.Fit,
+                ZIndex = 11,
+            }, b)
+            icon:SetAttribute("KamuiKeepColor", true)
+            MUI.onColor(function() if icon.Parent then icon.ImageColor3 = THEME.BrightRed end end)
+        else
+            local fallbackLabel = mkm("TextLabel", {
+                Name = "IconFallback",
+                Size = UDim2.new(1, 0, 0, 22),
+                Position = UDim2.fromOffset(0, 7),
+                BackgroundTransparency = 1,
+                Text = fallback,
+                Font = Enum.Font.GothamBold,
+                TextSize = 14,
+                TextColor3 = BRIGHT,
+                ZIndex = 11,
+            }, b)
+            fallbackLabel:SetAttribute("KamuiKeepColor", true)
+            MUI.onColor(function() if fallbackLabel.Parent then fallbackLabel.TextColor3 = THEME.BrightRed end end)
+        end
+        mkm("TextLabel", {
+            Name = "Label",
+            Size = UDim2.new(1, 0, 0, 16),
+            Position = UDim2.fromOffset(0, 31),
+            BackgroundTransparency = 1,
+            Text = label,
+            Font = Enum.Font.GothamMedium,
+            TextSize = 12,
+            TextColor3 = TEXT,
+            ZIndex = 11,
+        }, b)
+        local accent = mkm("Frame", {
+            Name = "Accent",
+            Size = UDim2.fromOffset(14, 3),
+            Position = UDim2.new(0.5, -7, 1, -11),
+            BackgroundColor3 = RED,
+            BorderSizePixel = 0,
+            ZIndex = 11,
+        }, b)
+        applyCorner(accent, 2)
+        accent:SetAttribute("KamuiKeepColor", true)
+        MUI.onColor(function() if accent.Parent then accent.BackgroundColor3 = THEME.Red end end)
+        movable(b, b, function()
+            task.spawn(action)
+            b.BackgroundColor3 = THEME.DarkRed
+            st.Color = THEME.BrightRed
+            TweenSvc:Create(b, TweenInfo.new(0.22), { BackgroundColor3 = PANEL }):Play()
+            TweenSvc:Create(st, TweenInfo.new(0.22), { Color = LINE }):Play()
+        end)
+        return b
+    end
+
+    touchButton("M1ResetTouch", "M1", sharedIcons and sharedIcons.M1Reset, "M1", 14, function()
+        local ok, err = pcall(executeTrueM1Reset)
+        if not ok then
+            warn("[KAMUI Macro] M1 Reset touch error:", err)
+        end
+    end)
+    touchButton("EmoteDashTouch", "Dash", sharedIcons and sharedIcons.EmoteDash, ">>", 80, function()
+        local ok, err = pcall(executeEmoteDash)
+        if not ok then
+            warn("[KAMUI Macro] Emote Dash touch error:", err)
+        end
+    end)
+
+    --// card with the Auto rotate switch
+    local Panel = mkm("Frame", {
+        Name = "M1MobilePanel",
+        Size = UDim2.fromOffset(278, 78),
+        Position = UDim2.new(0, 152, 0.28, 0),
+        BackgroundColor3 = PANEL,
+        BackgroundTransparency = 0.05,
+        BorderSizePixel = 0,
+        ZIndex = 10,
+    }, gui)
+    applyCorner(Panel, 10)
+    local panelStroke = addBorder(Panel, LINE)
+    local vp = gui.AbsoluteSize
+    if vp.X == 0 or vp.Y == 0 then
+        vp = workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize or Vector2.new(1280,720)
+    end
+    local panelScale = Instance.new("UIScale")
+    panelScale.Scale = math.clamp(math.min((vp.X-152-12)/278, (vp.Y-24)/78), 0.55, 1)
+    panelScale.Parent = Panel
+    MUI.makeBorder(Panel, 10, panelScale)
+
+    mkm("Frame", {
+        Name = "Divider",
+        Size = UDim2.new(1, -20, 0, 1),
+        Position = UDim2.new(0, 10, 0, 36),
+        BackgroundColor3 = DIV,
+        BorderSizePixel = 0,
+        ZIndex = 11,
+    }, Panel)
+
+    local function chip(text, w, x)
+        local c = mkm("TextButton", {
+            Size = UDim2.fromOffset(w, 22),
+            Position = UDim2.new(1, x, 0, 7),
+            BackgroundColor3 = CHIP,
+            TextColor3 = MUTED,
+            Font = Enum.Font.GothamMedium,
+            TextSize = 11,
+            Text = text,
+            AutoButtonColor = false,
+            BorderSizePixel = 0,
+            ZIndex = 12,
+        }, Panel)
+        applyCorner(c, 6)
+        return c, addBorder(c, LINE)
+    end
+
+    local Header = mkm("Frame", {
+        Name = "Header",
+        Size = UDim2.new(1, -107, 0, 36),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        Active = true,
+        ZIndex = 11,
+    }, Panel)
+    MUI.logo(Header, UDim2.fromOffset(8,9), UDim2.fromOffset(18,18), 12)
+    mkm("TextLabel", {
+        Name = "Title",
+        Size = UDim2.new(1, -30, 1, 0),
+        Position = UDim2.new(0, 30, 0, 0),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 11,
+        TextColor3 = TEXT,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = "M1 reset & emote dash",
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        ZIndex = 12,
+    }, Header)
+    movable(Header, Panel, nil)
+
+    local MoveChip, MoveStroke = chip("Move", 42, -104)
+    local MinChip = chip("−", 22, -56)
+    local CloseChip = chip("×", 22, -28)
+    MoveChip:SetAttribute("KamuiKeepColor", true)
+    MoveStroke:SetAttribute("KamuiKeepColor", true)
+    local function paintEditing()
+        MoveChip.Text = editing and "Done" or "Move"
+        MoveChip.BackgroundColor3 = editing and THEME.Red or CHIP
+        MoveChip.TextColor3 = editing and WHITE or MUTED
+        MoveStroke.Color = editing and THEME.Red or LINE
+        for _, st in ipairs(strokes) do st.Color = editing and THEME.Red or LINE end
+        panelStroke.Color = editing and THEME.Red or LINE
+    end
+    MoveChip.MouseButton1Click:Connect(function() editing = not editing; paintEditing() end)
+    MUI.onColor(paintEditing)
+    CloseChip.MouseButton1Click:Connect(function()
+        if _G.KAMUI_M1Cleanup then
+            _G.KAMUI_M1Cleanup()
+        end
+    end)
+
+    -- A separate draggable circle restores the compact menu; action buttons stay visible.
+    local Mini = mkm("TextButton", {
+        Name="M1MobileMini", Size=UDim2.fromOffset(48,48), Position=Panel.Position,
+        BackgroundColor3=PANEL, BorderSizePixel=0, AutoButtonColor=false,
+        Text="", Visible=false, ZIndex=10,
+    }, gui)
+    applyCorner(Mini,24)
+    local miniScale=Instance.new("UIScale"); miniScale.Scale=panelScale.Scale; miniScale.Parent=Mini
+    MUI.makeBorder(Mini,24,miniScale)
+    MUI.logo(Mini,UDim2.new(0.5,-10.5,0,6),UDim2.fromOffset(21,21),11)
+    mkm("TextLabel", {BackgroundTransparency=1,Size=UDim2.new(1,0,0,15),
+        Position=UDim2.fromOffset(0,27),Font=Enum.Font.GothamMedium,TextSize=15,
+        TextColor3=TEXT,Text="−",ZIndex=12},Mini)
+    MinChip.MouseButton1Click:Connect(function()
+        Mini.Position=Panel.Position; Panel.Visible=false; Mini.Visible=true
+    end)
+    local miniDragging,miniMoved,miniStart,miniPos,miniInput=false,false,nil,nil,nil
+    Mini.InputBegan:Connect(function(input)
+        if isPress(input) then
+            miniDragging,miniMoved,miniStart,miniPos,miniInput=true,false,input.Position,Mini.Position,input
+        end
+    end)
+    conns[#conns+1]=UserInputService.InputChanged:Connect(function(input)
+        local matches=input==miniInput or (miniInput and miniInput.UserInputType==Enum.UserInputType.MouseButton1
+            and input.UserInputType==Enum.UserInputType.MouseMovement)
+        if miniDragging and matches then
+            local d=input.Position-miniStart
+            if math.abs(d.X)>4 or math.abs(d.Y)>4 then miniMoved=true end
+            if miniMoved then Mini.Position=UDim2.new(miniPos.X.Scale,miniPos.X.Offset+d.X,miniPos.Y.Scale,miniPos.Y.Offset+d.Y) end
+        end
+    end)
+    conns[#conns+1]=UserInputService.InputEnded:Connect(function(input)
+        if input==miniInput or (miniInput and miniInput.UserInputType==Enum.UserInputType.MouseButton1
+            and input.UserInputType==Enum.UserInputType.MouseButton1) then miniDragging=false end
+    end)
+    Mini.Activated:Connect(function()
+        if miniMoved then return end
+        Panel.Position=Mini.Position; Mini.Visible=false; Panel.Visible=true
+    end)
+
+    --// Auto rotate row (same switch look as the main menu)
+    mkm("TextLabel", {
+        Name = "AutoRotateLabel",
+        Size = UDim2.new(0, 110, 0, 34),
+        Position = UDim2.new(0, 12, 0, 39),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamMedium,
+        TextSize = 12,
+        TextColor3 = TEXT,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = "Auto rotate",
+        ZIndex = 12,
+    }, Panel)
+    local ARHit = mkm("TextButton", {
+        Name = "AutoRotateHit",
+        Size = UDim2.fromOffset(70, 34),
+        Position = UDim2.new(1, -70, 0, 39),
+        BackgroundTransparency = 1,
+        Text = "",
+        ZIndex = 12,
+    }, Panel)
+    local ARTrack = mkm("Frame", {
+        Name = "Track",
+        AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -12, 0.5, 0),
+        Size = UDim2.fromOffset(36, 20),
+        BorderSizePixel = 0,
+        ZIndex = 13,
+    }, ARHit)
+    ARTrack:SetAttribute("KamuiKeepColor", true)
+    applyCorner(ARTrack, 10)
+    local ARKnob = mkm("Frame", {
+        Name = "Knob",
+        Size = UDim2.fromOffset(14, 14),
+        BorderSizePixel = 0,
+        ZIndex = 14,
+    }, ARTrack)
+    applyCorner(ARKnob, 7)
+    local function syncAutoRotate()
+        local on = Settings.TrueM1Reset.AutoRotate
+        ARTrack.BackgroundColor3 = on and THEME.Red or OFF_TRACK
+        ARKnob.Position = on and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+        ARKnob.BackgroundColor3 = on and WHITE or OFF_KNOB
+    end
+    ARHit.MouseButton1Click:Connect(function()
+        Settings.TrueM1Reset.AutoRotate = not Settings.TrueM1Reset.AutoRotate
+        refreshAutoRotate()
+        if currentHumanoid and not Settings.TrueM1Reset.AutoRotate then
+            currentHumanoid.AutoRotate = true
+        end
+        syncAutoRotate()
+    end)
+    MUI.onColor(syncAutoRotate)
+    syncAutoRotate()
+end
+print("KAMUI DASH loaded: True M1 Reset + Emote Dash")
