@@ -12518,6 +12518,7 @@ _G.KAMUI_BuildCombat = function(UI)
             end)
             end -- simulated-input path for PC and the separate mobile button
             local started = os.clock()
+            local mobileSlideStart, mobileSlideFrom = nil, nil
             local conn
             local function finishAssist()
                 if conn then conn:Disconnect(); conn = nil end
@@ -12536,11 +12537,67 @@ _G.KAMUI_BuildCombat = function(UI)
                 else
                     mover = findMover(root)
                 end
+                -- Once the mobile slide starts, let it finish even if the native
+                -- dash mover ends partway through the smooth transition.
+                if existingMover and mobileSlideStart then
+                    local forward = flat(target.CFrame.LookVector)
+                    if forward.Magnitude < 0.01 then finishAssist(); return end
+                    local behind = flat(target.Position) - forward.Unit * 3.5
+                    local t = math.clamp((os.clock() - mobileSlideStart) / 0.18, 0, 1)
+                    local ease = t * t * (3 - 2 * t)
+                    local current = root.Position
+                    local x = mobileSlideFrom.X + (behind.X - mobileSlideFrom.X) * ease
+                    local z = mobileSlideFrom.Z + (behind.Z - mobileSlideFrom.Z) * ease
+                    root.CFrame = root.CFrame + Vector3.new(x - current.X, 0, z - current.Z)
+                    local velocity = root.AssemblyLinearVelocity
+                    root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
+                    if mover then
+                        pcall(function()
+                            local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
+                            local world = moverToWorld(mover, mover[prop])
+                            local stopped = world and moverFromWorld(mover, Vector3.new(0, world.Y, 0))
+                            if stopped then mover[prop] = stopped end
+                        end)
+                    end
+                    if t >= 1 then finishAssist() end
+                    return
+                end
                 if not mover then
                     if moverSeen then finishAssist() end
                     return
                 end
                 moverSeen = true
+                -- Restore the original mobile pull behind the target, replacing
+                -- the instant teleport with a short, eased slide.
+                if existingMover then
+                    local elapsed = os.clock() - started
+                    if elapsed >= 0.12 then
+                        local forward = flat(target.CFrame.LookVector)
+                        if forward.Magnitude > 0.01 then
+                            local behind = flat(target.Position) - forward.Unit * 3.5
+                            local delta = behind - flat(root.Position)
+                            local distance = delta.Magnitude
+                            if distance <= 24 then
+                                if elapsed >= 0.20 then
+                                    mobileSlideFrom = root.Position
+                                    mobileSlideStart = os.clock()
+                                    return
+                                elseif distance > 0.05 then
+                                    pcall(function()
+                                        local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
+                                        local world = moverToWorld(mover, mover[prop])
+                                        if not world then return end
+                                        local speed = flat(world).Magnitude
+                                        if speed < 0.1 then return end
+                                        local result = moverFromWorld(mover, delta.Unit * speed + Vector3.new(0, world.Y, 0))
+                                        if result then mover[prop] = result end
+                                    end)
+                                    return
+                                end
+                            end
+                        end
+                    end
+                end
                 local goal = (hook and (flat(target.Position) + hook.flank * 2.6 + hook.toward * 1.2))
                     or (curve and (flat(target.Position) + curve.back * 3.5) or destination())
                 if not goal then finishAssist(); return end
@@ -12602,10 +12659,46 @@ _G.KAMUI_BuildCombat = function(UI)
                 end)
             end)
         end
-        -- The dedicated mobile button uses the same dash path as the PC keybind.
-        -- Native game dashes are not intercepted.
+        -- Tap the game's real mobile DashButton without sending keyboard input.
+        -- Its location is read each time so a moved button can still be found.
+        local mobilePending = false
         mobileButton.MouseButton1Click:Connect(function()
-            if SA.Mobile then dashOnce() end
+            if not isCurrent() or not SA.Mobile or not SA.Enabled or SA.Busy or mobilePending then return end
+            local char = player.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if not root or not hum or hum.Health <= 0 or findMover(root) or not closestTarget(root) then return end
+            local pg = player:FindFirstChildOfClass("PlayerGui")
+            local touch = pg and pg:FindFirstChild("TouchGui")
+            local controls = touch and touch:FindFirstChild("TouchControlFrame")
+            local jump = controls and controls:FindFirstChild("JumpButton")
+            local button = jump and jump:FindFirstChild("DashButton")
+            if not button or not button:IsA("GuiButton") or not button.Visible then return end
+            local pos, size = button.AbsolutePosition, button.AbsoluteSize
+            if size.X <= 0 or size.Y <= 0 then return end
+            local x, y = pos.X + size.X / 2, pos.Y + size.Y / 2
+            mobilePending = true
+            _G.KAMUI_MarkScriptDash()
+            local sent = pcall(function()
+                VirtualInputManager:SendTouchEvent(98, 0, x, y)
+            end)
+            if not sent then mobilePending = false; return end
+            task.delay(0.05, function()
+                pcall(function() VirtualInputManager:SendTouchEvent(98, 2, x, y) end)
+            end)
+            task.spawn(function()
+                local deadline = os.clock() + 0.8
+                while isCurrent() and SA.Mobile and SA.Enabled and player.Character == char
+                    and root.Parent and os.clock() < deadline do
+                    local mover = findMover(root)
+                    if mover then
+                        if not SA.Busy then dashOnce(mover) end
+                        break
+                    end
+                    RunService.Heartbeat:Wait()
+                end
+                mobilePending = false
+            end)
         end)
         UIS.InputBegan:Connect(function(input, processed)
             if not isCurrent() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
@@ -13353,91 +13446,3 @@ task.delay(3, function()
         end)
     end
 end)
-
-
---// TEMPORARY MOBILE BUTTON INSPECTOR: remove this block after testing.
-task.spawn(function()
-    local pg = player:WaitForChild("PlayerGui")
-    local old = pg:FindFirstChild("KamuiButtonInspector")
-    if old then old:Destroy() end
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "KamuiButtonInspector"
-    gui.ResetOnSpawn = false
-    gui.IgnoreGuiInset = true
-    gui.DisplayOrder = 999
-    gui.Parent = pg
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.fromOffset(390, 250)
-    frame.Position = UDim2.new(0, 10, 0.25, 0)
-    frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
-    frame.Parent = gui
-    local close = Instance.new("TextButton")
-    close.Size = UDim2.fromOffset(40, 30)
-    close.Position = UDim2.new(1, -40, 0, 0)
-    close.Text = "X"
-    close.Parent = frame
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -16, 1, -40)
-    label.Position = UDim2.fromOffset(8, 35)
-    label.BackgroundTransparency = 1
-    label.TextColor3 = Color3.new(1, 1, 1)
-    label.TextSize = 12
-    label.TextWrapped = true
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.TextYAlignment = Enum.TextYAlignment.Top
-    label.Font = Enum.Font.Code
-    label.Text = "Tap the game's normal dash button, then screenshot this box."
-    label.Parent = frame
-    local conn
-    close.MouseButton1Click:Connect(function()
-        if conn then conn:Disconnect() end
-        gui:Destroy()
-    end)
-    conn = UIS.InputEnded:Connect(function(input)
-        if not isCurrent() or not gui.Parent then
-            if conn then conn:Disconnect() end
-            if gui.Parent then gui:Destroy() end
-            return
-        end
-        if input.UserInputType ~= Enum.UserInputType.Touch then return end
-        local x, y = input.Position.X, input.Position.Y
-        local p, sz = frame.AbsolutePosition, frame.AbsoluteSize
-        if x >= p.X and x <= p.X + sz.X and y >= p.Y and y <= p.Y + sz.Y then return end
-        local ok, objects = pcall(function()
-            return pg:GetGuiObjectsAtPosition(x, y)
-        end)
-        if not ok then
-            label.Text = "Could not inspect this tap: " .. tostring(objects)
-            return
-        end
-        local hits, seen = {}, {}
-        for _, obj in ipairs(objects) do
-            if not obj:IsDescendantOf(gui) then
-                local button = obj
-                while button and button ~= pg and not button:IsA("GuiButton") do
-                    button = button.Parent
-                end
-                if button and button ~= pg and not seen[button] then
-                    seen[button] = true
-                    table.insert(hits, button)
-                end
-            end
-        end
-        task.delay(0.3, function()
-            if not gui.Parent or not isCurrent() then return end
-            local lines = {"Game buttons under your tap:"}
-            for i, button in ipairs(hits) do
-                if i > 3 then break end
-                local text = button:GetFullName() .. " (" .. button.ClassName .. ")"
-                if button:IsA("ImageButton") then text = text .. "\nImage: " .. button.Image end
-                if button:IsA("TextButton") then text = text .. "\nText: " .. button.Text end
-                table.insert(lines, text)
-            end
-            if #hits == 0 then
-                table.insert(lines, "No PlayerGui button found. Tap the normal game dash again.")
-            end
-            label.Text = table.concat(lines, "\n\n")
-        end)
-    end)
-end)
---// END TEMPORARY MOBILE BUTTON INSPECTOR
