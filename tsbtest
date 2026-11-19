@@ -348,6 +348,7 @@ end
 -- keyboard/mouse events, so Roblox should stay in touch input mode.
 local mobileStatus = function(message) warn("[KAMUI mobile backdash] " .. tostring(message)) end
 local mobileRun = nil
+local mobileCancelDelay = 0 -- seconds from dash handler to skill handler; temporary
 local function mobileSignal(button, name)
     if not button or not button.Parent then return false, "Game button disappeared" end
     local ok, signal = pcall(function() return button[name] end)
@@ -465,8 +466,12 @@ local function performMobileBackdash(keyCode)
         -- A backdash cancel begins the backdash, then immediately uses the move.
         -- Unlike PC slot keys, the mobile slot can activate the skill directly.
         press(dash)
-        task.wait()
+        local dashSentAt = os.clock()
+        -- Zero is same-thread; positive values wait on Roblox's scheduler.
+        local requestedDelay = mobileCancelDelay
+        if requestedDelay > 0 then task.wait(requestedDelay) end
         if not valid() then error("Character changed") end
+        run.actualDelay = os.clock() - dashSentAt
         press(skill)
         task.wait()
         if not valid() then error("Character changed") end
@@ -486,7 +491,8 @@ local function performMobileBackdash(keyCode)
     end)
     stopMobileRun(run)
     if not ok then mobileStatus("Stopped: " .. tostring(err)); return false end
-    mobileStatus(sAutoUnequip and "Backdash then skill handlers sent (auto-unequip)" or "Backdash then skill / M1 handlers sent")
+    mobileStatus(string.format("Dash → skill handlers sent | actual wait %.3fs%s",
+        run.actualDelay or 0, sAutoUnequip and " | auto-unequip" or ""))
     return true
 end
 
@@ -1468,7 +1474,7 @@ if _G.KAMUI_BackdashMobile then
         statusSerial = statusSerial + 1
         local serial = statusSerial
         if not status.Parent then return end
-        status.Text = "BACKDASH MOBILE DASH-FIRST TEST\n" .. tostring(message)
+        status.Text = "BACKDASH CANCEL TIMING TEST\n" .. tostring(message)
         status.Visible = true
         task.delay(8, function()
             if status.Parent and statusSerial == serial then status.Visible = false end
@@ -1588,7 +1594,7 @@ if _G.KAMUI_BackdashMobile then
     local Panel = Instance.new("Frame")
     Panel.Name = "BackdashMobilePanel"
     Panel:SetAttribute("KamuiSkinned", true)
-    Panel.Size = UDim2.fromOffset(316, 260)
+    Panel.Size = UDim2.fromOffset(316, 302)
     Panel.Position = UDim2.new(0, 132, 0.28, 0)
     Panel.BackgroundColor3 = PANEL
     Panel.BackgroundTransparency = 0.05
@@ -1603,7 +1609,7 @@ if _G.KAMUI_BackdashMobile then
         vp = cam and cam.ViewportSize or Vector2.new(1280,720)
     end
     local panelScale = Instance.new("UIScale")
-    panelScale.Scale = math.clamp(math.min((vp.X-144)/316, (vp.Y*0.72-12)/260), 0.45, 1)
+    panelScale.Scale = math.clamp(math.min((vp.X-144)/316, (vp.Y*0.72-12)/302), 0.45, 1)
     panelScale.Parent = Panel
     BDUI.makeBorder(Panel, 12, panelScale)
     local function divider(y)
@@ -1802,6 +1808,40 @@ if _G.KAMUI_BackdashMobile then
         setDelay(v or Settings.Magnet.Delay)
     end)
     setDelay(Settings.Magnet.Delay)
+
+    -- Temporary diagnostic setting, separate from Magnet's Delay above.
+    divider(239)
+    local TimingLabel = Instance.new("TextLabel")
+    TimingLabel.BackgroundTransparency = 1; TimingLabel.Position = UDim2.fromOffset(12,246)
+    TimingLabel.Size = UDim2.fromOffset(145,38); TimingLabel.Font = Enum.Font.Gotham
+    TimingLabel.TextSize = 11; TimingLabel.TextColor3 = THEME.Text
+    TimingLabel.Text = "Cancel timing (test)"; TimingLabel.TextXAlignment = Enum.TextXAlignment.Left
+    TimingLabel.ZIndex = 12; TimingLabel.Parent = Panel
+    local function timingButton(text, x, width)
+        local b = Instance.new("TextButton")
+        b.Size = UDim2.fromOffset(width,30); b.Position = UDim2.new(1,x,0,250)
+        b.BackgroundColor3 = CHIP; b.BorderSizePixel = 0; b.AutoButtonColor = true
+        b.Font = Enum.Font.GothamMedium; b.TextSize = 13; b.Text = text
+        b.TextColor3 = THEME.Text; b.ZIndex = 12; b.Parent = Panel
+        applyCorner(b,6); addStroke(b,LINE)
+        return b
+    end
+    local timingMinus = timingButton("−",-153,32)
+    local timingValue = timingButton("0.00 s",-115,64)
+    timingValue.AutoButtonColor = false
+    local timingPlus = timingButton("+",-45,32)
+    local function updateTiming()
+        timingValue.Text = string.format("%.2f s", mobileCancelDelay)
+    end
+    timingMinus.MouseButton1Click:Connect(function()
+        mobileCancelDelay = math.max(0, math.floor(mobileCancelDelay * 100 + 0.5) - 1) / 100
+        updateTiming()
+    end)
+    timingPlus.MouseButton1Click:Connect(function()
+        mobileCancelDelay = math.min(20, math.floor(mobileCancelDelay * 100 + 0.5) + 1) / 100
+        updateTiming()
+    end)
+    updateTiming()
 
     local heading = Instance.new("TextLabel")
     heading.BackgroundTransparency = 1; heading.Position = UDim2.fromOffset(12,132)
