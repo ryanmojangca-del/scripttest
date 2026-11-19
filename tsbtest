@@ -435,22 +435,8 @@ local function performMobileBackdash(keyCode)
         run.held[button] = nil
     end
     local ok, err = pcall(function()
-        press(skill)
-        task.wait()
-        if not valid() then error("Character changed") end
-        release(skill)
-        local clicked, why = mobileSignal(skill, "MouseButton1Click")
-        if not clicked then error("Skill click: " .. tostring(why)) end
-        if not sAutoUnequip then
-            task.wait()
-            if not valid() then error("Character changed") end
-            press(punch)
-            task.wait()
-            if not valid() then error("Character changed") end
-            release(punch)
-        end
-        task.wait()
-        if not valid() then error("Character changed") end
+        -- Prepare the backward direction before activating the skill, so the
+        -- 0.08 s touch-controller setup does not delay the cancel.
         pcall(function()
             local ps = localPlayer:FindFirstChild("PlayerScripts")
             local module = ps and ps:FindFirstChild("PlayerModule")
@@ -476,6 +462,22 @@ local function performMobileBackdash(keyCode)
         task.wait(0.08)
         if not valid() then error("Character changed") end
         if not prepared then error("Could not prepare backward direction") end
+        press(skill)
+        task.wait()
+        if not valid() then error("Character changed") end
+        release(skill)
+        local clicked, why = mobileSignal(skill, "MouseButton1Click")
+        if not clicked then error("Skill click: " .. tostring(why)) end
+        if not sAutoUnequip then
+            task.wait()
+            if not valid() then error("Character changed") end
+            press(punch)
+            task.wait()
+            if not valid() then error("Character changed") end
+            release(punch)
+        end
+        task.wait()
+        if not valid() then error("Character changed") end
         press(dash)
         task.wait(0.06)
         if not valid() then error("Character changed") end
@@ -1466,7 +1468,7 @@ if _G.KAMUI_BackdashMobile then
         statusSerial = statusSerial + 1
         local serial = statusSerial
         if not status.Parent then return end
-        status.Text = "BACKDASH MOBILE TEST\n" .. tostring(message)
+        status.Text = "BACKDASH MOBILE TIMING TEST\n" .. tostring(message)
         status.Visible = true
         task.delay(8, function()
             if status.Parent and statusSerial == serial then status.Visible = false end
