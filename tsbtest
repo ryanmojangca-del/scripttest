@@ -435,8 +435,8 @@ local function performMobileBackdash(keyCode)
         run.held[button] = nil
     end
     local ok, err = pcall(function()
-        -- Prepare the backward direction before activating the skill, so the
-        -- 0.08 s touch-controller setup does not delay the cancel.
+        -- Prepare the backward direction before the dash and skill, so the
+        -- 0.08 s touch-controller setup finishes before the cancel.
         pcall(function()
             local ps = localPlayer:FindFirstChild("PlayerScripts")
             local module = ps and ps:FindFirstChild("PlayerModule")
@@ -462,12 +462,18 @@ local function performMobileBackdash(keyCode)
         task.wait(0.08)
         if not valid() then error("Character changed") end
         if not prepared then error("Could not prepare backward direction") end
+        -- A backdash cancel begins the backdash, then immediately uses the move.
+        -- Unlike PC slot keys, the mobile slot can activate the skill directly.
+        press(dash)
+        task.wait()
+        if not valid() then error("Character changed") end
         press(skill)
         task.wait()
         if not valid() then error("Character changed") end
         release(skill)
         local clicked, why = mobileSignal(skill, "MouseButton1Click")
         if not clicked then error("Skill click: " .. tostring(why)) end
+        release(dash)
         if not sAutoUnequip then
             task.wait()
             if not valid() then error("Character changed") end
@@ -476,17 +482,11 @@ local function performMobileBackdash(keyCode)
             if not valid() then error("Character changed") end
             release(punch)
         end
-        task.wait()
-        if not valid() then error("Character changed") end
-        press(dash)
-        task.wait(0.06)
-        if not valid() then error("Character changed") end
-        release(dash)
         task.wait(0.04)
     end)
     stopMobileRun(run)
     if not ok then mobileStatus("Stopped: " .. tostring(err)); return false end
-    mobileStatus(sAutoUnequip and "Skill / backdash handlers sent (auto-unequip)" or "Skill / M1 / backdash handlers sent")
+    mobileStatus(sAutoUnequip and "Backdash then skill handlers sent (auto-unequip)" or "Backdash then skill / M1 handlers sent")
     return true
 end
 
@@ -1468,7 +1468,7 @@ if _G.KAMUI_BackdashMobile then
         statusSerial = statusSerial + 1
         local serial = statusSerial
         if not status.Parent then return end
-        status.Text = "BACKDASH MOBILE TIMING TEST\n" .. tostring(message)
+        status.Text = "BACKDASH MOBILE DASH-FIRST TEST\n" .. tostring(message)
         status.Visible = true
         task.delay(8, function()
             if status.Parent and statusSerial == serial then status.Visible = false end
