@@ -12128,11 +12128,12 @@ _G.KAMUI_BuildCombat = function(UI)
         CC.SideDashAssist = SA
         local assistCard = UI.card(page, "Side dash assist")
         -- Keep the card at the standard layer so it cannot cover its own controls.
-        local mobileButton, mobileDot, mobileStroke, mobileLabel
+        local mobileButton, mobileDot, mobileStroke, mobileLabel, dashCheckButton
         local function refreshAssistMobile()
             if not mobileButton then return end
             -- Separate mobile action button; normal game dashes stay unmodified.
             mobileButton.Visible = SA.Mobile
+            if dashCheckButton then dashCheckButton.Visible = SA.Mobile end
             mobileDot.BackgroundColor3 = SA.Enabled and THEME.BrightRed or Color3.fromRGB(70, 70, 74)
             mobileLabel.TextColor3 = SA.Enabled and THEME.Text or THEME.MutedText
             mobileStroke.Color = SA.Enabled and THEME.Red or Color3.fromRGB(58, 10, 15)
@@ -12686,30 +12687,99 @@ _G.KAMUI_BuildCombat = function(UI)
                 if dashStatus.Parent and statusVersion == version then dashStatus.Visible = false end
             end)
         end
-        local function activateMobileDash()
-            -- Temporary diagnostic only: do not move the character.
-            if not isCurrent() then showDashStatus("Script is no longer active"); return end
+        -- Temporary separate signal diagnostic, kept available for mobile testing.
+        dashCheckButton = Instance.new("TextButton")
+        dashCheckButton.Name = "DashCheckButton"
+        dashCheckButton.Parent = RestoreGui
+        dashCheckButton.Size = UDim2.fromOffset(90, 30)
+        dashCheckButton.Position = UDim2.new(0.7, 28, 0.65, 30)
+        dashCheckButton.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+        dashCheckButton.TextColor3 = Color3.new(1, 1, 1)
+        dashCheckButton.Font = Enum.Font.Gotham
+        dashCheckButton.TextSize = 12
+        dashCheckButton.Text = "Dash check"
+        dashCheckButton.ZIndex = 50
+        dashCheckButton.Visible = SA.Mobile
+        dashCheckButton.MouseButton1Click:Connect(function()
             local pg = player:FindFirstChildOfClass("PlayerGui")
             local touch = pg and pg:FindFirstChild("TouchGui")
             local controls = touch and touch:FindFirstChild("TouchControlFrame")
             local jump = controls and controls:FindFirstChild("JumpButton")
             local button = jump and jump:FindFirstChild("DashButton")
-            if not button or not button:IsA("GuiButton") then
-                showDashStatus("Game DashButton not found"); return
-            end
-            if type(getconnections) ~= "function" then
-                showDashStatus("Executor does not expose getconnections")
-                return
-            end
+            if not button then showDashStatus("Game DashButton not found"); return end
+            if type(getconnections) ~= "function" then showDashStatus("getconnections unavailable"); return end
             local parts = {}
             for _, name in ipairs({"Activated", "MouseButton1Click", "MouseButton1Down", "InputBegan", "InputEnded", "TouchTap"}) do
-                local ok, result = pcall(function()
-                    local connections = getconnections(button[name])
-                    return #connections
-                end)
-                table.insert(parts, name .. ": " .. (ok and tostring(result) or "unavailable"))
+                local ok, count = pcall(function() return #getconnections(button[name]) end)
+                table.insert(parts, name .. ": " .. (ok and tostring(count) or "unavailable"))
             end
             showDashStatus(table.concat(parts, " | "))
+        end)
+        local function activateMobileDash()
+            if not isCurrent() then showDashStatus("Script is no longer active"); return end
+            if not SA.Mobile then showDashStatus("Mobile mode is off"); return end
+            if not SA.Enabled then showDashStatus("Side dash assist is off"); return end
+            if SA.Busy or mobilePending then showDashStatus("Already running"); return end
+            local char = player.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if not root or not hum or hum.Health <= 0 then showDashStatus("Character not ready"); return end
+            if findMover(root) then showDashStatus("Existing dash detected; wait and retry"); return end
+            if not closestTarget(root) then showDashStatus("No living player target found"); return end
+            local pg = player:FindFirstChildOfClass("PlayerGui")
+            local touch = pg and pg:FindFirstChild("TouchGui")
+            local controls = touch and touch:FindFirstChild("TouchControlFrame")
+            local jump = controls and controls:FindFirstChild("JumpButton")
+            local button = jump and jump:FindFirstChild("DashButton")
+            if not button or not button:IsA("GuiButton") then showDashStatus("Game DashButton not found"); return end
+            local pos, size = button.AbsolutePosition, button.AbsoluteSize
+            local x, y = pos.X + size.X / 2, pos.Y + size.Y / 2
+            mobilePending = true
+            _G.KAMUI_MarkScriptDash()
+            local fired, reason = false, "No supported signal function"
+            -- The inspector found a handler on MouseButton1Down, rather than
+            -- Activated or MouseButton1Click. Try that exact game event.
+            if type(firesignal) == "function" then
+                local ok, err = pcall(function() firesignal(button.MouseButton1Down, x, y) end)
+                fired, reason = ok, tostring(err)
+            end
+            if not fired and type(getconnections) == "function" then
+                local ok, connections = pcall(function() return getconnections(button.MouseButton1Down) end)
+                if ok and connections then
+                    for _, connection in ipairs(connections) do
+                        if connection.Enabled ~= false then
+                            local success, err = pcall(function() connection:Fire(x, y) end)
+                            if success then fired = true else reason = tostring(err) end
+                        end
+                    end
+                elseif not ok then
+                    reason = tostring(connections)
+                end
+            end
+            if not fired then
+                mobilePending = false
+                showDashStatus("Could not fire game button: " .. reason)
+                return
+            end
+            showDashStatus("Game button fired; waiting for dash...")
+            task.spawn(function()
+                local deadline = os.clock() + 0.8
+                while isCurrent() and SA.Mobile and SA.Enabled and player.Character == char
+                    and root.Parent and os.clock() < deadline do
+                    local mover = findMover(root)
+                    if mover then
+                        if not SA.Busy then
+                            dashOnce(mover)
+                            showDashStatus(SA.Busy and "Dash detected; smooth assist started" or "Dash detected; assist could not start")
+                        end
+                        mobilePending = false
+                        return
+                    end
+                    RunService.Heartbeat:Wait()
+                end
+                mobilePending = false
+                showDashStatus("No dash mover detected after game button")
+            end)
         end
         -- Detect a tap separately from dragging, including touch on mobile.
         local dashTouch, dashTouchStart = nil, nil
