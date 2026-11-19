@@ -1656,3 +1656,188 @@ if _G.KAMUI_BackdashMobile then
         BDUI.onColor(paintVisibility)
     end
 end
+
+-- TEMPORARY MOBILE BUTTON INSPECTOR (read-only; does not fire handlers)
+if _G.KAMUI_BackdashMobile then
+    local function setupButtonInspector()
+        local armed = false
+        local inspector = Instance.new("Frame")
+        inspector.Name = "TemporaryButtonInspector"
+        inspector.Size = UDim2.fromOffset(440, 268)
+        inspector.AnchorPoint = Vector2.new(0.5, 0.5)
+        inspector.Position = UDim2.fromScale(0.5, 0.5)
+        inspector.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
+        inspector.BorderSizePixel = 0
+        inspector.ZIndex = 100
+        inspector.Visible = false
+        inspector.Parent = ScreenGui
+        applyCorner(inspector, 10)
+        local scale = Instance.new("UIScale")
+        local camera = Workspace.CurrentCamera
+        local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+        scale.Scale = math.clamp(math.min((viewport.X - 24) / 440, (viewport.Y - 24) / 268), 0.45, 1)
+        scale.Parent = inspector
+        local border = Instance.new("UIStroke")
+        border.Color = Color3.fromRGB(100, 100, 105)
+        border.Thickness = 1
+        border.Parent = inspector
+
+        local launcher = Instance.new("TextButton")
+        launcher.Name = "ButtonInspectorLauncher"
+        launcher.Size = UDim2.fromOffset(124, 34)
+        launcher.Position = UDim2.new(1, -132, 0, 145)
+        launcher.BackgroundColor3 = Color3.fromRGB(24, 24, 27)
+        launcher.TextColor3 = Color3.fromRGB(255, 255, 255)
+        launcher.Text = "Button inspector"
+        launcher.Font = Enum.Font.GothamMedium
+        launcher.TextSize = 11
+        launcher.AutoButtonColor = true
+        launcher.BorderSizePixel = 0
+        launcher.ZIndex = 100
+        launcher.Parent = ScreenGui
+        applyCorner(launcher, 8)
+
+        local title = Instance.new("TextLabel")
+        title.BackgroundTransparency = 1
+        title.Size = UDim2.new(1, -55, 0, 36)
+        title.Position = UDim2.fromOffset(12, 0)
+        title.Text = "BUTTON INSPECTOR · TEMP"
+        title.TextColor3 = Color3.fromRGB(245, 245, 245)
+        title.TextXAlignment = Enum.TextXAlignment.Left
+        title.Font = Enum.Font.GothamMedium
+        title.TextSize = 13
+        title.ZIndex = 101
+        title.Parent = inspector
+
+        local function button(text, position, size)
+            local b = Instance.new("TextButton")
+            b.Position = position
+            b.Size = size
+            b.Text = text
+            b.Font = Enum.Font.GothamMedium
+            b.TextSize = 12
+            b.TextColor3 = Color3.fromRGB(245, 245, 245)
+            b.BackgroundColor3 = Color3.fromRGB(40, 40, 43)
+            b.BorderSizePixel = 0
+            b.ZIndex = 102
+            b.Parent = inspector
+            applyCorner(b, 6)
+            return b
+        end
+        local close = button("×", UDim2.new(1, -38, 0, 7), UDim2.fromOffset(28, 25))
+        local scan = button("Inspect next tap", UDim2.new(0, 12, 1, -42), UDim2.new(1, -24, 0, 30))
+        local scroll = Instance.new("ScrollingFrame")
+        scroll.Position = UDim2.fromOffset(12, 38)
+        scroll.Size = UDim2.new(1, -24, 1, -88)
+        scroll.BackgroundColor3 = Color3.fromRGB(12, 12, 14)
+        scroll.BorderSizePixel = 0
+        scroll.ScrollBarThickness = 5
+        scroll.CanvasSize = UDim2.fromOffset(0, 0)
+        scroll.ZIndex = 101
+        scroll.Parent = inspector
+        applyCorner(scroll, 6)
+        local output = Instance.new("TextLabel")
+        output.BackgroundTransparency = 1
+        output.Position = UDim2.fromOffset(8, 8)
+        output.Size = UDim2.new(1, -20, 0, 160)
+        output.Font = Enum.Font.Code
+        output.TextSize = 13
+        output.TextColor3 = Color3.fromRGB(235, 235, 235)
+        output.TextXAlignment = Enum.TextXAlignment.Left
+        output.TextYAlignment = Enum.TextYAlignment.Top
+        output.TextWrapped = true
+        output.ZIndex = 102
+        output.Parent = scroll
+        local function showText(text)
+            output.Text = text
+            task.defer(function()
+                if not output.Parent then return end
+                local height = math.max(160, output.TextBounds.Y + 10)
+                output.Size = UDim2.new(1, -20, 0, height)
+                scroll.CanvasSize = UDim2.fromOffset(0, height + 16)
+                scroll.CanvasPosition = Vector2.new(0, 0)
+            end)
+        end
+        showText("Tap 'Inspect next tap', then tap game skill 1 or M1.\nThe game action may still happen. Screenshot the result, then repeat for the other button.")
+        launcher.MouseButton1Click:Connect(function()
+            if armed then
+                armed = false
+                launcher.Text = "Button inspector"
+                inspector.Visible = true
+                showText("Inspection cancelled. Tap 'Inspect next tap' to try again.")
+            else
+                inspector.Visible = not inspector.Visible
+            end
+        end)
+        close.MouseButton1Click:Connect(function() inspector.Visible = false end)
+        scan.MouseButton1Click:Connect(function()
+            armed = true
+            inspector.Visible = false
+            launcher.Text = "Tap game button..."
+        end)
+        local signalNames = {"MouseButton1Down", "MouseButton1Up", "MouseButton1Click", "Activated", "InputBegan", "InputEnded", "TouchTap"}
+        local function describe(obj)
+            local lines = {obj:GetFullName() .. " (" .. obj.ClassName .. ")"}
+            if obj:IsA("ImageButton") or obj:IsA("ImageLabel") then
+                lines[#lines + 1] = "Image: " .. tostring(obj.Image)
+            elseif obj:IsA("TextButton") then
+                lines[#lines + 1] = "Text: " .. tostring(obj.Text)
+            end
+            if obj:IsA("GuiButton") then
+                if type(getconnections) == "function" then
+                    local counts = {}
+                    for _, name in ipairs(signalNames) do
+                        local ok, count = pcall(function() return #getconnections(obj[name]) end)
+                        counts[#counts + 1] = name .. ":" .. (ok and tostring(count) or "?")
+                    end
+                    lines[#lines + 1] = table.concat(counts, "  ")
+                else
+                    lines[#lines + 1] = "Handler counts unavailable in this executor."
+                end
+            end
+            return table.concat(lines, "\n")
+        end
+        conns[#conns + 1] = UserInputService.InputBegan:Connect(function(input)
+            if not armed or (input.UserInputType ~= Enum.UserInputType.Touch and input.UserInputType ~= Enum.UserInputType.MouseButton1) then return end
+            local p = input.Position
+            local lp, ls = launcher.AbsolutePosition, launcher.AbsoluteSize
+            if p.X >= lp.X and p.X <= lp.X + ls.X and p.Y >= lp.Y and p.Y <= lp.Y + ls.Y then return end
+            armed = false
+            launcher.Text = "Button inspector"
+            local gui = localPlayer:FindFirstChildOfClass("PlayerGui")
+            local ok, hits = pcall(function() return gui:GetGuiObjectsAtPosition(p.X, p.Y) end)
+            if not ok or not hits then
+                inspector.Visible = true
+                showText("Could not inspect this tap: " .. tostring(hits) .. "\nTry again after the game controls appear.")
+                return
+            end
+            local buttons, seen = {}, {}
+            for _, hit in ipairs(hits) do
+                local obj = hit
+                while obj and obj ~= gui do
+                    if obj:IsA("GuiButton") and not seen[obj] then
+                        seen[obj] = true
+                        buttons[#buttons + 1] = obj
+                    end
+                    obj = obj.Parent
+                end
+            end
+            local lines = {"GAME BUTTONS UNDER TAP: " .. #buttons}
+            for i = 1, math.min(#buttons, 6) do
+                lines[#lines + 1] = "\n" .. describe(buttons[i])
+            end
+            if #buttons == 0 then
+                lines[#lines + 1] = "No GuiButton found. Objects under tap:"
+                for i = 1, math.min(#hits, 6) do
+                    lines[#lines + 1] = "\n" .. describe(hits[i])
+                end
+                if #hits == 0 then lines[#lines + 1] = "None. Try again directly on the game button." end
+            elseif #buttons > 6 then
+                lines[#lines + 1] = "\nAdditional buttons omitted."
+            end
+            inspector.Visible = true
+            showText(table.concat(lines, "\n"))
+        end)
+    end
+    setupButtonInspector()
+end
