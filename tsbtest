@@ -12690,54 +12690,68 @@ _G.KAMUI_BuildCombat = function(UI)
             if not isCurrent() then showDashStatus("Script is no longer active"); return end
             if not SA.Mobile then showDashStatus("Mobile mode is off"); return end
             if not SA.Enabled then showDashStatus("Side dash assist is off"); return end
-            if SA.Busy or mobilePending then showDashStatus("Already running"); return end
+            if SA.Busy then showDashStatus("Already running"); return end
             local char = player.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
             if not root or not hum or hum.Health <= 0 then showDashStatus("Character not ready"); return end
             if findMover(root) then showDashStatus("Existing dash detected; wait and retry"); return end
-            if not closestTarget(root) then showDashStatus("No living player target found"); return end
-            local pg = player:FindFirstChildOfClass("PlayerGui")
-            local touch = pg and pg:FindFirstChild("TouchGui")
-            local controls = touch and touch:FindFirstChild("TouchControlFrame")
-            local jump = controls and controls:FindFirstChild("JumpButton")
-            local button = jump and jump:FindFirstChild("DashButton")
-            if not button or not button:IsA("GuiButton") then showDashStatus("Game DashButton not found"); return end
-            if not button.Visible then showDashStatus("Game DashButton is hidden"); return end
-            local pos, size = button.AbsolutePosition, button.AbsoluteSize
-            if size.X <= 0 or size.Y <= 0 then showDashStatus("Game DashButton has zero size"); return end
-            local x, y = pos.X + size.X / 2, pos.Y + size.Y / 2
-            mobilePending = true
+            local target = closestTarget(root)
+            if not target then showDashStatus("No living player target found"); return end
+            if flat(target.Position - root.Position).Magnitude > 24 then
+                showDashStatus("Target is too far away (24 studs max)"); return
+            end
+            local targetHum = target.Parent and target.Parent:FindFirstChildOfClass("Humanoid")
+            local comm = char:FindFirstChild("Communicate")
+            if not comm or not comm:IsA("RemoteEvent") then
+                showDashStatus("Game dash remote not found"); return
+            end
+            -- Use the same dash request format as the existing fireDash function,
+            -- but send a side direction. No synthetic keyboard or touch input.
+            local right = flat(target.CFrame.RightVector)
+            local side = right.Magnitude > 0.01 and flat(root.Position - target.Position):Dot(right) or 1
+            local dashKey = side < 0 and Enum.KeyCode.A or Enum.KeyCode.D
+            SA.Busy = true
             _G.KAMUI_MarkScriptDash()
-            local sent, touchError = pcall(function()
-                VirtualInputManager:SendTouchEvent(98, 0, x, y)
+            local sent, err = pcall(function()
+                comm:FireServer({ Dash = dashKey, Key = Enum.KeyCode.Q, Goal = "KeyPress" })
             end)
             if not sent then
-                mobilePending = false
-                showDashStatus("Touch failed: " .. tostring(touchError))
+                SA.Busy = false
+                showDashStatus("Dash request failed: " .. tostring(err))
                 return
             end
-            showDashStatus("Touch sent; waiting for game dash...")
-            task.delay(0.05, function()
-                pcall(function() VirtualInputManager:SendTouchEvent(98, 2, x, y) end)
-            end)
-            task.spawn(function()
-                local deadline = os.clock() + 0.8
-                while isCurrent() and SA.Mobile and SA.Enabled and player.Character == char
-                    and root.Parent and os.clock() < deadline do
-                    local mover = findMover(root)
-                    if mover then
-                        if not SA.Busy then
-                            dashOnce(mover)
-                            showDashStatus(SA.Busy and "Dash detected; assist started" or "Dash detected; assist could not start")
-                        end
-                        mobilePending = false
-                        return
-                    end
-                    RunService.Heartbeat:Wait()
+            showDashStatus("Dash requested; sliding behind target")
+            local started, slideFrom = os.clock(), nil
+            local conn
+            conn = RunService.Heartbeat:Connect(function()
+                if not isCurrent() or not SA.Enabled or not SA.Mobile or player.Character ~= char
+                    or not root.Parent or not hum.Parent or hum.Health <= 0
+                    or not target.Parent or not targetHum or targetHum.Health <= 0 then
+                    conn:Disconnect()
+                    SA.Busy = false
+                    return
                 end
-                mobilePending = false
-                showDashStatus("No game dash detected after touch")
+                local elapsed = os.clock() - started
+                if elapsed < 0.12 then return end
+                if not slideFrom then slideFrom = root.Position end
+                local forward = flat(target.CFrame.LookVector)
+                if forward.Magnitude < 0.01 then
+                    conn:Disconnect(); SA.Busy = false; return
+                end
+                local behind = flat(target.Position) - forward.Unit * 3.5
+                local t = math.clamp((elapsed - 0.12) / 0.22, 0, 1)
+                local ease = t * t * (3 - 2 * t)
+                local current = root.Position
+                local x = slideFrom.X + (behind.X - slideFrom.X) * ease
+                local z = slideFrom.Z + (behind.Z - slideFrom.Z) * ease
+                root.CFrame = root.CFrame + Vector3.new(x - current.X, 0, z - current.Z)
+                local velocity = root.AssemblyLinearVelocity
+                root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
+                if t >= 1 then
+                    conn:Disconnect()
+                    SA.Busy = false
+                end
             end)
         end
         -- Detect a tap separately from dragging, including touch on mobile.
