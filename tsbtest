@@ -13356,7 +13356,7 @@ end)
 
 
 --// TEMPORARY MOBILE BUTTON INSPECTOR: remove this block after testing.
-do
+task.spawn(function()
     local pg = player:WaitForChild("PlayerGui")
     local old = pg:FindFirstChild("KamuiButtonInspector")
     if old then old:Destroy() end
@@ -13439,5 +13439,5 @@ do
             label.Text = table.concat(lines, "\n\n")
         end)
     end)
-end
+end)
 --// END TEMPORARY MOBILE BUTTON INSPECTOR
