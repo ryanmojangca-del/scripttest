@@ -12519,7 +12519,6 @@ _G.KAMUI_BuildCombat = function(UI)
             end)
             end -- simulated-input path for PC and the separate mobile button
             local started = os.clock()
-            local mobileSlideStart, mobileSlideFrom = nil, nil
             local conn
             local function finishAssist()
                 if conn then conn:Disconnect(); conn = nil end
@@ -12538,67 +12537,12 @@ _G.KAMUI_BuildCombat = function(UI)
                 else
                     mover = findMover(root)
                 end
-                -- Once the mobile slide starts, let it finish even if the native
-                -- dash mover ends partway through the smooth transition.
-                if existingMover and mobileSlideStart then
-                    local forward = flat(target.CFrame.LookVector)
-                    if forward.Magnitude < 0.01 then finishAssist(); return end
-                    local behind = flat(target.Position) - forward.Unit * 3.5
-                    local t = math.clamp((os.clock() - mobileSlideStart) / 0.18, 0, 1)
-                    local ease = t * t * (3 - 2 * t)
-                    local current = root.Position
-                    local x = mobileSlideFrom.X + (behind.X - mobileSlideFrom.X) * ease
-                    local z = mobileSlideFrom.Z + (behind.Z - mobileSlideFrom.Z) * ease
-                    root.CFrame = root.CFrame + Vector3.new(x - current.X, 0, z - current.Z)
-                    local velocity = root.AssemblyLinearVelocity
-                    root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
-                    if mover then
-                        pcall(function()
-                            local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
-                            local world = moverToWorld(mover, mover[prop])
-                            local stopped = world and moverFromWorld(mover, Vector3.new(0, world.Y, 0))
-                            if stopped then mover[prop] = stopped end
-                        end)
-                    end
-                    if t >= 1 then finishAssist() end
-                    return
-                end
                 if not mover then
                     if moverSeen then finishAssist() end
                     return
                 end
                 moverSeen = true
-                -- Restore the original mobile pull behind the target, replacing
-                -- the instant teleport with a short, eased slide.
-                if existingMover then
-                    local elapsed = os.clock() - started
-                    if elapsed >= 0.12 then
-                        local forward = flat(target.CFrame.LookVector)
-                        if forward.Magnitude > 0.01 then
-                            local behind = flat(target.Position) - forward.Unit * 3.5
-                            local delta = behind - flat(root.Position)
-                            local distance = delta.Magnitude
-                            if distance <= 24 then
-                                if elapsed >= 0.20 then
-                                    mobileSlideFrom = root.Position
-                                    mobileSlideStart = os.clock()
-                                    return
-                                elseif distance > 0.05 then
-                                    pcall(function()
-                                        local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
-                                        local world = moverToWorld(mover, mover[prop])
-                                        if not world then return end
-                                        local speed = flat(world).Magnitude
-                                        if speed < 0.1 then return end
-                                        local result = moverFromWorld(mover, delta.Unit * speed + Vector3.new(0, world.Y, 0))
-                                        if result then mover[prop] = result end
-                                    end)
-                                    return
-                                end
-                            end
-                        end
-                    end
-                end
+                -- Mobile and PC now use the same hook / curve mover steering.
                 local goal = (hook and (flat(target.Position) + hook.flank * 2.6 + hook.toward * 1.2))
                     or (curve and (flat(target.Position) + curve.back * 3.5) or destination())
                 if not goal then finishAssist(); return end
@@ -12761,6 +12705,22 @@ _G.KAMUI_BuildCombat = function(UI)
                 showDashStatus("Could not fire game button: " .. reason)
                 return
             end
+            -- Pair the press with a release so it is not left down. This does
+            -- not synthesize keyboard input or change the player's touch mode.
+            task.delay(0.06, function()
+                if type(firesignal) == "function" then
+                    local ok = pcall(function() firesignal(button.MouseButton1Up, x, y) end)
+                    if ok then return end
+                end
+                if type(getconnections) == "function" then
+                    local ok, connections = pcall(function() return getconnections(button.MouseButton1Up) end)
+                    if ok and connections then
+                        for _, connection in ipairs(connections) do
+                            if connection.Enabled ~= false then pcall(function() connection:Fire(x, y) end) end
+                        end
+                    end
+                end
+            end)
             showDashStatus("Game button fired; waiting for dash...")
             task.spawn(function()
                 local deadline = os.clock() + 0.8
@@ -12770,7 +12730,7 @@ _G.KAMUI_BuildCombat = function(UI)
                     if mover then
                         if not SA.Busy then
                             dashOnce(mover)
-                            showDashStatus(SA.Busy and "Dash detected; smooth assist started" or "Dash detected; assist could not start")
+                            showDashStatus(SA.Busy and "Dash detected; PC-style steering started" or "Dash detected; assist could not start")
                         end
                         mobilePending = false
                         return
