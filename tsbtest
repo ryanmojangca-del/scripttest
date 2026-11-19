@@ -12662,27 +12662,62 @@ _G.KAMUI_BuildCombat = function(UI)
         -- Tap the game's real mobile DashButton without sending keyboard input.
         -- Its location is read each time so a moved button can still be found.
         local mobilePending = false
+        -- Temporary on-screen diagnostic for the separate mobile dash button.
+        local dashStatus = Instance.new("TextLabel")
+        dashStatus.Name = "SideDashDiagnostic"
+        dashStatus.Parent = RestoreGui
+        dashStatus.AnchorPoint = Vector2.new(0.5, 0)
+        dashStatus.Position = UDim2.new(0.5, 0, 0, 70)
+        dashStatus.Size = UDim2.new(0, 330, 0, 56)
+        dashStatus.ZIndex = 100
+        dashStatus.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+        dashStatus.TextColor3 = Color3.new(1, 1, 1)
+        dashStatus.TextSize = 14
+        dashStatus.TextWrapped = true
+        dashStatus.Font = Enum.Font.Gotham
+        dashStatus.Visible = false
+        local statusVersion = 0
+        local function showDashStatus(text)
+            statusVersion = statusVersion + 1
+            local version = statusVersion
+            dashStatus.Text = "Side dash: " .. text
+            dashStatus.Visible = true
+            task.delay(8, function()
+                if dashStatus.Parent and statusVersion == version then dashStatus.Visible = false end
+            end)
+        end
         mobileButton.MouseButton1Click:Connect(function()
-            if not isCurrent() or not SA.Mobile or not SA.Enabled or SA.Busy or mobilePending then return end
+            if not isCurrent() then showDashStatus("Script is no longer active"); return end
+            if not SA.Mobile then showDashStatus("Mobile mode is off"); return end
+            if not SA.Enabled then showDashStatus("Side dash assist is off"); return end
+            if SA.Busy or mobilePending then showDashStatus("Already running"); return end
             local char = player.Character
             local root = char and char:FindFirstChild("HumanoidRootPart")
             local hum = char and char:FindFirstChildOfClass("Humanoid")
-            if not root or not hum or hum.Health <= 0 or findMover(root) or not closestTarget(root) then return end
+            if not root or not hum or hum.Health <= 0 then showDashStatus("Character not ready"); return end
+            if findMover(root) then showDashStatus("Existing dash detected; wait and retry"); return end
+            if not closestTarget(root) then showDashStatus("No living player target found"); return end
             local pg = player:FindFirstChildOfClass("PlayerGui")
             local touch = pg and pg:FindFirstChild("TouchGui")
             local controls = touch and touch:FindFirstChild("TouchControlFrame")
             local jump = controls and controls:FindFirstChild("JumpButton")
             local button = jump and jump:FindFirstChild("DashButton")
-            if not button or not button:IsA("GuiButton") or not button.Visible then return end
+            if not button or not button:IsA("GuiButton") then showDashStatus("Game DashButton not found"); return end
+            if not button.Visible then showDashStatus("Game DashButton is hidden"); return end
             local pos, size = button.AbsolutePosition, button.AbsoluteSize
-            if size.X <= 0 or size.Y <= 0 then return end
+            if size.X <= 0 or size.Y <= 0 then showDashStatus("Game DashButton has zero size"); return end
             local x, y = pos.X + size.X / 2, pos.Y + size.Y / 2
             mobilePending = true
             _G.KAMUI_MarkScriptDash()
-            local sent = pcall(function()
+            local sent, touchError = pcall(function()
                 VirtualInputManager:SendTouchEvent(98, 0, x, y)
             end)
-            if not sent then mobilePending = false; return end
+            if not sent then
+                mobilePending = false
+                showDashStatus("Touch failed: " .. tostring(touchError))
+                return
+            end
+            showDashStatus("Touch sent; waiting for game dash...")
             task.delay(0.05, function()
                 pcall(function() VirtualInputManager:SendTouchEvent(98, 2, x, y) end)
             end)
@@ -12692,12 +12727,17 @@ _G.KAMUI_BuildCombat = function(UI)
                     and root.Parent and os.clock() < deadline do
                     local mover = findMover(root)
                     if mover then
-                        if not SA.Busy then dashOnce(mover) end
-                        break
+                        if not SA.Busy then
+                            dashOnce(mover)
+                            showDashStatus(SA.Busy and "Dash detected; assist started" or "Dash detected; assist could not start")
+                        end
+                        mobilePending = false
+                        return
                     end
                     RunService.Heartbeat:Wait()
                 end
                 mobilePending = false
+                showDashStatus("No game dash detected after touch")
             end)
         end)
         UIS.InputBegan:Connect(function(input, processed)
