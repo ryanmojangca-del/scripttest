@@ -1,25 +1,24 @@
-local Players = game:GetService("Players")
+local player = game:GetService("Players").LocalPlayer
 local UIS = game:GetService("UserInputService")
-local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local old = playerGui:FindFirstChild("ShiftLockTest")
+local old = playerGui:FindFirstChild("ButtonInspector")
 if old then old:Destroy() end
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "ShiftLockTest"
+gui.Name = "ButtonInspector"
 gui.ResetOnSpawn = false
 gui.Parent = playerGui
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(310, 260)
-frame.Position = UDim2.new(0, 10, 0.2, 0)
+frame.Size = UDim2.fromOffset(360, 220)
+frame.Position = UDim2.new(0, 10, 0.25, 0)
 frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
 frame.Parent = gui
 
 local close = Instance.new("TextButton")
-close.Size = UDim2.fromOffset(45, 30)
-close.Position = UDim2.new(1, -45, 0, 0)
+close.Size = UDim2.fromOffset(40, 30)
+close.Position = UDim2.new(1, -40, 0, 0)
 close.Text = "X"
 close.Parent = frame
 close.MouseButton1Click:Connect(function()
@@ -27,45 +26,40 @@ close.MouseButton1Click:Connect(function()
 end)
 
 local label = Instance.new("TextLabel")
-label.Size = UDim2.new(1, -16, 1, -38)
-label.Position = UDim2.fromOffset(8, 34)
+label.Size = UDim2.new(1, -16, 1, -40)
+label.Position = UDim2.fromOffset(8, 35)
 label.BackgroundTransparency = 1
 label.TextColor3 = Color3.new(1, 1, 1)
-label.TextSize = 13
+label.TextSize = 12
 label.TextWrapped = true
 label.TextXAlignment = Enum.TextXAlignment.Left
 label.TextYAlignment = Enum.TextYAlignment.Top
 label.Font = Enum.Font.Code
+label.Text = "Tap the game's shift-lock button."
 label.Parent = frame
 
-task.spawn(function()
-    local lines = {"Turn shift lock ON, then OFF:"}
-    local last = nil
-
-    for i = 1, 60 do
-        if not gui.Parent then break end
-
-        local char = player.Character
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        local state = "No humanoid"
-
-        if hum then
-            local offset = hum.CameraOffset
-            state = string.format(
-                "Mouse: %s | AutoRotate: %s\nOffset: %.2f, %.2f, %.2f",
-                UIS.MouseBehavior.Name,
-                tostring(hum.AutoRotate),
-                offset.X, offset.Y, offset.Z
-            )
-        end
-
-        if state ~= last then
-            table.insert(lines, string.format("[%ds] %s", math.floor(i / 2), state))
-            if #lines > 8 then table.remove(lines, 2) end
-            label.Text = table.concat(lines, "\n\n")
-            last = state
-        end
-
-        task.wait(0.5)
+UIS.InputEnded:Connect(function(input)
+    if not gui.Parent or input.UserInputType ~= Enum.UserInputType.Touch then
+        return
     end
+
+    local x, y = input.Position.X, input.Position.Y
+    local objects = playerGui:GetGuiObjectsAtPosition(x, y)
+
+    task.delay(0.3, function()
+        if not gui.Parent then return end
+
+        local lines = {"Objects under your tap:"}
+        for _, obj in ipairs(objects) do
+            if not obj:IsDescendantOf(gui) then
+                local detail = obj:GetFullName() .. " (" .. obj.ClassName .. ")"
+                if obj:IsA("ImageButton") or obj:IsA("ImageLabel") then
+                    detail = detail .. "\nImage: " .. obj.Image
+                end
+                table.insert(lines, detail)
+                if #lines >= 5 then break end
+            end
+        end
+        label.Text = table.concat(lines, "\n\n")
+    end)
 end)
