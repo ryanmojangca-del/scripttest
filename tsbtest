@@ -296,6 +296,8 @@ end
 
 --// phone only: puts the game's mobile buttons back after virtual keyboard/mouse input
 local function restoreTouchInput()
+    -- The native mobile path sends no virtual keyboard/mouse input.
+    if _G.KAMUI_BackdashMobile then return end
     if _G.KAMUI_RestoreTouchInput then
         pcall(_G.KAMUI_RestoreTouchInput)
     end
@@ -342,6 +344,150 @@ local function simulateM1Click(
     end
 end
 
+-- Mobile path: invoke the game's existing GUI handlers without synthetic
+-- keyboard/mouse events, so Roblox should stay in touch input mode.
+local mobileStatus = function(message) warn("[KAMUI mobile backdash] " .. tostring(message)) end
+local mobileRun = nil
+local function mobileSignal(button, name)
+    if not button or not button.Parent then return false, "Game button disappeared" end
+    local ok, signal = pcall(function() return button[name] end)
+    if not ok or not signal then return false, name .. " unavailable" end
+    local connections
+    if type(getconnections) == "function" then
+        local got, result = pcall(getconnections, signal)
+        if got and type(result) == "table" then
+            connections = result
+            local enabled = 0
+            for _, connection in ipairs(result) do
+                if connection.Enabled ~= false then enabled = enabled + 1 end
+            end
+            if enabled == 0 then return false, name .. " has no active handlers" end
+        end
+    end
+    local pos, size = button.AbsolutePosition, button.AbsoluteSize
+    local x, y = pos.X + size.X / 2, pos.Y + size.Y / 2
+    if type(firesignal) == "function" then
+        local fired, err = pcall(firesignal, signal, x, y)
+        if fired then return true end
+        if not connections then return false, tostring(err) end
+    end
+    if connections then
+        local fired, lastError = false, "No enabled handler could be fired"
+        for _, connection in ipairs(connections) do
+            if connection.Enabled ~= false then
+                local worked, err = pcall(function() connection:Fire(x, y) end)
+                if worked then fired = true else lastError = tostring(err) end
+            end
+        end
+        return fired, fired and nil or lastError
+    end
+    return false, "Executor does not expose signal firing"
+end
+local function stopMobileRun(run)
+    if not run or run.stopped then return end
+    run.stopped = true
+    if run.binding then pcall(function() RunService:UnbindFromRenderStep(run.binding) end) end
+    if run.controller then
+        pcall(function()
+            if run.controller.moveVector == run.inputVector then run.controller.moveVector = run.originalMove end
+        end)
+    end
+    for button in pairs(run.held) do
+        pcall(function() mobileSignal(button, "MouseButton1Up") end)
+        run.held[button] = nil
+    end
+    if mobileRun == run then mobileRun = nil end
+end
+local function performMobileBackdash(keyCode)
+    if mobileRun then mobileStatus("Already running"); return false end
+    local char = localPlayer.Character
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    local pg = localPlayer:FindFirstChildOfClass("PlayerGui")
+    local hotbar = pg and pg:FindFirstChild("Hotbar")
+    hotbar = hotbar and hotbar:FindFirstChild("Backpack")
+    hotbar = hotbar and hotbar:FindFirstChild("Hotbar")
+    local indices = {[Enum.KeyCode.One] = "1", [Enum.KeyCode.Two] = "2", [Enum.KeyCode.Three] = "3", [Enum.KeyCode.Four] = "4"}
+    local slot = hotbar and hotbar:FindFirstChild(indices[keyCode] or "")
+    local skill = slot and slot:FindFirstChild("Base")
+    local touch = pg and pg:FindFirstChild("TouchGui")
+    local controlFrame = touch and touch:FindFirstChild("TouchControlFrame")
+    local jump = controlFrame and controlFrame:FindFirstChild("JumpButton")
+    local punch = jump and jump:FindFirstChild("PunchButton")
+    local dash = jump and jump:FindFirstChild("DashButton")
+    if not humanoid or humanoid.Health <= 0 or not root then mobileStatus("Character not ready"); return false end
+    if not skill or not skill:IsA("GuiButton") then mobileStatus("Skill " .. tostring(indices[keyCode]) .. " button not found"); return false end
+    if not sAutoUnequip and (not punch or not punch:IsA("GuiButton")) then mobileStatus("Game M1 button not found"); return false end
+    if not dash or not dash:IsA("GuiButton") then mobileStatus("Game dash button not found"); return false end
+    if type(firesignal) ~= "function" and type(getconnections) ~= "function" then mobileStatus("Executor cannot fire button handlers"); return false end
+    local run = {held = {}, inputVector = Vector3.new(0, 0, 1), binding = "KAMUI_BackdashTouch_" .. tostring(math.floor(os.clock() * 1000000))}
+    mobileRun = run
+    local epoch = lifeEpoch
+    local function valid() return mobileRun == run and not run.stopped and lifeEpoch == epoch and localPlayer.Character == char and humanoid.Parent and humanoid.Health > 0 and root.Parent end
+    local function press(button)
+        local ok, err = mobileSignal(button, "MouseButton1Down")
+        if not ok then error(err) end
+        run.held[button] = true
+    end
+    local function release(button)
+        local ok, err = mobileSignal(button, "MouseButton1Up")
+        if not ok then error(err) end
+        run.held[button] = nil
+    end
+    local ok, err = pcall(function()
+        press(skill)
+        task.wait()
+        if not valid() then error("Character changed") end
+        release(skill)
+        local clicked, why = mobileSignal(skill, "MouseButton1Click")
+        if not clicked then error("Skill click: " .. tostring(why)) end
+        if not sAutoUnequip then
+            task.wait()
+            if not valid() then error("Character changed") end
+            press(punch)
+            task.wait()
+            if not valid() then error("Character changed") end
+            release(punch)
+        end
+        task.wait()
+        if not valid() then error("Character changed") end
+        pcall(function()
+            local ps = localPlayer:FindFirstChild("PlayerScripts")
+            local module = ps and ps:FindFirstChild("PlayerModule")
+            local controls = module and require(module):GetControls()
+            local active = controls and controls.activeController
+            if active and typeof(active.moveVector) == "Vector3" then
+                run.controller, run.originalMove = active, active.moveVector
+            end
+        end)
+        local prepared = false
+        RunService:BindToRenderStep(run.binding, Enum.RenderPriority.Character.Value + 1, function()
+            if not valid() then return end
+            if run.controller then pcall(function() run.controller.moveVector = run.inputVector end) end
+            local cam = Workspace.CurrentCamera
+            if not cam then return end
+            local look = cam.CFrame.LookVector
+            local flat = Vector3.new(look.X, 0, look.Z)
+            if flat.Magnitude > 0.001 then
+                humanoid:Move(-flat.Unit, false)
+                prepared = true
+            end
+        end)
+        task.wait(0.08)
+        if not valid() then error("Character changed") end
+        if not prepared then error("Could not prepare backward direction") end
+        press(dash)
+        task.wait(0.06)
+        if not valid() then error("Character changed") end
+        release(dash)
+        task.wait(0.04)
+    end)
+    stopMobileRun(run)
+    if not ok then mobileStatus("Stopped: " .. tostring(err)); return false end
+    mobileStatus(sAutoUnequip and "Skill / backdash handlers sent (auto-unequip)" or "Skill / M1 / backdash handlers sent")
+    return true
+end
+
 --============================================================
 -- BACKDASH MACRO
 --============================================================
@@ -359,6 +505,9 @@ local function performBackDashMacro(
 )
     if not isAlive() then
         return false
+    end
+    if _G.KAMUI_BackdashMobile then
+        return performMobileBackdash(keyCode)
     end
     local epoch = lifeEpoch
     simulateM1Click(keyCode)
@@ -830,12 +979,17 @@ local function executeMacro(index)
         end
         if not ok then
             warn("[KAMUI] Backdash macro error:", result)
-            pcall(tapKey, keyS)
-            pcall(tapKey, keyQ)
-            pcall(tapKey, macroKey)
-            pcall(function()
-                VirtualInputManager:SendMouseButtonEvent(halfViewportX, halfViewportY, 0, false, game, 0)
-            end)
+            if not _G.KAMUI_BackdashMobile then
+                pcall(tapKey, keyS)
+                pcall(tapKey, keyQ)
+                pcall(tapKey, macroKey)
+                pcall(function()
+                    VirtualInputManager:SendMouseButtonEvent(halfViewportX, halfViewportY, 0, false, game, 0)
+                end)
+            else
+                stopMobileRun(mobileRun)
+                mobileStatus("Error: " .. tostring(result))
+            end
             return
         end
         --====================================================
@@ -1103,6 +1257,7 @@ conns[#conns + 1] = UserInputService.InputBegan:Connect(
 conns[#conns + 1] = localPlayer.CharacterAdded:Connect(function()
     lifeEpoch = lifeEpoch + 1
     magnetRequest = magnetRequest + 1
+    stopMobileRun(mobileRun)
     releaseHeldInput()
     restoreTouchInput()
     task.delay(0.4, restoreTouchInput)
@@ -1152,6 +1307,7 @@ RestoreImage.ZIndex = 101
 applyCorner(RestoreImage, 100)
 applyCorner(RestoreButton, 100)
 _G.KAMUI_BackdashCleanup = function()
+    stopMobileRun(mobileRun)
     magnetRequest = magnetRequest + 1
     for _, c in ipairs(conns) do
         pcall(function()
@@ -1289,6 +1445,33 @@ RestoreButton.MouseButton1Click:Connect(
 -- red only as an accent, switch + slider styled like the menu.
 --============================================================
 if _G.KAMUI_BackdashMobile then
+    local status = Instance.new("TextLabel")
+    status.Name = "MobileBackdashStatus"
+    status.AnchorPoint = Vector2.new(0.5, 0)
+    status.Position = UDim2.new(0.5, 0, 0, 72)
+    status.Size = UDim2.new(0.65, 0, 0, 46)
+    status.BackgroundColor3 = Color3.fromRGB(20, 20, 22)
+    status.BackgroundTransparency = 0.08
+    status.BorderSizePixel = 0
+    status.TextColor3 = Color3.fromRGB(245, 245, 245)
+    status.Font = Enum.Font.Gotham
+    status.TextSize = 13
+    status.TextWrapped = true
+    status.ZIndex = 90
+    status.Visible = false
+    status.Parent = ScreenGui
+    applyCorner(status, 8)
+    local statusSerial = 0
+    mobileStatus = function(message)
+        statusSerial = statusSerial + 1
+        local serial = statusSerial
+        if not status.Parent then return end
+        status.Text = "BACKDASH MOBILE TEST\n" .. tostring(message)
+        status.Visible = true
+        task.delay(8, function()
+            if status.Parent and statusSerial == serial then status.Visible = false end
+        end)
+    end
     MainFrame.Visible = false
     RestoreButton.Visible = false
     for i = 1, 4 do
@@ -1656,6 +1839,7 @@ if _G.KAMUI_BackdashMobile then
         BDUI.onColor(paintVisibility)
     end
 end
+
 
 -- TEMPORARY MOBILE BUTTON INSPECTOR (read-only; does not fire handlers)
 if _G.KAMUI_BackdashMobile then
