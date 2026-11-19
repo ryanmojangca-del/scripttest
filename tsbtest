@@ -12131,8 +12131,8 @@ _G.KAMUI_BuildCombat = function(UI)
         local mobileButton, mobileDot, mobileStroke, mobileLabel
         local function refreshAssistMobile()
             if not mobileButton then return end
-            -- Mobile uses the game's own dash button; do not show the old key-simulating button.
-            mobileButton.Visible = false
+            -- Separate mobile action button; normal game dashes stay unmodified.
+            mobileButton.Visible = SA.Mobile
             mobileDot.BackgroundColor3 = SA.Enabled and THEME.BrightRed or Color3.fromRGB(70, 70, 74)
             mobileLabel.TextColor3 = SA.Enabled and THEME.Text or THEME.MutedText
             mobileStroke.Color = SA.Enabled and THEME.Red or Color3.fromRGB(58, 10, 15)
@@ -12265,7 +12265,7 @@ _G.KAMUI_BuildCombat = function(UI)
             key.Text = "Press key..."
         end)
 
-        toggleRow("Mobile mode", "Guides your normal mobile dash", function()
+        toggleRow("Mobile mode", "Shows a separate Side dash button", function()
             return SA.Mobile
         end, function(v)
             SA.Mobile = v
@@ -12516,9 +12516,8 @@ _G.KAMUI_BuildCombat = function(UI)
                     task.delay(0.1, _G.KAMUI_RestoreTouchInput, SA.Mobile)
                 end
             end)
-            end -- original simulated-input path is PC/keybind only
+            end -- simulated-input path for PC and the separate mobile button
             local started = os.clock()
-            local mobileTeleported = false
             local conn
             local function finishAssist()
                 if conn then conn:Disconnect(); conn = nil end
@@ -12542,61 +12541,6 @@ _G.KAMUI_BuildCombat = function(UI)
                     return
                 end
                 moverSeen = true
-                -- Mobile only: start pulling toward the target's back while the
-                -- game's dash mover is still active, then teleport near the end.
-                -- This is a timing estimate, not a game-provided end signal.
-                if existingMover then
-                    local elapsed = os.clock() - started
-                    if mobileTeleported then
-                        pcall(function()
-                            local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
-                            local world = moverToWorld(mover, mover[prop])
-                            if world then
-                                local stopped = moverFromWorld(mover, Vector3.new(0, world.Y, 0))
-                                if stopped then mover[prop] = stopped end
-                            end
-                        end)
-                        return
-                    end
-                    if elapsed >= 0.12 then
-                        local forward = flat(target.CFrame.LookVector)
-                        if forward.Magnitude > 0.01 then
-                            local behind = flat(target.Position) - forward.Unit * 3.5
-                            local delta = behind - flat(root.Position)
-                            local distance = delta.Magnitude
-                            if distance <= 24 then
-                                if elapsed >= 0.20 then
-                                    local ok = pcall(function()
-                                        local position = root.Position
-                                        root.CFrame = root.CFrame + Vector3.new(behind.X - position.X, 0, behind.Z - position.Z)
-                                        local velocity = root.AssemblyLinearVelocity
-                                        root.AssemblyLinearVelocity = Vector3.new(0, velocity.Y, 0)
-                                        local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
-                                        local world = moverToWorld(mover, mover[prop])
-                                        if world then
-                                            local stopped = moverFromWorld(mover, Vector3.new(0, world.Y, 0))
-                                            if stopped then mover[prop] = stopped end
-                                        end
-                                    end)
-                                    if ok then mobileTeleported = true end
-                                    return
-                                elseif distance > 0.05 then
-                                    pcall(function()
-                                        local prop = mover:IsA("LinearVelocity") and "VectorVelocity" or "Velocity"
-                                        local world = moverToWorld(mover, mover[prop])
-                                        if not world then return end
-                                        local speed = flat(world).Magnitude
-                                        if speed < 0.1 then return end
-                                        local directed = delta.Unit * speed + Vector3.new(0, world.Y, 0)
-                                        local result = moverFromWorld(mover, directed)
-                                        if result then mover[prop] = result end
-                                    end)
-                                    return
-                                end
-                            end
-                        end
-                    end
-                end
                 local goal = (hook and (flat(target.Position) + hook.flank * 2.6 + hook.toward * 1.2))
                     or (curve and (flat(target.Position) + curve.back * 3.5) or destination())
                 if not goal then finishAssist(); return end
@@ -12658,27 +12602,10 @@ _G.KAMUI_BuildCombat = function(UI)
                 end)
             end)
         end
-        -- Observe the normal game dash on touch devices. No virtual keyboard/mouse
-        -- input or synthetic touch is sent by this mobile path.
-        local observedMover
-        local nativeDashConn
-        nativeDashConn = RunService.Heartbeat:Connect(function()
-            if not isCurrent() or not page.Parent then
-                nativeDashConn:Disconnect()
-                return
-            end
-            if not (SA.Enabled and SA.Mobile and UIS.TouchEnabled) then
-                observedMover = nil
-                return
-            end
-            local char = player.Character
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-            local mover = root and findMover(root) or nil
-            if mover == observedMover then return end
-            observedMover = mover
-            if mover and not SA.Busy and (os.clock() - (_G.KAMUI_ScriptDashAt or -math.huge)) > 0.8 then
-                dashOnce(mover)
-            end
+        -- The dedicated mobile button uses the same dash path as the PC keybind.
+        -- Native game dashes are not intercepted.
+        mobileButton.MouseButton1Click:Connect(function()
+            if SA.Mobile then dashOnce() end
         end)
         UIS.InputBegan:Connect(function(input, processed)
             if not isCurrent() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
