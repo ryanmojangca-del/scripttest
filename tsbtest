@@ -13353,3 +13353,91 @@ task.delay(3, function()
         end)
     end
 end)
+
+
+--// TEMPORARY MOBILE BUTTON INSPECTOR: remove this block after testing.
+do
+    local pg = player:WaitForChild("PlayerGui")
+    local old = pg:FindFirstChild("KamuiButtonInspector")
+    if old then old:Destroy() end
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "KamuiButtonInspector"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 999
+    gui.Parent = pg
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.fromOffset(390, 250)
+    frame.Position = UDim2.new(0, 10, 0.25, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+    frame.Parent = gui
+    local close = Instance.new("TextButton")
+    close.Size = UDim2.fromOffset(40, 30)
+    close.Position = UDim2.new(1, -40, 0, 0)
+    close.Text = "X"
+    close.Parent = frame
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -16, 1, -40)
+    label.Position = UDim2.fromOffset(8, 35)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = Color3.new(1, 1, 1)
+    label.TextSize = 12
+    label.TextWrapped = true
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextYAlignment = Enum.TextYAlignment.Top
+    label.Font = Enum.Font.Code
+    label.Text = "Tap the game's normal dash button, then screenshot this box."
+    label.Parent = frame
+    local conn
+    close.MouseButton1Click:Connect(function()
+        if conn then conn:Disconnect() end
+        gui:Destroy()
+    end)
+    conn = UIS.InputEnded:Connect(function(input)
+        if not isCurrent() or not gui.Parent then
+            if conn then conn:Disconnect() end
+            if gui.Parent then gui:Destroy() end
+            return
+        end
+        if input.UserInputType ~= Enum.UserInputType.Touch then return end
+        local x, y = input.Position.X, input.Position.Y
+        local p, sz = frame.AbsolutePosition, frame.AbsoluteSize
+        if x >= p.X and x <= p.X + sz.X and y >= p.Y and y <= p.Y + sz.Y then return end
+        local ok, objects = pcall(function()
+            return pg:GetGuiObjectsAtPosition(x, y)
+        end)
+        if not ok then
+            label.Text = "Could not inspect this tap: " .. tostring(objects)
+            return
+        end
+        local hits, seen = {}, {}
+        for _, obj in ipairs(objects) do
+            if not obj:IsDescendantOf(gui) then
+                local button = obj
+                while button and button ~= pg and not button:IsA("GuiButton") do
+                    button = button.Parent
+                end
+                if button and button ~= pg and not seen[button] then
+                    seen[button] = true
+                    table.insert(hits, button)
+                end
+            end
+        end
+        task.delay(0.3, function()
+            if not gui.Parent or not isCurrent() then return end
+            local lines = {"Game buttons under your tap:"}
+            for i, button in ipairs(hits) do
+                if i > 3 then break end
+                local text = button:GetFullName() .. " (" .. button.ClassName .. ")"
+                if button:IsA("ImageButton") then text = text .. "\nImage: " .. button.Image end
+                if button:IsA("TextButton") then text = text .. "\nText: " .. button.Text end
+                table.insert(lines, text)
+            end
+            if #hits == 0 then
+                table.insert(lines, "No PlayerGui button found. Tap the normal game dash again.")
+            end
+            label.Text = table.concat(lines, "\n\n")
+        end)
+    end)
+end
+--// END TEMPORARY MOBILE BUTTON INSPECTOR
