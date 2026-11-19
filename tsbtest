@@ -12625,12 +12625,13 @@ _G.KAMUI_BuildCombat = function(UI)
         local function showDashStatus(text)
             statusVersion = statusVersion + 1
             local version = statusVersion
-            dashStatus.Text = "Side dash: " .. text
+            dashStatus.Text = "DASH TEST B01\nSide dash: " .. text
             dashStatus.Visible = true
             task.delay(30, function()
                 if dashStatus.Parent and statusVersion == version then dashStatus.Visible = false end
             end)
         end
+        showDashStatus("Loaded B01: PC-style mobile steering")
         -- Temporary separate signal diagnostic, kept available for mobile testing.
         dashCheckButton = Instance.new("TextButton")
         dashCheckButton.Name = "DashCheckButton"
@@ -12641,7 +12642,7 @@ _G.KAMUI_BuildCombat = function(UI)
         dashCheckButton.TextColor3 = Color3.new(1, 1, 1)
         dashCheckButton.Font = Enum.Font.Gotham
         dashCheckButton.TextSize = 12
-        dashCheckButton.Text = "Dash check"
+        dashCheckButton.Text = "Dash check B01"
         dashCheckButton.ZIndex = 50
         dashCheckButton.Visible = SA.Mobile
         dashCheckButton.MouseButton1Click:Connect(function()
