@@ -10931,22 +10931,11 @@ _G.KAMUI_BuildCombat = function(UI)
         end, 48, 140, function(value)
             return string.format("%d px", math.floor(value + 0.5))
         end)
-        -- Match Side dash assist: a tap triggers once; dragging moves the button.
-        local touch, touchStart = nil, nil
+        -- Trigger immediately on press. Dragging the button also triggers a catch.
         button.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-                touch, touchStart = input, Vector2.new(input.Position.X, input.Position.Y)
-            end
-        end)
-        UIS.InputEnded:Connect(function(input)
-            if not touch or not touchStart then return end
-            local matches = input == touch or (touch.UserInputType == Enum.UserInputType.MouseButton1
-                and input.UserInputType == Enum.UserInputType.MouseButton1)
-            if not matches then return end
-            local finish = Vector2.new(input.Position.X, input.Position.Y)
-            local wasTap = (finish - touchStart).Magnitude <= 18
-            touch, touchStart = nil, nil
-            if wasTap and isCurrent() and button.Visible and CC.Enabled and CC.CatchKeyMode
+            if input.UserInputType ~= Enum.UserInputType.Touch
+                and input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+            if isCurrent() and button.Visible and CC.Enabled and CC.CatchKeyMode
                 and CC.CatchManualMobile and CC.TriggerCatchKey then
                 CC.TriggerCatchKey()
             end
