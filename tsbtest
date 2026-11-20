@@ -11581,6 +11581,7 @@ _G.KAMUI_BuildCombat = function(UI)
         local dashAnimations = {"10480796021", "10480793962"}
         local connections, watched = {}, {}
         local pending, lastCatch, lastPos, motionLatch = {}, {}, {}, {}
+        local motionQuietSince = {} -- rearm after a sustained slowdown, not one replication frame
         local dashPending, dashVelocity, dashMarker, m1Marker = {}, {}, {}, {} -- separate catch signals
         local m1Ready = {} -- brief window to recognize an M1 + side dash
         local lastRootPos = nil
@@ -11844,6 +11845,7 @@ _G.KAMUI_BuildCombat = function(UI)
         connect(Players.PlayerAdded, watchPlayer)
         connect(Players.PlayerRemoving, function(other)
             if watched[other] then disconnectAll(watched[other]); watched[other] = nil end
+            lastPos[other], dashVelocity[other], motionLatch[other], motionQuietSince[other] = nil, nil, nil, nil
         end)
         local cleanup
         cleanup = function()
@@ -11863,6 +11865,7 @@ _G.KAMUI_BuildCombat = function(UI)
                 table.clear(lastPos)
                 table.clear(dashVelocity)
                 table.clear(motionLatch)
+                table.clear(motionQuietSince)
                 table.clear(pending)
                 table.clear(dashPending)
                 table.clear(dashMarker)
@@ -11962,6 +11965,18 @@ _G.KAMUI_BuildCombat = function(UI)
                             motionLatch[other] = true
                         end
                         local now = os.clock()
+                        -- Rearm the movement fallback only after the enemy slows
+                        -- down for a short period. This avoids repeated swings
+                        -- during one burst of movement or a single dropped sample.
+                        local movementThreshold = math.max(1, tonumber(CC.Speed) or 60)
+                        if velocity.Magnitude < movementThreshold * 0.6 then
+                            motionQuietSince[other] = motionQuietSince[other] or now
+                            if now - motionQuietSince[other] >= 0.15 then
+                                motionLatch[other] = nil
+                            end
+                        else
+                            motionQuietSince[other] = nil
+                        end
                         -- Drop expired dash/M1 signals so later ordinary walking
                         -- does not reuse an earlier attack or dash event.
                         local marker = dashMarker[enemy]
@@ -12001,10 +12016,27 @@ _G.KAMUI_BuildCombat = function(UI)
                             m1Marker[enemy] = nil
                             m1Ready[enemy] = nil
                         end
+                        -- Backup only: an opponent moving quickly toward us can
+                        -- be treated as a dash even without a marker/animation.
+                        -- Use their movement, not our own approach, and preserve
+                        -- all normal reach, state, cooldown and ghost-block gates.
+                        if previous and not pending[enemy] and not dashPending[enemy]
+                            and not motionLatch[other] and d > 0.1 and d <= reach
+                            and velocity.Magnitude >= movementThreshold
+                            and velocity:Dot(toMe.Unit) >= movementThreshold * 0.25 then
+                            dashPending[enemy] = true
+                            local caught = fireCatch(target, enemy, nil, false, true)
+                            if caught then
+                                motionLatch[other] = true
+                            else
+                                dashPending[enemy] = nil
+                            end
+                        end
                     else
                         lastPos[other] = nil
                         dashVelocity[other] = nil
                         motionLatch[other] = nil
+                        motionQuietSince[other] = nil
                     end
                 end
             end
@@ -13330,23 +13362,12 @@ _G.KAMUI_BuildCombat = function(UI)
             end
             dashOnce(nil, trigger)
         end
-        local dashTouch, dashTouchStart = nil, nil
+        -- Trigger immediately when the button is pressed; dragging also triggers.
         mobileButton.InputBegan:Connect(function(input)
             if input.UserInputType == Enum.UserInputType.Touch
                 or input.UserInputType == Enum.UserInputType.MouseButton1 then
-                dashTouch = input
-                dashTouchStart = Vector2.new(input.Position.X, input.Position.Y)
+                activateMobileDash()
             end
-        end)
-        UIS.InputEnded:Connect(function(input)
-            if not dashTouch or not dashTouchStart then return end
-            local matches = input == dashTouch or (dashTouch.UserInputType == Enum.UserInputType.MouseButton1
-                and input.UserInputType == Enum.UserInputType.MouseButton1)
-            if not matches then return end
-            local finish = Vector2.new(input.Position.X, input.Position.Y)
-            local wasTap = (finish - dashTouchStart).Magnitude <= 18
-            dashTouch, dashTouchStart = nil, nil
-            if wasTap then activateMobileDash() end
         end)
         UIS.InputBegan:Connect(function(input, processed)
             if not isCurrent() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
