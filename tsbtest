@@ -10570,9 +10570,18 @@ do
     local CC = _G.KAMUI_Combat
     CC.Enabled = false -- off by default
     CC.Range = 18      -- studs: only react to dashes this close to you
+    CC.CatchPredictionMs = 180 -- fixed hidden prediction setting
+    CC.CatchReach = 15 -- fixed hidden estimate; does not change server reach
+    CC.CatchGhostBlock = false -- separate brief block before an M1 catch
+    CC.CatchGhostHoldSeconds = 0.06 -- independent ghost block hold
+    CC.CatchKeyMode = false -- when on, use one manual catch per key press
+    CC.CatchKey = "None" -- deliberately unbound by default
+    CC.CatchManualMobile = false
+    CC.CatchManualButtonSize = 84
     CC.Speed = 60      -- studs/second: how fast a player has to move to count as dashing
     CC.Cooldown = 0    -- seconds between two catches (fixed, no option)
     CC.LockAim = false -- off while M1 catch is off
+    CC.LockAimMode = "Legit" -- Legit: camera; Blatant: instant character rotation
     CC.Aimbot = false  -- Aimbot (continuous), toggled from the tab / keybind / mobile button
     CC.AimKey = "V"     -- keybind that turns the aimbot on / off
     CC.AimMobile = false -- Mobile mode: on-screen "Aimbot: ON/OFF" button
@@ -10582,6 +10591,8 @@ do
     CC.Block = false   -- Auto block (off by default)
     CC.BlockRange = 12 -- studs: its own range, separate from the M1 catch range
     CC.BlockFOV = false -- separate FOV Display for the auto block range
+    CC.BlockLockAim = false -- independent Auto block lock aim
+    CC.BlockLockAimMode = "Legit" -- independent Legit / Blatant mode
     CC.BlockAutoM1 = false -- auto M1 punish / interrupt
     CC.BlockDashPredict = false -- respond to side-dash markers and animations
 end
@@ -10767,17 +10778,181 @@ _G.KAMUI_BuildCombat = function(UI)
         end)
         return row
     end
-    local paintCatchFOV, paintCatchLock
-    toggleRow("M1 catch", "M1 when someone dashes at you", function()
+    local paintCatchFOV, paintCatchLock, paintCatchManual, paintCatchMobile, paintCatchGhost
+    toggleRow("M1 catch", "Catch someone dashing at you", function()
         return CC.Enabled
     end, function(v)
         CC.Enabled = v
         if not v then
+            if CC.CancelCatchGhostBlock then CC.CancelCatchGhostBlock() end
+            if CC.StopCatchLock then CC.StopCatchLock() end
             CC.FOV, CC.LockAim = false, false
+            CC.CatchGhostBlock, CC.CatchKeyMode, CC.CatchManualMobile = false, false, false
             if paintCatchFOV then paintCatchFOV() end
             if paintCatchLock then paintCatchLock() end
+            if paintCatchManual then paintCatchManual() end
+            if paintCatchMobile then paintCatchMobile() end
+            if paintCatchGhost then paintCatchGhost() end
         end
+        if CC.RefreshCatchManualUI then CC.RefreshCatchManualUI() end
     end)
+    do
+        local keyRow, mobileRow, sizeRow, button, buttonLabel, buttonDot, buttonStroke
+        local keyButton
+        local capturing, down, downKey = false, false, nil
+        local function refreshManualUI()
+            local visible = CC.CatchKeyMode
+            if keyRow then keyRow.Visible = visible end
+            if mobileRow then mobileRow.Visible = visible end
+            if sizeRow then sizeRow.Visible = visible end
+            if button then
+                button.Visible = CC.Enabled and visible and CC.CatchManualMobile
+                buttonDot.BackgroundColor3 = CC.Enabled and THEME.BrightRed or Color3.fromRGB(70, 70, 74)
+                buttonLabel.TextColor3 = CC.Enabled and THEME.Text or THEME.MutedText
+                buttonStroke.Color = CC.Enabled and THEME.Red or Color3.fromRGB(58, 10, 15)
+            end
+            if not visible then
+                capturing, down, downKey = false, false, nil
+                if keyButton then keyButton.Text = CC.CatchKey end
+            end
+        end
+        CC.RefreshCatchManualUI = refreshManualUI
+        local _, catchManualPaint = toggleRow("Manual mode", nil, function()
+            return CC.CatchKeyMode
+        end, function(v)
+            if CC.CancelCatchGhostBlock then CC.CancelCatchGhostBlock() end
+            CC.CatchKeyMode = v
+            refreshManualUI()
+        end, nil, function() return CC.Enabled end)
+        paintCatchManual = catchManualPaint
+        keyRow = mk("Frame", {Name = "M1CatchKeyRow", BackgroundTransparency = 1, BorderSizePixel = 0}, nil)
+        UI.addRow(card, keyRow, UI.ROW)
+        label(keyRow, "M1 catch keybind", nil)
+        keyButton = mk("TextButton", {
+            Name = "M1CatchKey", BackgroundColor3 = CHIP, BorderSizePixel = 0,
+            AutoButtonColor = false, AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.new(0, 80, 0, 26),
+            Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = THEME.Text, Text = CC.CatchKey
+        }, keyRow)
+        local unbind = UI.compactKeybind(keyRow, keyButton)
+        unbind.MouseButton1Click:Connect(function()
+            if not isCurrent() then return end
+            capturing, down, downKey = false, false, nil
+            CC.CatchKey = "None"
+            keyButton.Text = CC.CatchKey
+        end)
+        keyButton.MouseButton1Click:Connect(function()
+            if not isCurrent() then return end
+            capturing = true
+            keyButton.Text = "Press key..."
+        end)
+        UIS.InputBegan:Connect(function(input, processed)
+            if not isCurrent() or input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            if capturing then
+                capturing = false
+                if input.KeyCode ~= Enum.KeyCode.Escape and input.KeyCode ~= Enum.KeyCode.Unknown then
+                    CC.CatchKey = input.KeyCode.Name
+                end
+                down, downKey = true, input.KeyCode
+                keyButton.Text = CC.CatchKey
+                return
+            end
+            if processed or UIS:GetFocusedTextBox() or down or not CC.Enabled or not CC.CatchKeyMode then return end
+            if CC.CatchKey ~= "None" and input.KeyCode.Name == CC.CatchKey then
+                down, downKey = true, input.KeyCode
+                if CC.TriggerCatchKey then CC.TriggerCatchKey() end
+            end
+        end)
+        UIS.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == downKey then
+                down, downKey = false, nil
+            end
+        end)
+        mobileRow, paintCatchMobile = toggleRow("Mobile button", "Show an on-screen M1 catch button", function()
+            return CC.CatchManualMobile
+        end, function(v)
+            CC.CatchManualMobile = v
+            refreshManualUI()
+        end, nil, function() return CC.Enabled and CC.CatchKeyMode end)
+        local oldButton = RestoreGui:FindFirstChild("M1CatchManualButton")
+        if oldButton then oldButton:Destroy() end
+        button = Instance.new("TextButton")
+        button.Name = "M1CatchManualButton"
+        button:SetAttribute("KamuiSkinned", true)
+        button.ZIndex = 50
+        button.AnchorPoint = Vector2.new(0.5, 0.5)
+        button.Position = UDim2.new(0.7, 28, 0.52, 0)
+        button.Size = UDim2.fromOffset(CC.CatchManualButtonSize, CC.CatchManualButtonSize)
+        button.BackgroundColor3 = THEME.BackgroundLight
+        button.BackgroundTransparency = 0
+        button.BorderSizePixel = 0
+        button.AutoButtonColor = false
+        button.Text = ""
+        button.Visible = false
+        button.Draggable = true
+        button.Active = true
+        button.Parent = RestoreGui
+        UI.corner(button, CC.CatchManualButtonSize / 2)
+        buttonStroke = Instance.new("UIStroke")
+        buttonStroke.Thickness = 1
+        buttonStroke.Parent = button
+        buttonDot = Instance.new("Frame")
+        buttonDot.Name = "M1CatchDot"
+        buttonDot.AnchorPoint = Vector2.new(0.5, 0.5)
+        buttonDot.Position = UDim2.new(0.5, 0, 0.68, 0)
+        buttonDot.Size = UDim2.fromOffset(5, 5)
+        buttonDot.BorderSizePixel = 0
+        buttonDot.ZIndex = 51
+        buttonDot.Parent = button
+        UI.corner(buttonDot, 100)
+        buttonLabel = Instance.new("TextLabel")
+        buttonLabel.Name = "M1CatchLabel"
+        buttonLabel.BackgroundTransparency = 1
+        buttonLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+        buttonLabel.Position = UDim2.new(0.5, 0, 0.42, 0)
+        buttonLabel.Size = UDim2.new(1, -8, 0, 22)
+        buttonLabel.TextXAlignment = Enum.TextXAlignment.Center
+        buttonLabel.TextYAlignment = Enum.TextYAlignment.Center
+        buttonLabel.Font = Enum.Font.GothamMedium
+        buttonLabel.TextSize = 11
+        buttonLabel.Text = "M1 catch"
+        buttonLabel.ZIndex = 51
+        buttonLabel.Parent = button
+        sizeRow = sliderRow("Button size", function()
+            return CC.CatchManualButtonSize
+        end, function(value)
+            local size = math.clamp(math.floor(value + 0.5), 48, 140)
+            CC.CatchManualButtonSize = size
+            button.Size = UDim2.fromOffset(size, size)
+            UI.corner(button, size / 2)
+            buttonLabel.TextSize = math.clamp(math.floor(size * 0.13 + 0.5), 8, 18)
+            local dotSize = math.clamp(math.floor(size * 5 / 84 + 0.5), 4, 8)
+            buttonDot.Size = UDim2.fromOffset(dotSize, dotSize)
+        end, 48, 140, function(value)
+            return string.format("%d px", math.floor(value + 0.5))
+        end)
+        -- Match Side dash assist: a tap triggers once; dragging moves the button.
+        local touch, touchStart = nil, nil
+        button.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                touch, touchStart = input, Vector2.new(input.Position.X, input.Position.Y)
+            end
+        end)
+        UIS.InputEnded:Connect(function(input)
+            if not touch or not touchStart then return end
+            local matches = input == touch or (touch.UserInputType == Enum.UserInputType.MouseButton1
+                and input.UserInputType == Enum.UserInputType.MouseButton1)
+            if not matches then return end
+            local finish = Vector2.new(input.Position.X, input.Position.Y)
+            local wasTap = (finish - touchStart).Magnitude <= 18
+            touch, touchStart = nil, nil
+            if wasTap and isCurrent() and button.Visible and CC.Enabled and CC.CatchKeyMode
+                and CC.CatchManualMobile and CC.TriggerCatchKey then
+                CC.TriggerCatchKey()
+            end
+        end)
+        refreshManualUI()
+    end
     numberRow("Range (studs)", function()
         return CC.Range
     end, function(v)
@@ -10795,6 +10970,125 @@ _G.KAMUI_BuildCombat = function(UI)
         CC.LockAim = v
     end, nil, function() return CC.Enabled end)
     paintCatchLock = catchLockPaint
+    do
+        local modeRow = mk("Frame", { Name = "CatchLockModeRow", ZIndex = 3, BackgroundTransparency = 1, BorderSizePixel = 0 }, nil)
+        UI.addRow(card, modeRow, UI.ROW)
+        label(modeRow, "Lock Aim Mode", nil)
+        local modeBtn = mk("TextButton", {
+            Name = "CatchLockMode", ZIndex = 4, BackgroundColor3 = CHIP, BorderSizePixel = 0,
+            AutoButtonColor = false, AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.new(0, 104, 0, 26),
+            Text = ""
+        }, modeRow)
+        UI.corner(modeBtn, 6)
+        UI.stroke(modeBtn, LINE)
+        local modeValue = mk("TextLabel", {
+            Name = "ModeValue", ZIndex = 5, BackgroundTransparency = 1, Active = false,
+            Position = UDim2.new(0, 10, 0, 0), Size = UDim2.new(1, -32, 1, 0),
+            Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = THEME.Text,
+            TextXAlignment = Enum.TextXAlignment.Left, Text = CC.LockAimMode
+        }, modeBtn)
+        local modeChevron = mk("Frame", {
+            Name = "Chevron", ZIndex = 5, BackgroundTransparency = 1, BorderSizePixel = 0,
+            Active = false, AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(1, -15, 0.5, 0), Size = UDim2.new(0, 12, 0, 12)
+        }, modeBtn)
+        for _, arm in ipairs({ { 3.4, 40 }, { 8.6, -40 } }) do
+            mk("Frame", {
+                BackgroundColor3 = THEME.MutedText, BorderSizePixel = 0, Active = false, ZIndex = 6,
+                AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, arm[1], 0, 5.5),
+                Size = UDim2.new(0, 6.5, 0, 1.6), Rotation = arm[2]
+            }, modeChevron)
+        end
+        local modeList = mk("Frame", {
+            Name = "CatchLockModeList", BackgroundColor3 = CHIP, BorderSizePixel = 0,
+            Position = UDim2.new(0, 0, 1, 4), Size = UDim2.new(1, 0, 0, 62),
+            Visible = false, ZIndex = 10
+        }, modeBtn)
+        UI.corner(modeList, 7)
+        UI.stroke(modeList, LINE)
+        local modeOptions = {}
+        for i, name in ipairs({ "Legit", "Blatant" }) do
+            local option = mk("TextButton", {
+                Name = "Option" .. name, AutoButtonColor = false, ZIndex = 11,
+                BorderSizePixel = 0, Position = UDim2.new(0, 4, 0, 4 + (i - 1) * 27),
+                Size = UDim2.new(1, -8, 0, 26), Font = Enum.Font.GothamMedium,
+                TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Text = name
+            }, modeList)
+            UI.corner(option, 6)
+            UI.make("UIPadding", { PaddingLeft = UDim.new(0, 10) }, option)
+            modeOptions[name] = option
+            option.MouseButton1Click:Connect(function()
+                if not isCurrent() then return end
+                CC.LockAimMode = name
+                modeValue.Text = name
+                for optionName, btn in pairs(modeOptions) do
+                    local selected = optionName == name
+                    btn.BackgroundTransparency = selected and 0 or 1
+                    btn.BackgroundColor3 = THEME.DarkRed
+                    btn.TextColor3 = selected and THEME.Text or THEME.MutedText
+                end
+                modeList.Visible = false
+                modeChevron.Rotation = 0
+            end)
+        end
+        for name, btn in pairs(modeOptions) do
+            local selected = name == CC.LockAimMode
+            btn.BackgroundTransparency = selected and 0 or 1
+            btn.BackgroundColor3 = THEME.DarkRed
+            btn.TextColor3 = selected and THEME.Text or THEME.MutedText
+        end
+        modeBtn.MouseButton1Click:Connect(function()
+            if not isCurrent() then return end
+            if not modeList.Visible then
+                local availableBelow = page.AbsolutePosition.Y + page.AbsoluteSize.Y
+                    - (modeBtn.AbsolutePosition.Y + modeBtn.AbsoluteSize.Y)
+                modeList.Position = availableBelow < 66 and UDim2.new(0, 0, 0, -66)
+                    or UDim2.new(0, 0, 1, 4)
+            end
+            modeList.Visible = not modeList.Visible
+            modeChevron.Rotation = modeList.Visible and 180 or 0
+        end)
+        local function closeModeList()
+            modeList.Visible = false
+            modeChevron.Rotation = 0
+        end
+        local function insideModeControl(gui, point)
+            local pos, size = gui.AbsolutePosition, gui.AbsoluteSize
+            return point.X >= pos.X and point.X <= pos.X + size.X
+                and point.Y >= pos.Y and point.Y <= pos.Y + size.Y
+        end
+        UIS.InputBegan:Connect(function(input)
+            if not isCurrent() or not modeList.Visible then return end
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1
+                and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            local inset = game:GetService("GuiService"):GetGuiInset()
+            local point = Vector2.new(input.Position.X, input.Position.Y)
+            for _, p in ipairs({ point, point - inset, point + inset }) do
+                if insideModeControl(modeBtn, p) or insideModeControl(modeList, p) then return end
+            end
+            closeModeList()
+        end)
+        page:GetPropertyChangedSignal("Visible"):Connect(function()
+            if not page.Visible then closeModeList() end
+        end)
+    end
+    do
+    local _, catchGhostPaint = toggleRow("Ghost block", "Block then m1 agaisnt dashes", function()
+        return CC.CatchGhostBlock
+    end, function(v)
+        CC.CatchGhostBlock = v
+        if not v and CC.CancelCatchGhostBlock then CC.CancelCatchGhostBlock() end
+    end, nil, function() return CC.Enabled end)
+    paintCatchGhost = catchGhostPaint
+    end
+    sliderRow("Hold time", function()
+        return CC.CatchGhostHoldSeconds
+    end, function(v)
+        CC.CatchGhostHoldSeconds = math.clamp(math.floor(v * 100 + 0.5) / 100, 0.06, 0.30)
+    end, 0.06, 0.30, function(v)
+        return string.format("%.2f s", v)
+    end)
     local aimCard = UI.card(page, "Aimbot")
     local aimPaint = nil
     local aimTarget = nil -- sticky: the player the aimbot is locked on (cleared when it is turned on or they die)
@@ -10926,14 +11220,18 @@ _G.KAMUI_BuildCombat = function(UI)
     end)
     refreshMobile()
     local blockCard = UI.card(page, "Auto block")
-    local paintBlockFOV
-    toggleRow("Auto block", "Responds to nearby attacks and selected moves", function()
+    local paintBlockFOV, paintBlockAutoM1, paintBlockDashPredict, paintBlockLock
+    toggleRow("Auto block", "Automatically block agaisnt attacks.", function()
         return CC.Block
     end, function(v)
         CC.Block = v
         if not v then
-            CC.BlockFOV = false
+            CC.BlockFOV, CC.BlockAutoM1, CC.BlockDashPredict, CC.BlockLockAim = false, false, false, false
+            if CC.StopBlockLock then CC.StopBlockLock() end
+            if paintBlockLock then paintBlockLock() end
             if paintBlockFOV then paintBlockFOV() end
+            if paintBlockAutoM1 then paintBlockAutoM1() end
+            if paintBlockDashPredict then paintBlockDashPredict() end
         end
         if _G.KAMUI_BlockRelease and not v then
             _G.KAMUI_BlockRelease()
@@ -10964,16 +11262,134 @@ _G.KAMUI_BuildCombat = function(UI)
             nbox.Text = string.format("%d", math.floor(CC.BlockRange + 0.5))
         end)
     end
-    toggleRow("Auto M1 Punish", "Automatically M1 after a block or to interrupt moves", function()
-        return CC.BlockAutoM1
-    end, function(v)
-        CC.BlockAutoM1 = v
-    end, blockCard)
-    toggleRow("Dash Prediction", "Respond to side dashes within the block range", function()
-        return CC.BlockDashPredict
-    end, function(v)
-        CC.BlockDashPredict = v
-    end, blockCard)
+    do
+        local _, autoM1Paint = toggleRow("Auto M1 Punish", "Automatically M1 after a block or to interrupt moves", function()
+            return CC.BlockAutoM1
+        end, function(v)
+            CC.BlockAutoM1 = v
+        end, blockCard, function() return CC.Block end)
+        paintBlockAutoM1 = autoM1Paint
+    end
+    do
+        local _, dashPredictPaint = toggleRow("Dash Prediction", "Respond to side dashes within the block range", function()
+            return CC.BlockDashPredict
+        end, function(v)
+            CC.BlockDashPredict = v
+        end, blockCard, function() return CC.Block end)
+        paintBlockDashPredict = dashPredictPaint
+    end
+    do
+        local _, blockLockPaint = toggleRow("Lock Aim", "Lock aim onto the attacker while auto blocking", function()
+            return CC.BlockLockAim
+        end, function(v)
+            CC.BlockLockAim = v
+            if not v and CC.StopBlockLock then CC.StopBlockLock() end
+        end, blockCard, function() return CC.Block end)
+        paintBlockLock = blockLockPaint
+    end
+    do
+        local modeRow = mk("Frame", { Name = "BlockLockModeRow", ZIndex = 3, BackgroundTransparency = 1, BorderSizePixel = 0 }, nil)
+        UI.addRow(blockCard, modeRow, UI.ROW)
+        label(modeRow, "Lock Aim Mode", nil)
+        local modeBtn = mk("TextButton", {
+            Name = "BlockLockMode", ZIndex = 4, BackgroundColor3 = CHIP, BorderSizePixel = 0,
+            AutoButtonColor = false, AnchorPoint = Vector2.new(1, 0.5),
+            Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.new(0, 104, 0, 26),
+            Text = ""
+        }, modeRow)
+        UI.corner(modeBtn, 6)
+        UI.stroke(modeBtn, LINE)
+        local modeValue = mk("TextLabel", {
+            Name = "ModeValue", ZIndex = 5, BackgroundTransparency = 1, Active = false,
+            Position = UDim2.new(0, 10, 0, 0), Size = UDim2.new(1, -32, 1, 0),
+            Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = THEME.Text,
+            TextXAlignment = Enum.TextXAlignment.Left, Text = CC.BlockLockAimMode
+        }, modeBtn)
+        local modeChevron = mk("Frame", {
+            Name = "Chevron", ZIndex = 5, BackgroundTransparency = 1, BorderSizePixel = 0,
+            Active = false, AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(1, -15, 0.5, 0), Size = UDim2.new(0, 12, 0, 12)
+        }, modeBtn)
+        for _, arm in ipairs({ { 3.4, 40 }, { 8.6, -40 } }) do
+            mk("Frame", {
+                BackgroundColor3 = THEME.MutedText, BorderSizePixel = 0, Active = false, ZIndex = 6,
+                AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, arm[1], 0, 5.5),
+                Size = UDim2.new(0, 6.5, 0, 1.6), Rotation = arm[2]
+            }, modeChevron)
+        end
+        local modeList = mk("Frame", {
+            Name = "BlockLockModeList", BackgroundColor3 = CHIP, BorderSizePixel = 0,
+            Position = UDim2.new(0, 0, 1, 4), Size = UDim2.new(1, 0, 0, 62),
+            Visible = false, ZIndex = 10
+        }, modeBtn)
+        UI.corner(modeList, 7)
+        UI.stroke(modeList, LINE)
+        local modeOptions = {}
+        for i, name in ipairs({ "Legit", "Blatant" }) do
+            local option = mk("TextButton", {
+                Name = "Option" .. name, AutoButtonColor = false, ZIndex = 11,
+                BorderSizePixel = 0, Position = UDim2.new(0, 4, 0, 4 + (i - 1) * 27),
+                Size = UDim2.new(1, -8, 0, 26), Font = Enum.Font.GothamMedium,
+                TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Text = name
+            }, modeList)
+            UI.corner(option, 6)
+            UI.make("UIPadding", { PaddingLeft = UDim.new(0, 10) }, option)
+            modeOptions[name] = option
+            option.MouseButton1Click:Connect(function()
+                if not isCurrent() then return end
+                CC.BlockLockAimMode = name
+                modeValue.Text = name
+                for optionName, btn in pairs(modeOptions) do
+                    local selected = optionName == name
+                    btn.BackgroundTransparency = selected and 0 or 1
+                    btn.BackgroundColor3 = THEME.DarkRed
+                    btn.TextColor3 = selected and THEME.Text or THEME.MutedText
+                end
+                modeList.Visible = false
+                modeChevron.Rotation = 0
+            end)
+        end
+        for name, btn in pairs(modeOptions) do
+            local selected = name == CC.BlockLockAimMode
+            btn.BackgroundTransparency = selected and 0 or 1
+            btn.BackgroundColor3 = THEME.DarkRed
+            btn.TextColor3 = selected and THEME.Text or THEME.MutedText
+        end
+        modeBtn.MouseButton1Click:Connect(function()
+            if not isCurrent() then return end
+            if not modeList.Visible then
+                local availableBelow = page.AbsolutePosition.Y + page.AbsoluteSize.Y
+                    - (modeBtn.AbsolutePosition.Y + modeBtn.AbsoluteSize.Y)
+                modeList.Position = availableBelow < 66 and UDim2.new(0, 0, 0, -66)
+                    or UDim2.new(0, 0, 1, 4)
+            end
+            modeList.Visible = not modeList.Visible
+            modeChevron.Rotation = modeList.Visible and 180 or 0
+        end)
+        local function closeModeList()
+            modeList.Visible = false
+            modeChevron.Rotation = 0
+        end
+        local function insideModeControl(gui, point)
+            local pos, size = gui.AbsolutePosition, gui.AbsoluteSize
+            return point.X >= pos.X and point.X <= pos.X + size.X
+                and point.Y >= pos.Y and point.Y <= pos.Y + size.Y
+        end
+        UIS.InputBegan:Connect(function(input)
+            if not isCurrent() or not modeList.Visible then return end
+            if input.UserInputType ~= Enum.UserInputType.MouseButton1
+                and input.UserInputType ~= Enum.UserInputType.Touch then return end
+            local inset = game:GetService("GuiService"):GetGuiInset()
+            local point = Vector2.new(input.Position.X, input.Position.Y)
+            for _, p in ipairs({ point, point - inset, point + inset }) do
+                if insideModeControl(modeBtn, p) or insideModeControl(modeList, p) then return end
+            end
+            closeModeList()
+        end)
+        page:GetPropertyChangedSignal("Visible"):Connect(function()
+            if not page.Visible then closeModeList() end
+        end)
+    end
     local _, blockFOVPaint = toggleRow("FOV Display", "Ring around you showing the block range", function()
         return CC.BlockFOV
     end, function(v)
@@ -11013,26 +11429,57 @@ _G.KAMUI_BuildCombat = function(UI)
             end)
         end
     end
+    -- Camera and character rotation are shared game controls. This small
+    -- arbiter only grants exclusive control; each feature owns its own aim code.
+    local aimControl = { owner = nil, priority = 0, suspend = nil }
+    function aimControl.claim(owner, priority, suspend)
+        if aimControl.owner == owner then return true end
+        if aimControl.owner then
+            if priority <= aimControl.priority then return false end
+            if aimControl.suspend then aimControl.suspend() end
+        end
+        aimControl.owner, aimControl.priority, aimControl.suspend = owner, priority, suspend
+        return true
+    end
+    function aimControl.release(owner)
+        if aimControl.owner == owner then
+            aimControl.owner, aimControl.priority, aimControl.suspend = nil, 0, nil
+        end
+    end
     local LOCK_TIME = 0.4
     local LEAD = 0.07 -- seconds of target movement to aim ahead
     local lockPart, lockUntil, lockConn = nil, 0, nil
+    local lockMode, lockHumanoid, savedAutoRotate = nil, nil, nil
     local function aimPoint(part)
         local v = part.AssemblyLinearVelocity
         return part.Position + Vector3.new(v.X, 0, v.Z) * LEAD
     end
-    local function applyLock(camToo)
+    local function applyLock(camStep)
         local part = lockPart
         local char = player.Character
         local root = char and char:FindFirstChild("HumanoidRootPart")
-        if not part or not part.Parent or not root then
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        if not isCurrent() or not CC.Enabled or not CC.LockAim or not part or not part.Parent
+            or not root or not hum or hum.Health <= 0 then
             return false
         end
-        local p = aimPoint(part)
-        root.CFrame = CFrame.lookAt(root.Position, Vector3.new(p.X, root.Position.Y, p.Z))
-        if camToo then
-            local cam = workspace.CurrentCamera
-            if cam then
-                cam.CFrame = CFrame.lookAt(cam.CFrame.Position, p)
+        local position = part.Position
+        if lockMode == "Legit" then
+            -- Instant camera-only tracking; no easing and no prediction offset.
+            if camStep then
+                local cam = workspace.CurrentCamera
+                if not cam then return false end
+                if (position - cam.CFrame.Position).Magnitude > 0.001 then
+                    cam.CFrame = CFrame.lookAt(cam.CFrame.Position, position)
+                end
+            end
+        else
+            -- Equivalent to character easing at 0: face the target immediately.
+            if hum ~= lockHumanoid then return false end
+            hum.AutoRotate = false
+            local flat = Vector3.new(position.X, root.Position.Y, position.Z)
+            if (flat - root.Position).Magnitude > 0.001 then
+                root.CFrame = CFrame.lookAt(root.Position, flat)
             end
         end
         return true
@@ -11046,86 +11493,534 @@ _G.KAMUI_BuildCombat = function(UI)
         pcall(function()
             RunService:UnbindFromRenderStep("KAMUI_LockAim")
         end)
+        if lockHumanoid and lockHumanoid.Parent and savedAutoRotate ~= nil then
+            lockHumanoid.AutoRotate = savedAutoRotate
+        end
+        lockHumanoid, savedAutoRotate, lockMode = nil, nil, nil
+        aimControl.release("catch")
     end
+    CC.StopCatchLock = stopLock
     local function startLock(part)
         stopLock()
+        if not aimControl.claim("catch", 2, stopLock) then return end
         lockPart = part
+        lockMode = CC.LockAimMode == "Blatant" and "Blatant" or "Legit"
+        if lockMode == "Blatant" then
+            local char = player.Character
+            lockHumanoid = char and char:FindFirstChildOfClass("Humanoid")
+            if lockHumanoid then savedAutoRotate = lockHumanoid.AutoRotate end
+        end
         lockUntil = os.clock() + LOCK_TIME
-        applyLock(true) -- aimed before the M1 is sent
+        if not applyLock(true) then stopLock(); return end -- aim before the M1
         RunService:BindToRenderStep("KAMUI_LockAim", Enum.RenderPriority.Camera.Value + 1, function()
-            if not isCurrent() or os.clock() > lockUntil or not applyLock(true) then
-                stopLock()
-            end
+            if os.clock() > lockUntil or not applyLock(true) then stopLock() end
         end)
         lockConn = RunService.Heartbeat:Connect(function()
-            if os.clock() > lockUntil or not applyLock(false) then
-                stopLock()
-            end
+            if os.clock() > lockUntil or not applyLock(false) then stopLock() end
         end)
     end
-    local lastPos = {}
-    local hot = {}
-    local lastFire = 0
-    local conn
-    conn = RunService.Heartbeat:Connect(function(dt)
-        if not isCurrent() then
-            conn:Disconnect()
-            return
+    -- Only the game-level F input is shared. Each feature keeps independent
+    -- triggers, settings, timers and cleanup; ownership avoids premature release.
+    do
+        local owners, activeRemote = {}, nil
+        local lastCoordinatedM1 = -math.huge
+        CC.CatchBlockInput = {
+            acquire = function(owner, remote)
+                if not remote or not remote.Parent then return false end
+                if activeRemote and activeRemote ~= remote then
+                    if activeRemote.Parent and not UIS:IsKeyDown(Enum.KeyCode.F) then
+                        pcall(function() activeRemote:FireServer({Goal = "KeyRelease", Key = Enum.KeyCode.F}) end)
+                    end
+                    table.clear(owners)
+                    activeRemote = nil
+                end
+                if not activeRemote then
+                    local ok = pcall(function() remote:FireServer({Goal = "KeyPress", Key = Enum.KeyCode.F}) end)
+                    if not ok then return false end
+                    activeRemote = remote
+                end
+                owners[owner] = remote
+                return true
+            end,
+            release = function(owner, remote)
+                if owners[owner] ~= remote then return end
+                owners[owner] = nil
+                if not next(owners) then
+                    local current = activeRemote
+                    activeRemote = nil
+                    if current and current.Parent and not UIS:IsKeyDown(Enum.KeyCode.F) then
+                        pcall(function() current:FireServer({Goal = "KeyRelease", Key = Enum.KeyCode.F}) end)
+                    end
+                end
+            end,
+            held = function(remote)
+                return activeRemote == remote and next(owners) ~= nil
+            end,
+            heldBy = function(owner, remote)
+                return owners[owner] == remote and remote ~= nil
+            end,
+            claimM1 = function()
+                local now = os.clock()
+                if now - lastCoordinatedM1 < 0.12 then return false end
+                lastCoordinatedM1 = now
+                return true
+            end,
+        }
+    end
+    -- Independent M1 catch: markers, animations and movement-based dash prediction.
+    -- It never turns on autoblock or uses its detection or settings.
+    do
+        if type(_G.KAMUI_M1CatchCleanup) == "function" then pcall(_G.KAMUI_M1CatchCleanup) end
+        local function makeSet(values)
+            local set = {}
+            for _, value in ipairs(values) do set[value] = true end
+            return set
         end
-        if not CC.Enabled then
-            if next(lastPos) ~= nil then
-                lastPos = {}
-                hot = {}
+        local ignoreEnemy = makeSet({"DoingEmote", "CancelEmote", "CancelEmote2", "BeingLaunched", "Freeze"})
+        local ignoreLocal = makeSet({"Counter", "HunterCounter", "DoingEmote", "CancelEmote", "CancelEmote2", "BeingLaunched", "Ragdoll", "Freeze", "BarrageBind"})
+        local ignoreM1 = makeSet({"Counter", "AbsoluteImmortal", "AtomicCounter", "HunterCounter", "UpFrames", "Ragdoll", "ForceField", "CanBringUp"})
+        local interrupts = makeSet({
+            "Shove", "Normal Punch", "Uppercut", "Flowing Water", "Lethal Whirlwind Stream",
+            "Hunter's Grasp", "Doom Dive", "Crowd Buster", "Hammer Heel", "Binding Cloth",
+            "Jet Dive", "Blitz Shot", "Ignition Burst", "Flash Strike", "Scatter",
+            "Explosive Shuriken", "Homerun", "Beatdown", "Four Ball", "Quick Slice",
+            "Atmos Cleave", "Pinpoint Cut", "Crushing Pull", "Windstorm Fury", "Stone Coffin",
+            "Expulsive Push", "GoPush", "Vanishing Kick", "Whirlwind Drop", "Head First",
+            "Weboom", "Plasma Cannon", "Trinity Tear", "Twin Burst", "TornadoBind",
+        })
+        local barrages = makeSet({"Consecutive Punches", "Machine Gun Blows", "Bullet Barrage"})
+        local dashAnimations = {"10480796021", "10480793962"}
+        local connections, watched = {}, {}
+        local pending, lastCatch, lastPos, motionLatch = {}, {}, {}, {}
+        local dashPending, dashVelocity, dashMarker, m1Marker = {}, {}, {}, {} -- separate catch signals
+        local m1Ready = {} -- brief window to recognize an M1 + side dash
+        local lastRootPos = nil
+        local seenDashTracks = setmetatable({}, {__mode = "k"})
+        local hitMarkers = makeSet({"Freeze", "Stunned", "Stun", "Hitstun", "Ragdoll", "KnockedDown", "BeingLaunched", "BarrageBind"})
+        local hitCooldownUntil = 0
+        local closed = false
+        -- Independent M1-catch block pulse; does not invoke Auto block code.
+        local ghostHeld, ghostRemote, ghostGeneration = false, nil, 0
+        local blockInput = CC.CatchBlockInput
+        local function releaseCatchGhost()
+            ghostGeneration += 1
+            if not ghostHeld then return end
+            local remote = ghostRemote
+            ghostHeld, ghostRemote = false, nil
+            blockInput.release("ghost", remote)
+        end
+        CC.CancelCatchGhostBlock = releaseCatchGhost
+        local function connect(signal, callback, bucket)
+            local conn = signal:Connect(callback)
+            table.insert(bucket or connections, conn)
+            return conn
+        end
+        local function disconnectAll(bucket)
+            for _, conn in ipairs(bucket) do conn:Disconnect() end
+            table.clear(bucket)
+        end
+        local function clearOf(character, ignored)
+            if not character then return false end
+            for _, child in ipairs(character:GetChildren()) do
+                if ignored[child.Name] then return false end
             end
-            return
+            return true
         end
-        local char = player.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if not root or not hum or hum.Health <= 0 or dt <= 0 or dt > 0.1 then
-            return
+        local function distance(a, b)
+            local delta = a.Position - b.Position
+            return Vector3.new(delta.X, 0, delta.Z).Magnitude
         end
-        local myPos = root.Position
-        for _, plr in ipairs(Players:GetPlayers()) do
-            if plr ~= player then
-                local oc = plr.Character
-                local oroot = oc and oc:FindFirstChild("HumanoidRootPart")
-                local ohum = oc and oc:FindFirstChildOfClass("Humanoid")
-                if oroot and ohum and ohum.Health > 0 then
-                    local pos = oroot.Position
-                    local prev = lastPos[plr]
-                    lastPos[plr] = pos
-                    if prev then
-                        local v = Vector3.new(pos.X - prev.X, 0, pos.Z - prev.Z) / dt
-                        local speed = v.Magnitude
-                        local toMe = Vector3.new(myPos.X - pos.X, 0, myPos.Z - pos.Z)
-                        local dist = toMe.Magnitude
-                        if speed >= CC.Speed and dist > 0.1 then
-                            local dot = v.Unit:Dot(toMe.Unit)
-                            if dot > -0.45 then
-                                hot[plr] = (hot[plr] or 0) + 1
-                            else
-                                hot[plr] = 0
+        local function approaching(target, root)
+            local delta = root.Position - target.Position
+            if delta.Magnitude <= 0.001 then return true end
+            local velocity = target.AssemblyLinearVelocity
+            return (velocity.Magnitude >= 0.5 and velocity.Unit:Dot(delta.Unit) > 0.1)
+                or target.CFrame.LookVector:Dot(delta.Unit) > 0.15
+        end
+        local function sideDashing(humanoid)
+            local animator = humanoid:FindFirstChildOfClass("Animator")
+            if not animator then return false end
+            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                if track.Animation then
+                    for _, id in ipairs(dashAnimations) do
+                        if string.find(track.Animation.AnimationId, id, 1, true) then return true end
+                    end
+                end
+            end
+            return false
+        end
+        local function cancelAfterHit()
+            releaseCatchGhost()
+            table.clear(pending)
+            table.clear(dashPending)
+            table.clear(dashMarker)
+            table.clear(m1Marker)
+            table.clear(m1Ready)
+            hitCooldownUntil = os.clock() + 0.45
+            -- Don't re-catch the same movement as soon as the hit pause ends.
+            for other in pairs(watched) do
+                motionLatch[other] = true
+                local enemy = other.Character
+                local humanoid = enemy and enemy:FindFirstChildOfClass("Humanoid")
+                local animator = humanoid and humanoid:FindFirstChildOfClass("Animator")
+                if animator then
+                    for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                        if track.Animation then
+                            for _, id in ipairs(dashAnimations) do
+                                if string.find(track.Animation.AnimationId, id, 1, true) then
+                                    seenDashTracks[track] = true
+                                end
                             end
-                        else
-                            hot[plr] = 0
-                        end
-                        if (hot[plr] or 0) >= 2 and dist <= CC.Range and os.clock() - lastFire >= CC.Cooldown then
-                            lastFire = os.clock()
-                            hot[plr] = 0
-                            if CC.LockAim then
-                                startLock(oroot)
-                            end
-                            performM1()
                         end
                     end
-                else
-                    lastPos[plr] = nil
-                    hot[plr] = nil
                 end
             end
         end
-    end)
+        local function canCatch(char)
+            if not char or os.clock() < hitCooldownUntil or not clearOf(char, hitMarkers) then return false end
+            return char:GetAttribute("Stunned") ~= true and char:GetAttribute("IsStunned") ~= true
+                and char:GetAttribute("Ragdoll") ~= true
+        end
+        local function fireCatch(target, enemy, predictedDistance, earlyDash, incomingDash, manualKey)
+            if closed or not isCurrent() or not CC.Enabled then return false end
+            local isDashCatch = earlyDash or dashPending[enemy] == true
+            local hasM1 = m1Marker[enemy] ~= nil
+            local useGhost = CC.CatchGhostBlock and (isDashCatch or hasM1 or manualKey)
+            -- Manual key presses do not require an opponent dash or M1 marker.
+            if useGhost and not manualKey and isDashCatch and not incomingDash and (earlyDash or not hasM1) then return false end
+            if CC.CatchGhostBlock and ghostHeld then return false end
+            if useGhost and UIS:IsKeyDown(Enum.KeyCode.F) then return false end
+            local char = player.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local enemyHum = enemy and enemy:FindFirstChildOfClass("Humanoid")
+            if not root or not hum or hum.Health <= 0 or not target or not target.Parent
+                or not enemyHum or enemyHum.Health <= 0 or distance(root, target) > CC.Range
+                or not canCatch(char) or not clearOf(char, ignoreLocal) or not clearOf(enemy, ignoreEnemy)
+                or not clearOf(enemy, ignoreM1) or char:FindFirstChild("CanBringUp") then return false end
+            -- The FOV/range is still the outer detection limit. The reach is
+            -- an adjustable estimate, not a claim about the game's hitbox.
+            local reach = math.min(CC.Range, CC.CatchReach)
+            -- For a detected dash, require current distance to be within the
+            -- configured reach estimate; prediction alone cannot bypass it.
+            -- Other M1-punish paths retain their previous distance cap.
+            local maxSwingDistance = dashPending[enemy] and reach or math.min(CC.Range, CC.CatchReach + 2)
+            -- Timing experiment: a newly observed side-dash may be tried at
+            -- the configured detection range; normal punish gates are unchanged.
+            if not earlyDash and not manualKey then
+                if distance(root, target) > maxSwingDistance then return false end
+                if distance(root, target) > reach and (not predictedDistance or predictedDistance > reach) then
+                    return false
+                end
+            end
+            local now = os.clock()
+            if not manualKey and now - (lastCatch[enemy] or -math.huge) < 0.25 then return false end
+            local remote
+            if useGhost then
+                remote = char:FindFirstChild("Communicate")
+                if not remote then return false end
+                if not blockInput.acquire("ghost", remote) then return false end
+                ghostHeld, ghostRemote = true, remote
+                ghostGeneration += 1
+            end
+            lastCatch[enemy] = now
+            pending[enemy] = nil
+            dashPending[enemy] = nil
+            dashMarker[enemy] = nil
+            m1Marker[enemy] = nil
+            m1Ready[enemy] = nil
+            if CC.LockAim then startLock(target) end
+            if not useGhost then
+                performM1()
+            else
+                local generation = ghostGeneration
+                task.delay(CC.CatchGhostHoldSeconds, function()
+                    if generation ~= ghostGeneration then return end
+                    releaseCatchGhost() -- release only this feature's hold
+                    local followGeneration = ghostGeneration
+                    local waitUntil = os.clock() + 0.5
+                    -- Never end Auto block's hold to perform this M1. Wait for
+                    -- it to finish, but cancel a stale catch rather than fire late.
+                    while blockInput.held(remote) and os.clock() < waitUntil do
+                        if closed or not isCurrent() or ghostGeneration ~= followGeneration
+                            or not CC.Enabled or not CC.CatchGhostBlock or player.Character ~= char
+                            or not canCatch(char) then return end
+                        RunService.Heartbeat:Wait()
+                    end
+                    if ghostGeneration ~= followGeneration or blockInput.held(remote)
+                        or closed or not isCurrent() or not CC.Enabled or not CC.CatchGhostBlock
+                        or player.Character ~= char or not char.Parent or not root.Parent or not target.Parent
+                        or not hum.Parent or hum.Health <= 0 or not enemyHum.Parent or enemyHum.Health <= 0
+                        or distance(root, target) > CC.Range or not canCatch(char)
+                        or not clearOf(char, ignoreLocal) or not clearOf(enemy, ignoreEnemy)
+                        or not clearOf(enemy, ignoreM1) or char:FindFirstChild("CanBringUp")
+                        or UIS:IsKeyDown(Enum.KeyCode.F) then return end
+                    if not blockInput.claimM1() then return end
+                    performM1()
+                end)
+            end
+            return true
+        end
+        -- Keybind mode is manual-only: choose the nearest eligible player in
+        -- the same horizontal radius as the existing M1 catch FOV.
+        local function triggerCatchKey()
+            if closed or not isCurrent() or not CC.Enabled or not CC.CatchKeyMode then return end
+            local char = player.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if not root or not hum or hum.Health <= 0 then return end
+            local chosen, chosenRoot, best = nil, nil, CC.Range + 0.001
+            for _, other in ipairs(Players:GetPlayers()) do
+                if other ~= player then
+                    local enemy = other.Character
+                    local enemyRoot = enemy and enemy:FindFirstChild("HumanoidRootPart")
+                    local enemyHum = enemy and enemy:FindFirstChildOfClass("Humanoid")
+                    if enemyRoot and enemyHum and enemyHum.Health > 0
+                        and clearOf(enemy, ignoreEnemy) and clearOf(enemy, ignoreM1) then
+                        local d = distance(root, enemyRoot)
+                        if d <= CC.Range and d < best then
+                            chosen, chosenRoot, best = enemy, enemyRoot, d
+                        end
+                    end
+                end
+            end
+            if chosen then fireCatch(chosenRoot, chosen, nil, false, false, true) end
+        end
+        CC.TriggerCatchKey = triggerCatchKey
+        local function onMarker(item)
+            if closed or not isCurrent() or not CC.Enabled or CC.CatchKeyMode then return end
+            if isrbxactive and not isrbxactive() then return end
+            local name = item.Name
+            if name ~= "M1ing" and name ~= "dodgevelocity" and name ~= "InDash" and name ~= "SideDash" then return end
+            local enemy = item:FindFirstAncestorWhichIsA("Model")
+            local char = player.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if not enemy or enemy == char or not root or not hum or hum.Health <= 0 or not canCatch(char) then return end
+            local target = enemy:FindFirstChild("HumanoidRootPart")
+            local enemyHum = enemy:FindFirstChildOfClass("Humanoid")
+            if not target or not enemyHum or enemyHum.Health <= 0 then return end
+            local d = distance(root, target)
+            if d <= 0.1 or d > CC.Range or not clearOf(char, ignoreLocal) or not clearOf(enemy, ignoreEnemy) then return end
+            -- Only explicit M1 or dash markers, never proximity or speed alone.
+            if name == "M1ing" then
+                m1Marker[enemy] = item
+            else
+                dashMarker[enemy] = item
+                dashPending[enemy] = true
+            end
+            pending[enemy] = os.clock() + 0.55
+            m1Ready[enemy] = nil
+        end
+        local function watchPlayer(other)
+            if other == player or watched[other] then return end
+            local bucket = {}
+            watched[other] = bucket
+            local characterConn
+            local function watchCharacter(character)
+                if characterConn then characterConn:Disconnect() end
+                characterConn = connect(character.DescendantAdded, onMarker, bucket)
+            end
+            connect(other.CharacterAdded, watchCharacter, bucket)
+            if other.Character then watchCharacter(other.Character) end
+        end
+        local ownHealthConn, ownChildConn
+        local function watchOwnCharacter(char)
+            releaseCatchGhost()
+            if ownHealthConn then ownHealthConn:Disconnect(); ownHealthConn = nil end
+            if ownChildConn then ownChildConn:Disconnect(); ownChildConn = nil end
+            table.clear(pending)
+            table.clear(dashPending)
+            table.clear(dashVelocity)
+            table.clear(dashMarker)
+            table.clear(m1Marker)
+            table.clear(m1Ready)
+            hitCooldownUntil = 0
+            ownChildConn = connect(char.ChildAdded, function(child)
+                if hitMarkers[child.Name] then cancelAfterHit() end
+            end)
+            task.spawn(function()
+                local hum = char:FindFirstChildOfClass("Humanoid") or char:WaitForChild("Humanoid", 5)
+                if closed or player.Character ~= char or not hum then return end
+                local previousHealth = hum.Health
+                ownHealthConn = connect(hum.HealthChanged, function(health)
+                    if health < previousHealth then cancelAfterHit() end
+                    previousHealth = health
+                end)
+            end)
+        end
+        connect(player.CharacterAdded, watchOwnCharacter)
+        if player.Character then watchOwnCharacter(player.Character) end
+        for _, other in ipairs(Players:GetPlayers()) do watchPlayer(other) end
+        connect(Players.PlayerAdded, watchPlayer)
+        connect(Players.PlayerRemoving, function(other)
+            if watched[other] then disconnectAll(watched[other]); watched[other] = nil end
+        end)
+        local cleanup
+        cleanup = function()
+            if closed then return end
+            closed = true
+            releaseCatchGhost()
+            disconnectAll(connections)
+            for _, bucket in pairs(watched) do disconnectAll(bucket) end
+            if _G.KAMUI_M1CatchCleanup == cleanup then _G.KAMUI_M1CatchCleanup = nil end
+            if CC.CancelCatchGhostBlock == releaseCatchGhost then CC.CancelCatchGhostBlock = nil end
+            if CC.TriggerCatchKey == triggerCatchKey then CC.TriggerCatchKey = nil end
+        end
+        _G.KAMUI_M1CatchCleanup = cleanup
+        connect(RunService.Heartbeat, function(dt)
+            if not isCurrent() then cleanup(); return end
+            if not CC.Enabled or CC.CatchKeyMode then
+                table.clear(lastPos)
+                table.clear(dashVelocity)
+                table.clear(motionLatch)
+                table.clear(pending)
+                table.clear(dashPending)
+                table.clear(dashMarker)
+                table.clear(m1Marker)
+                table.clear(m1Ready)
+                lastRootPos = nil
+                return
+            end
+            local char = player.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if not root or not hum or hum.Health <= 0 or dt <= 0 or dt > 0.1 then
+                table.clear(lastPos)
+                table.clear(dashVelocity)
+                lastRootPos = nil
+                return
+            end
+            if not canCatch(char) then
+                table.clear(pending)
+                table.clear(dashPending)
+                table.clear(dashVelocity)
+                table.clear(dashMarker)
+                table.clear(m1Marker)
+                table.clear(m1Ready)
+                table.clear(lastPos) -- don't use stale movement after a stun
+                lastRootPos = nil
+                return
+            end
+            local rootPosition = root.Position
+            local rootVelocity = lastRootPos and Vector3.new(rootPosition.X - lastRootPos.X, 0, rootPosition.Z - lastRootPos.Z) / dt
+                or Vector3.zero
+            local hasRootSample = lastRootPos ~= nil
+            lastRootPos = rootPosition
+            for _, other in ipairs(Players:GetPlayers()) do
+                if other ~= player then
+                    local enemy = other.Character
+                    local target = enemy and enemy:FindFirstChild("HumanoidRootPart")
+                    local enemyHum = enemy and enemy:FindFirstChildOfClass("Humanoid")
+                    if target and enemyHum and enemyHum.Health > 0 then
+                        local pos = target.Position
+                        local previous = lastPos[other]
+                        lastPos[other] = pos
+                        local velocity = previous and Vector3.new(pos.X - previous.X, 0, pos.Z - previous.Z) / dt
+                            or Vector3.zero
+                        local toMe = Vector3.new(root.Position.X - pos.X, 0, root.Position.Z - pos.Z)
+                        local d = toMe.Magnitude
+                        local relativeVelocity = velocity - rootVelocity
+                        -- Smooth recent relative motion for dash timing; a single
+                        -- replicated position jump should not dictate the swing.
+                        local dashSample = relativeVelocity
+                        if dashSample.Magnitude > 100 then dashSample = dashSample.Unit * 100 end
+                        local priorDashVelocity = dashVelocity[other]
+                        if previous and hasRootSample then
+                            local alpha = 1 - math.exp(-dt / 0.045)
+                            dashVelocity[other] = priorDashVelocity and priorDashVelocity:Lerp(dashSample, alpha) or dashSample
+                        else
+                            dashVelocity[other] = nil
+                        end
+                        -- A cap limits bad predictions from replication jumps/teleports.
+                        if relativeVelocity.Magnitude > 160 then
+                            relativeVelocity = relativeVelocity.Unit * 160
+                        end
+                        local closingSpeed = d > 0.1 and relativeVelocity:Dot(toMe.Unit) or 0
+                        local projectedDistance
+                        if previous and hasRootSample and closingSpeed > 0 then
+                            local relativePosition = -toMe
+                            projectedDistance = (relativePosition + relativeVelocity * (CC.CatchPredictionMs / 1000)).Magnitude
+                        end
+                        local animator = enemyHum:FindFirstChildOfClass("Animator")
+                        local dashTrack
+                        if animator and d <= CC.Range then
+                            for _, track in ipairs(animator:GetPlayingAnimationTracks()) do
+                                if track.Animation then
+                                    for _, id in ipairs(dashAnimations) do
+                                        if string.find(track.Animation.AnimationId, id, 1, true) and not seenDashTracks[track] then
+                                            dashTrack = track
+                                            break
+                                        end
+                                    end
+                                end
+                                if dashTrack then break end
+                            end
+                        end
+                        -- This is target movement toward us, not merely us
+                        -- walking toward a stationary target. A position sample
+                        -- is required, so replication can delay detection.
+                        local incomingDash = previous ~= nil and d > 0.1 and velocity:Dot(toMe.Unit) > 1
+                        if d <= CC.Range and dashTrack then
+                            pending[enemy] = os.clock() + 0.55
+                            dashPending[enemy] = true
+                            m1Ready[enemy] = nil
+                        end
+                        -- First observed known side-dash animation: one early
+                        -- attempt per track, independent of the reach estimate.
+                        if dashTrack and fireCatch(target, enemy, nil, true, incomingDash) then
+                            seenDashTracks[dashTrack] = true
+                            motionLatch[other] = true
+                        end
+                        local now = os.clock()
+                        -- Drop expired dash/M1 signals so later ordinary walking
+                        -- does not reuse an earlier attack or dash event.
+                        local marker = dashMarker[enemy]
+                        local dashActive = sideDashing(enemyHum) or (marker and marker:IsDescendantOf(enemy))
+                        local attackMarker = m1Marker[enemy]
+                        local m1Active = attackMarker and attackMarker:IsDescendantOf(enemy)
+                        if not dashActive then dashPending[enemy] = nil; dashMarker[enemy] = nil end
+                        if not m1Active then m1Marker[enemy] = nil end
+                        if pending[enemy] and not dashActive and not m1Active then
+                            pending[enemy] = nil
+                            m1Ready[enemy] = nil
+                        end
+                        local reach = math.min(CC.Range, CC.CatchReach)
+                        local inHitWindow = d <= reach or (projectedDistance and projectedDistance <= reach)
+                        local swingPrediction = projectedDistance
+                        if dashPending[enemy] and not m1Marker[enemy] then
+                            local motion = dashVelocity[other]
+                            local futureDistance = motion and (-toMe + motion * (CC.CatchPredictionMs / 1000)).Magnitude
+                            local closing = motion and d > 0.1 and motion:Dot(toMe.Unit) or 0
+                            -- For dash catches, require current estimated reach
+                            -- and avoid a clearly receding target. Do not require
+                            -- the uncertain future-distance estimate to also be
+                            -- inside reach: that double gate can suppress swings.
+                            inHitWindow = motion ~= nil and d <= reach and closing >= -2
+                            swingPrediction = futureDistance
+                        end
+                        local ready = not m1Ready[enemy] or now >= m1Ready[enemy]
+                        if pending[enemy] and now <= pending[enemy] and d <= CC.Range and inHitWindow and ready then
+                            if fireCatch(target, enemy, swingPrediction, false, incomingDash) then
+                                if dashTrack then seenDashTracks[dashTrack] = true end
+                                motionLatch[other] = true
+                            end
+                        elseif pending[enemy] and now > pending[enemy] then
+                            pending[enemy] = nil
+                            dashPending[enemy] = nil
+                            dashMarker[enemy] = nil
+                            m1Marker[enemy] = nil
+                            m1Ready[enemy] = nil
+                        end
+                    else
+                        lastPos[other] = nil
+                        dashVelocity[other] = nil
+                        motionLatch[other] = nil
+                    end
+                end
+            end
+        end)
+    end
     local function makeFOV(name, isOn, getRange, getColor, suffix)
         local ring = Instance.new("CylinderHandleAdornment")
         ring.Name = "KAMUI_" .. name .. "Ring"
@@ -11221,7 +12116,76 @@ _G.KAMUI_BuildCombat = function(UI)
         local sideDashIds = {"10480796021", "10480793962"}
         local connections, characters = {}, {}
         local closed, blocking, blockRemote = false, false, nil
+        local blockInput = CC.CatchBlockInput
         local blockDeadline, blockGeneration = 0, 0
+        -- Separate target, settings, render binding, and rotation state from M1 catch.
+        -- Each feature requests exclusive control when tracking a target.
+        local blockAimPart, blockAimMode, blockAimHumanoid, blockSavedAutoRotate = nil, nil, nil, nil
+        local function suspendBlockLock()
+            if blockAimHumanoid and blockAimHumanoid.Parent and blockSavedAutoRotate ~= nil then
+                blockAimHumanoid.AutoRotate = blockSavedAutoRotate
+            end
+            blockAimHumanoid, blockSavedAutoRotate, blockAimMode = nil, nil, nil
+        end
+        local function stopBlockLock()
+            blockAimPart = nil
+            suspendBlockLock()
+            aimControl.release("block")
+            pcall(function() RunService:UnbindFromRenderStep("KAMUI_BlockLockAim") end)
+        end
+        CC.StopBlockLock = stopBlockLock
+        local function applyBlockLock(camStep)
+            local part = blockAimPart
+            local char = player.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local enemy = part and part.Parent
+            local enemyHum = enemy and enemy:FindFirstChildOfClass("Humanoid")
+            if closed or not isCurrent() or not CC.Block or not CC.BlockLockAim or not blocking
+                or not part or not enemy or not enemyHum or enemyHum.Health <= 0
+                or not root or not hum or hum.Health <= 0 then
+                stopBlockLock()
+                return
+            end
+            if not aimControl.claim("block", 1, suspendBlockLock) then
+                suspendBlockLock()
+                return
+            end
+            local mode = CC.BlockLockAimMode == "Blatant" and "Blatant" or "Legit"
+            if blockAimMode ~= mode or (blockAimHumanoid and blockAimHumanoid ~= hum) then
+                suspendBlockLock()
+                blockAimMode = mode
+            end
+            local position = part.Position
+            if mode == "Legit" then
+                if camStep then
+                    local cam = workspace.CurrentCamera
+                    if not cam then return end
+                    if (position - cam.CFrame.Position).Magnitude > 0.001 then
+                        cam.CFrame = CFrame.lookAt(cam.CFrame.Position, position)
+                    end
+                end
+            else
+                if not blockAimHumanoid then
+                    blockAimHumanoid, blockSavedAutoRotate = hum, hum.AutoRotate
+                end
+                hum.AutoRotate = false
+                local flat = Vector3.new(position.X, root.Position.Y, position.Z)
+                if (flat - root.Position).Magnitude > 0.001 then
+                    root.CFrame = CFrame.lookAt(root.Position, flat)
+                end
+            end
+        end
+        local function startBlockLock(part)
+            if not CC.BlockLockAim or not part or not part.Parent then return end
+            blockAimPart = part
+            applyBlockLock(true)
+            if not blockAimPart then return end
+            pcall(function() RunService:UnbindFromRenderStep("KAMUI_BlockLockAim") end)
+            RunService:BindToRenderStep("KAMUI_BlockLockAim", Enum.RenderPriority.Camera.Value + 1, function()
+                applyBlockLock(true)
+            end)
+        end
         local function connect(signal, callback, bucket)
             local conn = signal:Connect(callback)
             table.insert(bucket or connections, conn)
@@ -11265,28 +12229,28 @@ _G.KAMUI_BuildCombat = function(UI)
         local function release()
             blockGeneration += 1
             blockDeadline = 0
+            stopBlockLock()
             if blocking then
                 blocking = false
                 local remote = blockRemote
                 blockRemote = nil
-                if remote and remote.Parent then
-                    pcall(function() remote:FireServer({Goal = "KeyRelease", Key = Enum.KeyCode.F}) end)
-                end
+                blockInput.release("auto", remote)
             end
         end
         _G.KAMUI_BlockRelease = release
-        local function holdFor(duration)
+        local function holdFor(duration, target)
             local char = player.Character
             local remote = char and char:FindFirstChild("Communicate")
             if not remote then return nil end
             if blocking and blockRemote ~= remote then release() end
             if not blocking then
+                if not blockInput.acquire("auto", remote) then return nil end
                 blocking = true
                 blockRemote = remote
-                pcall(function() remote:FireServer({Goal = "KeyPress", Key = Enum.KeyCode.F}) end)
             end
             blockGeneration += 1
             blockDeadline = math.max(blockDeadline, os.clock() + duration)
+            startBlockLock(target)
             return blockGeneration
         end
         local function punish(target, enemy)
@@ -11302,7 +12266,16 @@ _G.KAMUI_BuildCombat = function(UI)
             if not remote then return end
             local mobile = UIS.TouchEnabled and not UIS.KeyboardEnabled
             task.wait(math.random(2, 6) / 1000)
-            if not isCurrent() or closed or not CC.Block or not CC.BlockAutoM1 then return end
+            -- Do not release or attack through the independent ghost hold.
+            local waitUntil = os.clock() + 0.5
+            while blockInput.heldBy("ghost", remote) and os.clock() < waitUntil do
+                if not isCurrent() or closed or not CC.Block or not CC.BlockAutoM1 then return end
+                RunService.Heartbeat:Wait()
+            end
+            if blockInput.heldBy("ghost", remote) or not isCurrent() or closed or not CC.Block or not CC.BlockAutoM1
+                or player.Character ~= char or not target.Parent or enemyHum.Health <= 0
+                or horizontalDistance(root, target) > CC.BlockRange then return end
+            if CC.CatchGhostBlock and not blockInput.claimM1() then return end
             pcall(function() remote:FireServer({Goal = "LeftClick", Mobile = mobile or nil}) end)
             task.wait(math.random(2, 6) / 1000)
             if remote.Parent then
@@ -11335,7 +12308,7 @@ _G.KAMUI_BuildCombat = function(UI)
             local moving = approaching(target, root)
             if m1 then
                 if not (close or moving or dash) then return end
-                local generation = holdFor(0.25)
+                local generation = holdFor(0.25, target)
                 if generation and CC.BlockAutoM1 and (close or moving or dash) then
                     task.delay(0.25, function()
                         if generation == blockGeneration then
@@ -11353,7 +12326,7 @@ _G.KAMUI_BuildCombat = function(UI)
                 -- never sends automatic M1s.
                 if CC.BlockAutoM1 then task.spawn(punish, target, enemy) end
             elseif barrage then
-                local generation = holdFor(0.1)
+                local generation = holdFor(0.1, target)
                 if not generation then return end
                 task.spawn(function()
                     local started = os.clock()
@@ -11373,7 +12346,7 @@ _G.KAMUI_BuildCombat = function(UI)
                     end
                 end)
             elseif dash then
-                holdFor(0.35)
+                holdFor(0.35, target)
             end
         end
         local function watchPlayer(other)
@@ -11403,6 +12376,7 @@ _G.KAMUI_BuildCombat = function(UI)
             for _, bucket in pairs(characters) do disconnectAll(bucket) end
             if _G.KAMUI_BlockCleanup == cleanup then _G.KAMUI_BlockCleanup = nil end
             if _G.KAMUI_BlockRelease == release then _G.KAMUI_BlockRelease = nil end
+            if CC.StopBlockLock == stopBlockLock then CC.StopBlockLock = nil end
         end
         _G.KAMUI_BlockCleanup = cleanup
         connect(RunService.Heartbeat, function()
@@ -11411,6 +12385,8 @@ _G.KAMUI_BuildCombat = function(UI)
                 if blocking then release() end
             elseif blocking and os.clock() >= blockDeadline then
                 release()
+            elseif blockAimPart then
+                applyBlockLock(false)
             end
         end)
     end
@@ -11457,7 +12433,7 @@ _G.KAMUI_BuildCombat = function(UI)
             setAimbot(false)
         end
         wasMobileShiftLocked = mobileShiftLocked
-        if not CC.Aimbot or lockPart then
+        if not CC.Aimbot or aimControl.owner then
             return
         end
         local char = player.Character
