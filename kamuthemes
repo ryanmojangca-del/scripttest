@@ -17,7 +17,7 @@ return function(context)
     local DEFAULT_BACKGROUND_COLOR, DEFAULT_BACKGROUND_TRANSPARENCY = background.BackgroundColor3, background.BackgroundTransparency
     local DEFAULT_CLIPS = background.ClipsDescendants
     local STATE_FILE = "KAMUI_CustomTheme.json"
-    local state = { url = "", opacity = 0.5, backgroundOpacity = 1 - DEFAULT_FRAME_TRANSPARENCY, path = "", active = false, lite = false,
+    local state = { url = "", opacity = 0.5, backgroundOpacity = 1 - DEFAULT_FRAME_TRANSPARENCY, path = "", active = false,
         imageMode = "Fill", imageZoom = 1, imageX = 0, imageY = 0,
         manualWidth = 540, manualHeight = 330, ratioW = 18, ratioH = 11, lockRatio = false, manualSidesVersion = 1 }
     local fileOK, assetFn = type(writefile) == "function", getcustomasset or getsynasset
@@ -77,8 +77,7 @@ return function(context)
                     if data.manualSidesVersion == 1 and type(data.lockRatio) == "boolean" then state.lockRatio = data.lockRatio end
                     -- Only permit the exact cache filenames created by this feature.
                     if type(data.path) == "string" and data.path:match("^KAMUI_theme_%d+%.%a+$") then state.path = data.path end
-                    state.lite = data.lite == true
-                    state.active = data.active == true and not state.lite
+                    state.active = data.active == true
                 end
             end
         end)
@@ -130,15 +129,11 @@ return function(context)
     local pencilId = tostring((_G.KAMUI_ProfileIcons or {}).Rename or "107672478385801"):match("%d+")
     if pencilId and type(_G.KAMUI_SetImage) == "function" then _G.KAMUI_SetImage(editIcon, pencilId) end
 
-    local liteTile = make("Frame", { Name = "LiteTheme", BackgroundColor3 = Color3.fromRGB(20, 20, 22),
+    local placeholder = make("Frame", { Name = "FutureTheme", BackgroundColor3 = Color3.fromRGB(14, 14, 16),
         BorderSizePixel = 0, Position = UDim2.new(0, 4, 0, 113), Size = UDim2.new(0, 132, 0, 52) }, gallery)
-    corner(liteTile, 4)
-    local liteStroke = stroke(liteTile)
-    label(liteTile, "Lite", UDim2.new(0, 8, 0, 4), UDim2.new(1, -16, 0, 17), THEME.Text, 10, true)
-    local liteChoose = button(liteTile, "Choose", UDim2.new(0, 8, 0, 25), UDim2.new(1, -16, 0, 20), THEME.Red)
-    liteChoose.Name = "ChooseLiteTheme"
-    liteChoose.TextSize = 10
-    liteChoose:FindFirstChildOfClass("UICorner").CornerRadius = UDim.new(0, 4)
+    corner(placeholder, 4); stroke(placeholder)
+    local futureLabel = label(placeholder, "More to come", UDim2.new(0, 4, 0, 0), UDim2.new(1, -8, 1, 0), THEME.MutedText, 9)
+    futureLabel.TextXAlignment = Enum.TextXAlignment.Center
     local back = button(settings, "<  Themes", UDim2.new(0, 0, 0, 2), UDim2.new(0, 80, 0, 25), Color3.fromRGB(28, 28, 31))
     label(settings, "CUSTOM", UDim2.new(0, 4, 0, 32), UDim2.new(1, -8, 0, 18), THEME.MutedText, 10)
     local card = make("Frame", { BackgroundColor3 = Color3.fromRGB(15, 15, 17), BorderSizePixel = 0, Position = UDim2.new(0, 0, 0, 53), Size = UDim2.new(1, 0, 0, 112) }, settings)
@@ -748,375 +743,17 @@ return function(context)
         return body, ext
     end
     local generation = 0
-    -- Lite draft: recolour existing UI and collapse the three Combat cards.
-    -- No original controls are destroyed or reparented. Default/Custom undo the draft.
-    local liteRunning, liteConn, liteSaved, liteCards = false, nil, {}, {}
-    local liteBackgroundTransparency
-    -- Use the accent currently selected in the GUI, including rainbow updates.
-    local BLUE = THEME.BrightRed
-    local replacements = {
-        {Color3.fromRGB(6, 6, 7), Color3.fromRGB(17, 15, 19)},
-        {Color3.fromRGB(9, 9, 10), Color3.fromRGB(17, 15, 19)},
-        {Color3.fromRGB(13, 13, 14), Color3.fromRGB(26, 24, 30)},
-        {Color3.fromRGB(15, 15, 17), Color3.fromRGB(26, 24, 30)},
-        {Color3.fromRGB(20, 20, 22), Color3.fromRGB(26, 24, 30)},
-        {Color3.fromRGB(26, 26, 28), Color3.fromRGB(33, 31, 38)},
-        {Color3.fromRGB(36, 36, 38), Color3.fromRGB(48, 45, 53)},
-    }
-    local function liteColor(c)
-        for _, pair in ipairs(replacements) do
-            if c == pair[1] then return pair[2] end
-        end
-        return nil
-    end
-    local function liteProperty(obj, prop)
-        local original = obj[prop]
-        local entry = liteSaved[obj]
-        local previous = entry and entry[prop]
-        -- If another feature has changed a property, preserve that new value.
-        if previous and original == previous.applied then return end
-        local mapped = liteColor(original)
-        if not mapped then
-            if previous then previous.original, previous.applied = original, nil end
-            return
-        end
-        if not entry then entry = {}; liteSaved[obj] = entry end
-        entry[prop] = { original = original, applied = mapped }
-        obj[prop] = mapped
-    end
-    local function liteSweep()
-        for _, obj in ipairs(MainFrame:GetDescendants()) do
-            if obj:IsA("GuiObject") then
-                liteProperty(obj, "BackgroundColor3")
-                if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
-                    liteProperty(obj, "TextColor3")
-                end
-                if obj:IsA("ImageLabel") or obj:IsA("ImageButton") then liteProperty(obj, "ImageColor3") end
-                if obj:IsA("ScrollingFrame") then liteProperty(obj, "ScrollBarImageColor3") end
-            elseif obj:IsA("UIStroke") then liteProperty(obj, "Color") end
-        end
-        liteProperty(MainFrame, "BackgroundColor3")
-    end
-    -- Layout changes are reversible and reuse the original GUI instances.
-    local liteLayoutSaved, liteCreated = {}, {}
-    local function liteSet(obj, prop, value)
-        if not obj then return end
-        local saved = liteLayoutSaved[obj]
-        if not saved then saved = {}; liteLayoutSaved[obj] = saved end
-        if saved[prop] == nil then saved[prop] = obj[prop] end
-        obj[prop] = value
-    end
-    local function liteRestoreLayout()
-        for _, obj in ipairs(liteCreated) do if obj.Parent then obj:Destroy() end end
-        liteCreated = {}
-        for obj, props in pairs(liteLayoutSaved) do
-            if obj.Parent then for prop, value in pairs(props) do obj[prop] = value end end
-        end
-        liteLayoutSaved = {}
-    end
-    local function liteSetupLayout()
-        -- Discover existing objects so Lite also works with the original
-        -- external-theme main script, without a second main-script update.
-        local tabHeader = context.TabHeader or (G.Btn and G.Btn.Parent)
-        local holder = context.ContainerHolder or root.Parent
-        local pages = _G.KAMUI_TabPush and _G.KAMUI_TabPush.pages or {}
-        local settingsPage = context.SettingsContainer or pages.Settings
-        local homePage = pages.Home
-        local topBar, title = context.TopBar, context.Title
-        if not (topBar and title) then
-            for _, child in ipairs(MainFrame:GetChildren()) do
-                if child:IsA("Frame") then
-                    for _, item in ipairs(child:GetChildren()) do
-                        if item:IsA("TextLabel") and item.Text == "Kamui Client" then
-                            topBar, title = child, item
-                            break
-                        end
-                    end
-                end
-                if topBar and title then break end
-            end
-        end
-        if not (tabHeader and holder and topBar and title and settingsPage) then
-            warn("[KAMUI Lite] Could not locate the existing GUI layout.")
-            return
-        end
-        -- Suppress the original animated border while Lite is active. The
-        -- outside holder is a sibling, not a descendant, of the main window.
-        local outerGlow = MainFrame.Parent and MainFrame.Parent:FindFirstChild("KamuiOuterGlow")
-        if outerGlow then liteSet(outerGlow, "Visible", false) end
-        local gradients = _G.KAMUI_BorderGradients
-        if type(gradients) == "table" then
-            for _, gradient in ipairs(gradients) do
-                local borderStroke = gradient and gradient.Parent
-                if borderStroke and borderStroke:IsA("UIStroke") then
-                    liteSet(borderStroke, "Enabled", false)
-                end
-            end
-        end
-        -- Full-width title bar and narrower sidebar as in the preview.
-        liteSet(topBar, "Size", UDim2.new(1, 0, 0, 25))
-        liteSet(topBar, "BackgroundColor3", Color3.fromRGB(23, 21, 26))
-        liteSet(topBar, "BackgroundTransparency", 0)
-        liteSet(title, "TextColor3", Color3.fromRGB(241, 241, 244))
-        for _, name in ipairs({"LogoLight", "LogoAccent"}) do
-            local logo = topBar:FindFirstChild(name)
-            if logo then liteSet(logo, "Size", UDim2.new(0, 16, 0, 16)); liteSet(logo, "Position", UDim2.new(0, 12, 0.5, -8)) end
-        end
-        for _, b in ipairs(topBar:GetChildren()) do
-            if b:IsA("TextButton") and (b.Text == "?" or b.Text == "-" or b.Text == "×") then
-                liteSet(b, "BackgroundTransparency", 1)
-            end
-        end
-        local sidebar = MainFrame:FindFirstChild("SidebarBG")
-        if sidebar then
-            liteSet(sidebar, "Position", UDim2.new(0, 0, 0, 25))
-            liteSet(sidebar, "Size", UDim2.new(0, 104, 1, -25))
-            liteSet(sidebar, "BackgroundColor3", Color3.fromRGB(17, 15, 19))
-            local cover = sidebar:FindFirstChild("SidebarCover")
-            if cover then liteSet(cover, "BackgroundColor3", Color3.fromRGB(17, 15, 19)) end
-        end
-        local line = MainFrame:FindFirstChild("SidebarLine")
-        if line then liteSet(line, "Position", UDim2.new(0, 104, 0, 25)); liteSet(line, "Size", UDim2.new(0, 1, 1, -25)) end
-        local titleLine = MainFrame:FindFirstChild("TitleLine")
-        if titleLine then liteSet(titleLine, "Visible", false) end
-        local profile = MainFrame:FindFirstChild("SidebarProfile")
-        if profile then liteSet(profile, "Visible", false) end
-        liteSet(tabHeader, "Position", UDim2.new(0, 7, 0, 30))
-        liteSet(tabHeader, "Size", UDim2.new(0, 92, 1, -33))
-        liteSet(holder, "Position", UDim2.new(0, 124, 0, 68))
-        liteSet(holder, "Size", UDim2.new(1, -137, 1, -77))
-        local sectionTitle = MainFrame:FindFirstChild("SectionTitle")
-        if sectionTitle then
-            liteSet(sectionTitle, "Position", UDim2.new(0, 124, 0, 31))
-            liteSet(sectionTitle, "Size", UDim2.new(0, 200, 0, 27))
-            liteSet(sectionTitle, "TextColor3", Color3.fromRGB(241, 241, 244))
-        end
-        if G.Subtabs then liteSet(G.Subtabs, "Position", UDim2.new(0, 120, 0, 32)) end
-        for _, b in ipairs(tabHeader:GetChildren()) do
-            if b:IsA("TextButton") and b.Name == "TabButton" then
-                liteSet(b, "TextSize", 9)
-                local pad = b:FindFirstChildOfClass("UIPadding")
-                if pad then liteSet(pad, "PaddingLeft", UDim.new(0, 30)) end
-                local icon = b:FindFirstChild("TabIcon") or b:FindFirstChild("TabGlyph")
-                if icon then liteSet(icon, "Position", UDim2.new(0, -21, 0.5, -8)) end
-                local bar = b:FindFirstChild("AccentBar")
-                if bar then liteSet(bar, "Position", UDim2.new(0, -28, 0.5, -8)) end
-            end
-        end
-        -- Add a working mode control above the original settings. Existing Draw
-        -- canvas, lock, resize, sliders and text inputs remain connected.
-        local modeBtn = context.ModeBtn or (homePage and homePage:FindFirstChild("ModeValue", true))
-        local modeRow = make("Frame", {Name = "LiteDashMode", BackgroundColor3 = BLUE,
-            BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 34), LayoutOrder = -100, ZIndex = 8}, settingsPage)
-        liteCreated[#liteCreated + 1] = modeRow
-        corner(modeRow, 7)
-        label(modeRow, "Dash", UDim2.new(0, 11, 0, 0), UDim2.new(0, 48, 1, 0), Color3.fromRGB(255,255,255), 11, true).ZIndex = 9
-        label(modeRow, "Mode", UDim2.new(0, 60, 0, 0), UDim2.new(0, 50, 1, 0), Color3.fromRGB(198,219,255), 10).ZIndex = 9
-        local mode = button(modeRow, "", UDim2.new(1, -82, 0.5, -11), UDim2.new(0, 71, 0, 22), Color3.fromRGB(26, 95, 199))
-        mode.ZIndex = 10
-        local menu = make("Frame", {Name = "LiteModeMenu", BackgroundColor3 = Color3.fromRGB(30, 28, 35),
-            BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, 3), Size = UDim2.new(1, 0, 0, 96), Visible = false, ZIndex = 30}, mode)
-        corner(menu, 5)
-        local function modeName()
-            if not modeBtn then return "V1" end
-            local text = tostring(modeBtn.Text)
-            return text:match(":%s*(.-)%s*$") or text
-        end
-        local function updateMode() mode.Text = modeName() end
-        updateMode()
-        if modeBtn then
-            local conn = modeBtn:GetPropertyChangedSignal("Text"):Connect(updateMode)
-            modeRow.Destroying:Connect(function() conn:Disconnect() end)
-        end
-        mode.MouseButton1Click:Connect(function() menu.Visible = not menu.Visible end)
-        for i, name in ipairs({"V1", "V2", "Draw", "Kiba"}) do
-            local opt = button(menu, name, UDim2.new(0, 2, 0, (i-1)*23+2), UDim2.new(1, -4, 0, 22), Color3.fromRGB(30, 28, 35))
-            opt.ZIndex = 31
-            opt.MouseButton1Click:Connect(function()
-                menu.Visible = false
-                if type(_G.KAMUI_SetLethalMode) == "function" then _G.KAMUI_SetLethalMode(name) end
-                updateMode()
-            end)
-        end
-        local dashTitle = homePage and homePage:FindFirstChild("DashTitle", true)
-        local dash = context.ToggleBtn or (dashTitle and dashTitle.Parent)
-        if dash and type(context.setTab) == "function" then
-            local dotBtn = make("TextButton", {Name = "LiteDashSettings", BackgroundTransparency = 1, Text = "", AutoButtonColor = false,
-                AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -3, 0.5, 0), Size = UDim2.new(0, 22, 0, 30), ZIndex = 50}, dash)
-            liteCreated[#liteCreated + 1] = dotBtn
-            dotBtn:SetAttribute("KamuiNoDrag", true)
-            for i = -1, 1 do
-                local d = make("Frame", {BackgroundColor3 = Color3.fromRGB(230,232,240), BorderSizePixel = 0,
-                    AnchorPoint = Vector2.new(.5,.5), Position = UDim2.new(.5,0,.5,i*4), Size = UDim2.new(0,2,0,2), ZIndex = 51}, dotBtn)
-                corner(d, 1)
-            end
-            local tr = dash:FindFirstChild("DashSwitch") or dash:FindFirstChild("RowSwitch")
-            if tr then liteSet(tr, "Position", tr.Position - UDim2.new(0,22,0,0)) end
-            dotBtn.MouseButton1Click:Connect(function() context.setTab("Settings") end)
-        end
-    end
-    local function liteSetupCombat()
-        local combat = _G.KAMUI_CombatTab and _G.KAMUI_CombatTab.Page
-        if not combat then return end
-        local pageLayout = combat:FindFirstChildOfClass("UIListLayout")
-        if pageLayout then liteSet(pageLayout, "Padding", UDim.new(0, 6)) end
-        for _, child in ipairs(combat:GetChildren()) do
-            if child:IsA("TextLabel") and child.Name == "SectionHeading" then
-                liteSet(child, "Visible", false)
-            end
-        end
-        for _, card in ipairs(combat:GetChildren()) do
-            if card:IsA("Frame") and card.Name == "Card" then
-                local rows = {}
-                for _, row in ipairs(card:GetChildren()) do
-                    if row:IsA("GuiObject") then rows[#rows + 1] = row end
-                end
-                table.sort(rows, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
-                local headerRow = rows[1]
-                local rowLabel = headerRow and headerRow:FindFirstChild("RowLabel")
-                local name = rowLabel and rowLabel.Text
-                if name == "M1 catch" or name == "Aimbot" or name == "Auto block"
-                    or name == "M1 reach" or name == "Side dash assist" then
-                    liteSet(headerRow, "Size", UDim2.new(1, 0, 0, 35))
-                    liteSet(rowLabel, "Position", UDim2.new(0, 11, 0.5, -9))
-                    liteSet(rowLabel, "Size", UDim2.new(0, 86, 0, 18))
-                    local rowSub = headerRow:FindFirstChild("RowSub")
-                    if rowSub then
-                        liteSet(rowSub, "Position", UDim2.new(0, 104, 0.5, -8))
-                        liteSet(rowSub, "Size", UDim2.new(1, -180, 0, 16))
-                        liteSet(rowSub, "TextTruncate", Enum.TextTruncate.AtEnd)
-                        liteSet(rowSub, "TextWrapped", false)
-                        liteSet(rowSub, "TextScaled", false)
-                        liteSet(rowSub, "TextSize", 10)
-                    end
-                    local item = { card = card, row = headerRow, auto = card.AutomaticSize,
-                        size = card.Size, clips = card.ClipsDescendants,
-                        rowColor = headerRow.BackgroundColor3, rowTransparency = headerRow.BackgroundTransparency,
-                        expanded = name == "M1 catch" }
-                    for _, child in ipairs(headerRow:GetChildren()) do
-                        if child:IsA("Frame") and child.AnchorPoint.X == 1 and child.Size.X.Offset == 36 then
-                            item.track, item.trackPosition = child, child.Position
-                            child.Position = child.Position - UDim2.new(0, 22, 0, 0)
-                            break
-                        end
-                    end
-                    local dots = make("TextButton", {Name = "LiteSettingsDots", Text = "", AutoButtonColor = false,
-                        BackgroundTransparency = 1, BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0.5),
-                        Position = UDim2.new(1, -3, 0.5, 0), Size = UDim2.new(0, 22, 0, 30), ZIndex = 50 }, headerRow)
-                    dots:SetAttribute("KamuiNoDrag", true)
-                    for i = -1, 1 do
-                        local dot = make("Frame", {Name = "Dot", BackgroundColor3 = Color3.fromRGB(230, 232, 240),
-                            BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5),
-                            Position = UDim2.new(0.5, 0, 0.5, i * 4), Size = UDim2.new(0, 2, 0, 2), ZIndex = 51}, dots)
-                        corner(dot, 1)
-                    end
-                    item.dots = dots
-                    local function setExpanded()
-                        card.ClipsDescendants = true
-                        if item.expanded then card.AutomaticSize = Enum.AutomaticSize.Y; card.Size = item.size
-                        else card.AutomaticSize = Enum.AutomaticSize.None; card.Size = UDim2.new(1, 0, 0, headerRow.Size.Y.Offset) end
-                    end
-                    dots.MouseButton1Click:Connect(function() item.expanded = not item.expanded; setExpanded() end)
-                    setExpanded()
-                    liteCards[#liteCards + 1] = item
-                end
-            end
-        end
-    end
-    local function setLite(on)
-        if liteRunning == on then return end
-        liteRunning = on
-        if on then
-            BLUE = THEME.BrightRed
-            liteBackgroundTransparency = background.ImageTransparency
-            background.ImageTransparency = 1
-            liteSetupLayout()
-            liteSetupCombat()
-            local elapsed = 0
-            liteConn = RunService.Heartbeat:Connect(function(dt)
-                if not isCurrent() or not MainFrame.Parent then
-                    if liteConn then liteConn:Disconnect(); liteConn = nil end
-                    return
-                end
-                elapsed += dt
-                if elapsed < 0.15 then return end
-                elapsed = 0
-                BLUE = THEME.BrightRed
-                liteSweep()
-                local pages = _G.KAMUI_TabPush and _G.KAMUI_TabPush.pages
-                local settingsPage = context.SettingsContainer or (pages and pages.Settings)
-                local modeRow = settingsPage and settingsPage:FindFirstChild("LiteDashMode")
-                if modeRow then modeRow.BackgroundColor3 = BLUE end
-                local combatPage = _G.KAMUI_CombatTab and _G.KAMUI_CombatTab.Page
-                if combatPage then
-                    for _, child in ipairs(combatPage:GetChildren()) do
-                        if child:IsA("TextLabel") and child.Name == "SectionHeading" then child.Visible = false end
-                    end
-                end
-                local combat = _G.KAMUI_Combat or {}
-                for _, item in ipairs(liteCards) do
-                    local label = item.row:FindFirstChild("RowLabel")
-                    local name = label and label.Text
-                    local active = (name == "M1 catch" and combat.Enabled)
-                        or (name == "Aimbot" and combat.Aimbot)
-                        or (name == "Auto block" and combat.Block)
-                        or (name == "M1 reach" and combat.Reach)
-                        or (name == "Side dash assist" and combat.SideDashAssist and combat.SideDashAssist.Enabled)
-                    item.row.BackgroundTransparency = active and 0 or 1
-                    if active then item.row.BackgroundColor3 = BLUE end
-                end
-            end)
-            liteSweep()
-        else
-            if liteConn then liteConn:Disconnect(); liteConn = nil end
-            for _, item in ipairs(liteCards) do
-                if item.dots then item.dots:Destroy() end
-                if item.track and item.track.Parent then item.track.Position = item.trackPosition end
-                if item.row and item.row.Parent then
-                    item.row.BackgroundColor3 = item.rowColor; item.row.BackgroundTransparency = item.rowTransparency
-                end
-                if item.card and item.card.Parent then
-                    item.card.AutomaticSize = item.auto; item.card.Size = item.size; item.card.ClipsDescendants = item.clips
-                end
-            end
-            liteCards = {}
-            liteRestoreLayout()
-            for obj, props in pairs(liteSaved) do
-                if obj.Parent then
-                    for prop, entry in pairs(props) do
-                        if entry.applied and obj[prop] == entry.applied then obj[prop] = entry.original end
-                    end
-                end
-            end
-            liteSaved = {}
-            if liteBackgroundTransparency then background.ImageTransparency = liteBackgroundTransparency end
-            liteBackgroundTransparency = nil
-        end
-    end
     local function paintSelection()
-        local defaultSelected = not state.active and not state.lite
-        defaultStroke.Color = defaultSelected and THEME.Red or Color3.fromRGB(43, 43, 46)
+        defaultStroke.Color = state.active and Color3.fromRGB(43, 43, 46) or THEME.Red
         customStroke.Color = state.active and THEME.Red or Color3.fromRGB(43, 43, 46)
-        liteStroke.Color = state.lite and THEME.BrightRed or Color3.fromRGB(43, 43, 46)
-        defaultChoose.Text = defaultSelected and "Selected" or "Choose"
-        defaultChoose.BackgroundColor3 = defaultSelected and THEME.DarkRed or THEME.Red
+        defaultChoose.Text = state.active and "Choose" or "Selected"
+        defaultChoose.BackgroundColor3 = state.active and THEME.Red or THEME.DarkRed
         customChoose.Text = state.active and "Selected" or "Choose"
         customChoose.BackgroundColor3 = state.active and THEME.DarkRed or THEME.Red
-        liteChoose.Text = state.lite and "Selected" or "Choose"
-        liteChoose.BackgroundColor3 = state.lite and THEME.DarkRed or THEME.BrightRed
     end
-    liteChoose.MouseButton1Click:Connect(function()
-        generation += 1 -- cancel an in-flight custom-image download
-        stopGif()
-        setLite(false)
-        state.active = false; state.lite = true
-        paintOpacity()
-        setLite(true); paintSelection(); save()
-    end)
     defaultChoose.MouseButton1Click:Connect(function()
         generation += 1 -- prevent an in-flight image download from overriding Default
-        setLite(false)
-        state.lite = false; state.active = false
+        state.active = false
         background.Image = DEFAULT_IMAGE
         background.ImageTransparency = DEFAULT_TRANSPARENCY
         paintOpacity(); paintSelection(); save(); setStatus("Default background restored.", false)
@@ -1153,7 +790,7 @@ return function(context)
                 setStatus("Saved image unavailable; press Apply again.", true)
                 return
             end
-            setLite(false); state.lite = false; state.active = true
+            state.active = true
             paintOpacity(); paintSelection(); save()
             setStatus("Saved image selected.", false)
         end)
@@ -1190,7 +827,6 @@ return function(context)
                 setStatus("Could not load image: " .. tostring(asset), true); return
             end
             if not decoded then stopGif(); customImage.Image = asset end
-            setLite(false); state.lite = false
             state.url = url; state.path = path; state.active = true
             box.Text = url
             paintOpacity(); paintSelection(); save()
@@ -1199,7 +835,6 @@ return function(context)
     end)
     reset.MouseButton1Click:Connect(function()
         generation += 1
-        setLite(false); state.lite = false
         state.url = ""; state.path = ""; state.active = false; state.opacity = 0.5
         state.backgroundOpacity = 1 - DEFAULT_FRAME_TRANSPARENCY
         state.imageMode = "Fill"; state.imageZoom = 1; state.imageX = 0; state.imageY = 0
@@ -1472,6 +1107,5 @@ return function(context)
         setStatus("Saved image unavailable; press Apply again.", true)
     end
     paintOpacity()
-    if state.lite then setLite(true) end
     paintSelection()
 end
