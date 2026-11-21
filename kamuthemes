@@ -752,7 +752,8 @@ return function(context)
     -- No original controls are destroyed or reparented. Default/Custom undo the draft.
     local liteRunning, liteConn, liteSaved, liteCards = false, nil, {}, {}
     local liteBackgroundTransparency
-    local BLUE = Color3.fromRGB(29, 112, 235)
+    -- Use the accent currently selected in the GUI, including rainbow updates.
+    local BLUE = THEME.BrightRed
     local replacements = {
         {Color3.fromRGB(6, 6, 7), Color3.fromRGB(17, 15, 19)},
         {Color3.fromRGB(9, 9, 10), Color3.fromRGB(17, 15, 19)},
@@ -761,9 +762,6 @@ return function(context)
         {Color3.fromRGB(20, 20, 22), Color3.fromRGB(26, 24, 30)},
         {Color3.fromRGB(26, 26, 28), Color3.fromRGB(33, 31, 38)},
         {Color3.fromRGB(36, 36, 38), Color3.fromRGB(48, 45, 53)},
-        {Color3.fromRGB(205, 18, 20), BLUE},
-        {Color3.fromRGB(240, 30, 24), Color3.fromRGB(39, 129, 248)},
-        {Color3.fromRGB(52, 8, 12), Color3.fromRGB(18, 48, 91)},
     }
     local function liteColor(c)
         for _, pair in ipairs(replacements) do
@@ -842,6 +840,19 @@ return function(context)
             warn("[KAMUI Lite] Could not locate the existing GUI layout.")
             return
         end
+        -- Suppress the original animated border while Lite is active. The
+        -- outside holder is a sibling, not a descendant, of the main window.
+        local outerGlow = MainFrame.Parent and MainFrame.Parent:FindFirstChild("KamuiOuterGlow")
+        if outerGlow then liteSet(outerGlow, "Visible", false) end
+        local gradients = _G.KAMUI_BorderGradients
+        if type(gradients) == "table" then
+            for _, gradient in ipairs(gradients) do
+                local borderStroke = gradient and gradient.Parent
+                if borderStroke and borderStroke:IsA("UIStroke") then
+                    liteSet(borderStroke, "Enabled", false)
+                end
+            end
+        end
         -- Full-width title bar and narrower sidebar as in the preview.
         liteSet(topBar, "Size", UDim2.new(1, 0, 0, 25))
         liteSet(topBar, "BackgroundColor3", Color3.fromRGB(23, 21, 26))
@@ -883,7 +894,7 @@ return function(context)
         if G.Subtabs then liteSet(G.Subtabs, "Position", UDim2.new(0, 120, 0, 32)) end
         for _, b in ipairs(tabHeader:GetChildren()) do
             if b:IsA("TextButton") and b.Name == "TabButton" then
-                liteSet(b, "TextSize", 10)
+                liteSet(b, "TextSize", 9)
                 local pad = b:FindFirstChildOfClass("UIPadding")
                 if pad then liteSet(pad, "PaddingLeft", UDim.new(0, 30)) end
                 local icon = b:FindFirstChild("TabIcon") or b:FindFirstChild("TabGlyph")
@@ -1016,6 +1027,7 @@ return function(context)
         if liteRunning == on then return end
         liteRunning = on
         if on then
+            BLUE = THEME.BrightRed
             liteBackgroundTransparency = background.ImageTransparency
             background.ImageTransparency = 1
             liteSetupLayout()
@@ -1029,7 +1041,12 @@ return function(context)
                 elapsed += dt
                 if elapsed < 0.15 then return end
                 elapsed = 0
+                BLUE = THEME.BrightRed
                 liteSweep()
+                local pages = _G.KAMUI_TabPush and _G.KAMUI_TabPush.pages
+                local settingsPage = context.SettingsContainer or (pages and pages.Settings)
+                local modeRow = settingsPage and settingsPage:FindFirstChild("LiteDashMode")
+                if modeRow then modeRow.BackgroundColor3 = BLUE end
                 local combatPage = _G.KAMUI_CombatTab and _G.KAMUI_CombatTab.Page
                 if combatPage then
                     for _, child in ipairs(combatPage:GetChildren()) do
@@ -1080,13 +1097,13 @@ return function(context)
         local defaultSelected = not state.active and not state.lite
         defaultStroke.Color = defaultSelected and THEME.Red or Color3.fromRGB(43, 43, 46)
         customStroke.Color = state.active and THEME.Red or Color3.fromRGB(43, 43, 46)
-        liteStroke.Color = state.lite and BLUE or Color3.fromRGB(43, 43, 46)
+        liteStroke.Color = state.lite and THEME.BrightRed or Color3.fromRGB(43, 43, 46)
         defaultChoose.Text = defaultSelected and "Selected" or "Choose"
         defaultChoose.BackgroundColor3 = defaultSelected and THEME.DarkRed or THEME.Red
         customChoose.Text = state.active and "Selected" or "Choose"
         customChoose.BackgroundColor3 = state.active and THEME.DarkRed or THEME.Red
         liteChoose.Text = state.lite and "Selected" or "Choose"
-        liteChoose.BackgroundColor3 = state.lite and Color3.fromRGB(18, 48, 91) or BLUE
+        liteChoose.BackgroundColor3 = state.lite and THEME.DarkRed or THEME.BrightRed
     end
     liteChoose.MouseButton1Click:Connect(function()
         generation += 1 -- cancel an in-flight custom-image download
