@@ -817,10 +817,29 @@ return function(context)
         liteLayoutSaved = {}
     end
     local function liteSetupLayout()
-        local tabHeader, holder = context.TabHeader, context.ContainerHolder
+        -- Discover existing objects so Lite also works with the original
+        -- external-theme main script, without a second main-script update.
+        local tabHeader = context.TabHeader or (G.Btn and G.Btn.Parent)
+        local holder = context.ContainerHolder or root.Parent
+        local pages = _G.KAMUI_TabPush and _G.KAMUI_TabPush.pages or {}
+        local settingsPage = context.SettingsContainer or pages.Settings
+        local homePage = pages.Home
         local topBar, title = context.TopBar, context.Title
-        if not (tabHeader and holder and topBar and title and context.SettingsContainer) then
-            warn("[KAMUI Lite] Update the main script to the Lite test version.")
+        if not (topBar and title) then
+            for _, child in ipairs(MainFrame:GetChildren()) do
+                if child:IsA("Frame") then
+                    for _, item in ipairs(child:GetChildren()) do
+                        if item:IsA("TextLabel") and item.Text == "Kamui Client" then
+                            topBar, title = child, item
+                            break
+                        end
+                    end
+                end
+                if topBar and title then break end
+            end
+        end
+        if not (tabHeader and holder and topBar and title and settingsPage) then
+            warn("[KAMUI Lite] Could not locate the existing GUI layout.")
             return
         end
         -- Full-width title bar and narrower sidebar as in the preview.
@@ -832,8 +851,10 @@ return function(context)
             local logo = topBar:FindFirstChild(name)
             if logo then liteSet(logo, "Size", UDim2.new(0, 16, 0, 16)); liteSet(logo, "Position", UDim2.new(0, 12, 0.5, -8)) end
         end
-        for _, b in ipairs({context.InfoBtn, context.MinimizeBtn, context.DestroyBtn}) do
-            if b then liteSet(b, "BackgroundTransparency", 1) end
+        for _, b in ipairs(topBar:GetChildren()) do
+            if b:IsA("TextButton") and (b.Text == "?" or b.Text == "-" or b.Text == "×") then
+                liteSet(b, "BackgroundTransparency", 1)
+            end
         end
         local sidebar = MainFrame:FindFirstChild("SidebarBG")
         if sidebar then
@@ -873,7 +894,7 @@ return function(context)
         end
         -- Add a working mode control above the original settings. Existing Draw
         -- canvas, lock, resize, sliders and text inputs remain connected.
-        local settingsPage, modeBtn = context.SettingsContainer, context.ModeBtn
+        local modeBtn = context.ModeBtn or (homePage and homePage:FindFirstChild("ModeValue", true))
         local modeRow = make("Frame", {Name = "LiteDashMode", BackgroundColor3 = BLUE,
             BorderSizePixel = 0, Size = UDim2.new(1, 0, 0, 34), LayoutOrder = -100, ZIndex = 8}, settingsPage)
         liteCreated[#liteCreated + 1] = modeRow
@@ -886,7 +907,9 @@ return function(context)
             BorderSizePixel = 0, Position = UDim2.new(0, 0, 1, 3), Size = UDim2.new(1, 0, 0, 96), Visible = false, ZIndex = 30}, mode)
         corner(menu, 5)
         local function modeName()
-            return modeBtn and (tostring(modeBtn.Text):match(":%s*(.-)%s*$") or "V1") or "V1"
+            if not modeBtn then return "V1" end
+            local text = tostring(modeBtn.Text)
+            return text:match(":%s*(.-)%s*$") or text
         end
         local function updateMode() mode.Text = modeName() end
         updateMode()
@@ -904,7 +927,8 @@ return function(context)
                 updateMode()
             end)
         end
-        local dash = context.ToggleBtn
+        local dashTitle = homePage and homePage:FindFirstChild("DashTitle", true)
+        local dash = context.ToggleBtn or (dashTitle and dashTitle.Parent)
         if dash and type(context.setTab) == "function" then
             local dotBtn = make("TextButton", {Name = "LiteDashSettings", BackgroundTransparency = 1, Text = "", AutoButtonColor = false,
                 AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -3, 0.5, 0), Size = UDim2.new(0, 22, 0, 30), ZIndex = 50}, dash)
@@ -940,7 +964,8 @@ return function(context)
                 local headerRow = rows[1]
                 local rowLabel = headerRow and headerRow:FindFirstChild("RowLabel")
                 local name = rowLabel and rowLabel.Text
-                if name == "M1 catch" or name == "Aimbot" or name == "Auto block" then
+                if name == "M1 catch" or name == "Aimbot" or name == "Auto block"
+                    or name == "M1 reach" or name == "Side dash assist" then
                     liteSet(headerRow, "Size", UDim2.new(1, 0, 0, 35))
                     liteSet(rowLabel, "Position", UDim2.new(0, 11, 0.5, -9))
                     liteSet(rowLabel, "Size", UDim2.new(0, 86, 0, 18))
@@ -949,6 +974,9 @@ return function(context)
                         liteSet(rowSub, "Position", UDim2.new(0, 104, 0.5, -8))
                         liteSet(rowSub, "Size", UDim2.new(1, -180, 0, 16))
                         liteSet(rowSub, "TextTruncate", Enum.TextTruncate.AtEnd)
+                        liteSet(rowSub, "TextWrapped", false)
+                        liteSet(rowSub, "TextScaled", false)
+                        liteSet(rowSub, "TextSize", 10)
                     end
                     local item = { card = card, row = headerRow, auto = card.AutomaticSize,
                         size = card.Size, clips = card.ClipsDescendants,
@@ -1012,7 +1040,11 @@ return function(context)
                 for _, item in ipairs(liteCards) do
                     local label = item.row:FindFirstChild("RowLabel")
                     local name = label and label.Text
-                    local active = (name == "M1 catch" and combat.Enabled) or (name == "Aimbot" and combat.Aimbot) or (name == "Auto block" and combat.Block)
+                    local active = (name == "M1 catch" and combat.Enabled)
+                        or (name == "Aimbot" and combat.Aimbot)
+                        or (name == "Auto block" and combat.Block)
+                        or (name == "M1 reach" and combat.Reach)
+                        or (name == "Side dash assist" and combat.SideDashAssist and combat.SideDashAssist.Enabled)
                     item.row.BackgroundTransparency = active and 0 or 1
                     if active then item.row.BackgroundColor3 = BLUE end
                 end
