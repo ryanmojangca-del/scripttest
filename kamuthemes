@@ -17,7 +17,7 @@ return function(context)
     local DEFAULT_BACKGROUND_COLOR, DEFAULT_BACKGROUND_TRANSPARENCY = background.BackgroundColor3, background.BackgroundTransparency
     local DEFAULT_CLIPS = background.ClipsDescendants
     local STATE_FILE = "KAMUI_CustomTheme.json"
-    local state = { url = "", opacity = 0.5, backgroundOpacity = 1 - DEFAULT_FRAME_TRANSPARENCY, path = "", active = false,
+    local state = { url = "", opacity = 0.5, backgroundOpacity = 1 - DEFAULT_FRAME_TRANSPARENCY, path = "", active = false, lite = false,
         imageMode = "Fill", imageZoom = 1, imageX = 0, imageY = 0,
         manualWidth = 540, manualHeight = 330, ratioW = 18, ratioH = 11, lockRatio = false, manualSidesVersion = 1 }
     local fileOK, assetFn = type(writefile) == "function", getcustomasset or getsynasset
@@ -77,7 +77,8 @@ return function(context)
                     if data.manualSidesVersion == 1 and type(data.lockRatio) == "boolean" then state.lockRatio = data.lockRatio end
                     -- Only permit the exact cache filenames created by this feature.
                     if type(data.path) == "string" and data.path:match("^KAMUI_theme_%d+%.%a+$") then state.path = data.path end
-                    state.active = data.active == true
+                    state.lite = data.lite == true
+                    state.active = data.active == true and not state.lite
                 end
             end
         end)
@@ -129,11 +130,15 @@ return function(context)
     local pencilId = tostring((_G.KAMUI_ProfileIcons or {}).Rename or "107672478385801"):match("%d+")
     if pencilId and type(_G.KAMUI_SetImage) == "function" then _G.KAMUI_SetImage(editIcon, pencilId) end
 
-    local placeholder = make("Frame", { Name = "FutureTheme", BackgroundColor3 = Color3.fromRGB(14, 14, 16),
+    local liteTile = make("Frame", { Name = "LiteTheme", BackgroundColor3 = Color3.fromRGB(20, 20, 22),
         BorderSizePixel = 0, Position = UDim2.new(0, 4, 0, 113), Size = UDim2.new(0, 132, 0, 52) }, gallery)
-    corner(placeholder, 4); stroke(placeholder)
-    local futureLabel = label(placeholder, "More to come", UDim2.new(0, 4, 0, 0), UDim2.new(1, -8, 1, 0), THEME.MutedText, 9)
-    futureLabel.TextXAlignment = Enum.TextXAlignment.Center
+    corner(liteTile, 4)
+    local liteStroke = stroke(liteTile)
+    label(liteTile, "Lite", UDim2.new(0, 8, 0, 4), UDim2.new(1, -16, 0, 17), THEME.Text, 10, true)
+    local liteChoose = button(liteTile, "Choose", UDim2.new(0, 8, 0, 25), UDim2.new(1, -16, 0, 20), THEME.Red)
+    liteChoose.Name = "ChooseLiteTheme"
+    liteChoose.TextSize = 10
+    liteChoose:FindFirstChildOfClass("UICorner").CornerRadius = UDim.new(0, 4)
     local back = button(settings, "<  Themes", UDim2.new(0, 0, 0, 2), UDim2.new(0, 80, 0, 25), Color3.fromRGB(28, 28, 31))
     label(settings, "CUSTOM", UDim2.new(0, 4, 0, 32), UDim2.new(1, -8, 0, 18), THEME.MutedText, 10)
     local card = make("Frame", { BackgroundColor3 = Color3.fromRGB(15, 15, 17), BorderSizePixel = 0, Position = UDim2.new(0, 0, 0, 53), Size = UDim2.new(1, 0, 0, 112) }, settings)
@@ -743,17 +748,181 @@ return function(context)
         return body, ext
     end
     local generation = 0
+    -- Lite draft: recolour existing UI and collapse the three Combat cards.
+    -- No original controls are destroyed or reparented. Default/Custom undo the draft.
+    local liteRunning, liteConn, liteSaved, liteCards = false, nil, {}, {}
+    local liteBackgroundTransparency
+    local BLUE = Color3.fromRGB(29, 112, 235)
+    local replacements = {
+        {Color3.fromRGB(6, 6, 7), Color3.fromRGB(17, 15, 19)},
+        {Color3.fromRGB(9, 9, 10), Color3.fromRGB(17, 15, 19)},
+        {Color3.fromRGB(13, 13, 14), Color3.fromRGB(26, 24, 30)},
+        {Color3.fromRGB(15, 15, 17), Color3.fromRGB(26, 24, 30)},
+        {Color3.fromRGB(20, 20, 22), Color3.fromRGB(26, 24, 30)},
+        {Color3.fromRGB(26, 26, 28), Color3.fromRGB(33, 31, 38)},
+        {Color3.fromRGB(36, 36, 38), Color3.fromRGB(48, 45, 53)},
+        {Color3.fromRGB(205, 18, 20), BLUE},
+        {Color3.fromRGB(240, 30, 24), Color3.fromRGB(39, 129, 248)},
+        {Color3.fromRGB(52, 8, 12), Color3.fromRGB(18, 48, 91)},
+    }
+    local function liteColor(c)
+        for _, pair in ipairs(replacements) do
+            if c == pair[1] then return pair[2] end
+        end
+        return nil
+    end
+    local function liteProperty(obj, prop)
+        local original = obj[prop]
+        local entry = liteSaved[obj]
+        local previous = entry and entry[prop]
+        -- If another feature has changed a property, preserve that new value.
+        if previous and original == previous.applied then return end
+        local mapped = liteColor(original)
+        if not mapped then
+            if previous then previous.original, previous.applied = original, nil end
+            return
+        end
+        if not entry then entry = {}; liteSaved[obj] = entry end
+        entry[prop] = { original = original, applied = mapped }
+        obj[prop] = mapped
+    end
+    local function liteSweep()
+        for _, obj in ipairs(MainFrame:GetDescendants()) do
+            if obj:IsA("GuiObject") then
+                liteProperty(obj, "BackgroundColor3")
+                if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+                    liteProperty(obj, "TextColor3")
+                end
+                if obj:IsA("ImageLabel") or obj:IsA("ImageButton") then liteProperty(obj, "ImageColor3") end
+                if obj:IsA("ScrollingFrame") then liteProperty(obj, "ScrollBarImageColor3") end
+            elseif obj:IsA("UIStroke") then liteProperty(obj, "Color") end
+        end
+        liteProperty(MainFrame, "BackgroundColor3")
+    end
+    local function liteSetupCombat()
+        local combat = _G.KAMUI_CombatTab and _G.KAMUI_CombatTab.Page
+        if not combat then return end
+        for _, card in ipairs(combat:GetChildren()) do
+            if card:IsA("Frame") and card.Name == "Card" then
+                local rows = {}
+                for _, row in ipairs(card:GetChildren()) do
+                    if row:IsA("GuiObject") then rows[#rows + 1] = row end
+                end
+                table.sort(rows, function(a, b) return a.LayoutOrder < b.LayoutOrder end)
+                local headerRow = rows[1]
+                local rowLabel = headerRow and headerRow:FindFirstChild("RowLabel")
+                local name = rowLabel and rowLabel.Text
+                if name == "M1 catch" or name == "Aimbot" or name == "Auto block" then
+                    local item = { card = card, row = headerRow, auto = card.AutomaticSize,
+                        size = card.Size, clips = card.ClipsDescendants,
+                        rowColor = headerRow.BackgroundColor3, rowTransparency = headerRow.BackgroundTransparency,
+                        expanded = name == "M1 catch" }
+                    for _, child in ipairs(headerRow:GetChildren()) do
+                        if child:IsA("Frame") and child.AnchorPoint.X == 1 and child.Size.X.Offset == 36 then
+                            item.track, item.trackPosition = child, child.Position
+                            child.Position = child.Position - UDim2.new(0, 22, 0, 0)
+                            break
+                        end
+                    end
+                    local dots = make("TextButton", {Name = "LiteSettingsDots", Text = "", AutoButtonColor = false,
+                        BackgroundTransparency = 1, BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0.5),
+                        Position = UDim2.new(1, -3, 0.5, 0), Size = UDim2.new(0, 22, 0, 30), ZIndex = 50 }, headerRow)
+                    dots:SetAttribute("KamuiNoDrag", true)
+                    for i = -1, 1 do
+                        local dot = make("Frame", {Name = "Dot", BackgroundColor3 = Color3.fromRGB(230, 232, 240),
+                            BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5),
+                            Position = UDim2.new(0.5, 0, 0.5, i * 4), Size = UDim2.new(0, 2, 0, 2), ZIndex = 51}, dots)
+                        corner(dot, 1)
+                    end
+                    item.dots = dots
+                    local function setExpanded()
+                        card.ClipsDescendants = true
+                        if item.expanded then card.AutomaticSize = Enum.AutomaticSize.Y; card.Size = item.size
+                        else card.AutomaticSize = Enum.AutomaticSize.None; card.Size = UDim2.new(1, 0, 0, headerRow.Size.Y.Offset) end
+                    end
+                    dots.MouseButton1Click:Connect(function() item.expanded = not item.expanded; setExpanded() end)
+                    setExpanded()
+                    liteCards[#liteCards + 1] = item
+                end
+            end
+        end
+    end
+    local function setLite(on)
+        if liteRunning == on then return end
+        liteRunning = on
+        if on then
+            liteBackgroundTransparency = background.ImageTransparency
+            background.ImageTransparency = 1
+            liteSetupCombat()
+            local elapsed = 0
+            liteConn = RunService.Heartbeat:Connect(function(dt)
+                if not isCurrent() or not MainFrame.Parent then
+                    if liteConn then liteConn:Disconnect(); liteConn = nil end
+                    return
+                end
+                elapsed += dt
+                if elapsed < 0.15 then return end
+                elapsed = 0
+                liteSweep()
+                local combat = _G.KAMUI_Combat or {}
+                for _, item in ipairs(liteCards) do
+                    local label = item.row:FindFirstChild("RowLabel")
+                    local name = label and label.Text
+                    local active = (name == "M1 catch" and combat.Enabled) or (name == "Aimbot" and combat.Aimbot) or (name == "Auto block" and combat.Block)
+                    item.row.BackgroundTransparency = active and 0 or 1
+                    if active then item.row.BackgroundColor3 = BLUE end
+                end
+            end)
+            liteSweep()
+        else
+            if liteConn then liteConn:Disconnect(); liteConn = nil end
+            for _, item in ipairs(liteCards) do
+                if item.dots then item.dots:Destroy() end
+                if item.track and item.track.Parent then item.track.Position = item.trackPosition end
+                if item.row and item.row.Parent then
+                    item.row.BackgroundColor3 = item.rowColor; item.row.BackgroundTransparency = item.rowTransparency
+                end
+                if item.card and item.card.Parent then
+                    item.card.AutomaticSize = item.auto; item.card.Size = item.size; item.card.ClipsDescendants = item.clips
+                end
+            end
+            liteCards = {}
+            for obj, props in pairs(liteSaved) do
+                if obj.Parent then
+                    for prop, entry in pairs(props) do
+                        if entry.applied and obj[prop] == entry.applied then obj[prop] = entry.original end
+                    end
+                end
+            end
+            liteSaved = {}
+            if liteBackgroundTransparency then background.ImageTransparency = liteBackgroundTransparency end
+            liteBackgroundTransparency = nil
+        end
+    end
     local function paintSelection()
-        defaultStroke.Color = state.active and Color3.fromRGB(43, 43, 46) or THEME.Red
+        local defaultSelected = not state.active and not state.lite
+        defaultStroke.Color = defaultSelected and THEME.Red or Color3.fromRGB(43, 43, 46)
         customStroke.Color = state.active and THEME.Red or Color3.fromRGB(43, 43, 46)
-        defaultChoose.Text = state.active and "Choose" or "Selected"
-        defaultChoose.BackgroundColor3 = state.active and THEME.Red or THEME.DarkRed
+        liteStroke.Color = state.lite and BLUE or Color3.fromRGB(43, 43, 46)
+        defaultChoose.Text = defaultSelected and "Selected" or "Choose"
+        defaultChoose.BackgroundColor3 = defaultSelected and THEME.DarkRed or THEME.Red
         customChoose.Text = state.active and "Selected" or "Choose"
         customChoose.BackgroundColor3 = state.active and THEME.DarkRed or THEME.Red
+        liteChoose.Text = state.lite and "Selected" or "Choose"
+        liteChoose.BackgroundColor3 = state.lite and Color3.fromRGB(18, 48, 91) or BLUE
     end
+    liteChoose.MouseButton1Click:Connect(function()
+        generation += 1 -- cancel an in-flight custom-image download
+        stopGif()
+        setLite(false)
+        state.active = false; state.lite = true
+        paintOpacity()
+        setLite(true); paintSelection(); save()
+    end)
     defaultChoose.MouseButton1Click:Connect(function()
         generation += 1 -- prevent an in-flight image download from overriding Default
-        state.active = false
+        setLite(false)
+        state.lite = false; state.active = false
         background.Image = DEFAULT_IMAGE
         background.ImageTransparency = DEFAULT_TRANSPARENCY
         paintOpacity(); paintSelection(); save(); setStatus("Default background restored.", false)
@@ -790,7 +959,7 @@ return function(context)
                 setStatus("Saved image unavailable; press Apply again.", true)
                 return
             end
-            state.active = true
+            setLite(false); state.lite = false; state.active = true
             paintOpacity(); paintSelection(); save()
             setStatus("Saved image selected.", false)
         end)
@@ -827,6 +996,7 @@ return function(context)
                 setStatus("Could not load image: " .. tostring(asset), true); return
             end
             if not decoded then stopGif(); customImage.Image = asset end
+            setLite(false); state.lite = false
             state.url = url; state.path = path; state.active = true
             box.Text = url
             paintOpacity(); paintSelection(); save()
@@ -835,6 +1005,7 @@ return function(context)
     end)
     reset.MouseButton1Click:Connect(function()
         generation += 1
+        setLite(false); state.lite = false
         state.url = ""; state.path = ""; state.active = false; state.opacity = 0.5
         state.backgroundOpacity = 1 - DEFAULT_FRAME_TRANSPARENCY
         state.imageMode = "Fill"; state.imageZoom = 1; state.imageX = 0; state.imageY = 0
@@ -1107,5 +1278,6 @@ return function(context)
         setStatus("Saved image unavailable; press Apply again.", true)
     end
     paintOpacity()
+    if state.lite then setLite(true) end
     paintSelection()
 end
