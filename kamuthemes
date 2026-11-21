@@ -2293,6 +2293,7 @@ local function movementReset(group, body, order)
         Text = group.resetLabel, AutoButtonColor = false }, row)
     corner(btn, 6); btn.MouseButton1Click:Connect(function() if bridge.valid() then group.reset() end end)
 end
+do
 local dash, dashBody = createGroup("Dash multiplier", nil, 0, { page = movementPage, group = movement.groups["Dash multiplier"] })
 movementSlider(dash, dashBody, "Distance", "Distance the dash goes", 1)
 groupToggle(dash, dashBody, "No side dash cooldown", nil, 2)
@@ -2326,6 +2327,7 @@ separator(flingAction); separator(flingTarget)
 groupToggle(fling, flingBody, "Loop Fling", nil, 3)
 groupToggle(fling, flingBody, "Anti Fling", nil, 4)
 openFling()
+end
 -- Profiles: the existing profile codec, saved data and actions are reused.
 local profileTabs = basicRow(profilesPage, 38, 1)
 local savedTab = make("TextButton", { BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 0), Size = UDim2.fromOffset(68, 36),
@@ -2875,6 +2877,7 @@ end
 buildGuiTab()
 -- Modern Music view: all commands and state come from the single original player.
 do
+    local function buildLiteMusicView()
     local musicPage=settings.musicPage
     local function textLabel(parent,name,pos,size,small,color)
         return make("TextLabel",{Position=pos,Size=size,BackgroundTransparency=1,Text=name,Font=Enum.Font.Gotham,
@@ -3059,10 +3062,13 @@ do
         list.ScrollBarImageColor3=bridge.accent();results.ScrollBarImageColor3=bridge.accent()
         updateRows("playlist",list,a.rows("playlist"));updateRows("results",results,a.rows("results"))
     end
+    end
+    buildLiteMusicView()
 end
 
 -- Lite themes view backed by the shared theme implementation.
 do
+    local function buildLiteThemesView()
     local tb = assert(_G.KAMUI_ThemesTestBridge, "Run Kamui_music_bridge_test.luau first")
     assert(tb.valid(), "The theme bridge is no longer active")
     local state=tb.state
@@ -3264,6 +3270,8 @@ do
         added:Disconnect();for _,conn in ipairs(connections) do conn:Disconnect() end
     end)
     watchers[#watchers+1]=render
+    end
+    buildLiteThemesView()
 end
 
 local changeConn = UIS.InputChanged:Connect(function(input)
