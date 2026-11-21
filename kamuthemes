@@ -1,0 +1,1111 @@
+-- KAMUI Themes module: returns a builder called by the main script.
+return function(context)
+    local MainFrame = context.MainFrame
+    local THEME = context.THEME
+    local HttpService = context.HttpService
+    local UIS = context.UIS
+    local RunService = context.RunService
+    local isCurrent = context.isCurrent
+    local currentTab = context.currentTab
+    local G = _G.KAMUI_GuiTab
+    local root = G and G.Page
+    local content = G and G.Content
+    local background = MainFrame:FindFirstChild("BackgroundImage")
+    if not (root and content and background) then return end
+    local DEFAULT_IMAGE, DEFAULT_TRANSPARENCY = background.Image, background.ImageTransparency
+    local DEFAULT_FRAME_TRANSPARENCY = MainFrame.BackgroundTransparency
+    local DEFAULT_BACKGROUND_COLOR, DEFAULT_BACKGROUND_TRANSPARENCY = background.BackgroundColor3, background.BackgroundTransparency
+    local DEFAULT_CLIPS = background.ClipsDescendants
+    local STATE_FILE = "KAMUI_CustomTheme.json"
+    local state = { url = "", opacity = 0.5, backgroundOpacity = 1 - DEFAULT_FRAME_TRANSPARENCY, path = "", active = false,
+        imageMode = "Fill", imageZoom = 1, imageX = 0, imageY = 0,
+        manualWidth = 540, manualHeight = 330, ratioW = 18, ratioH = 11, lockRatio = false, manualSidesVersion = 1 }
+    local fileOK, assetFn = type(writefile) == "function", getcustomasset or getsynasset
+    local function make(class, props, parent)
+        local obj = Instance.new(class)
+        obj:SetAttribute("KamuiSkinned", true)
+        for k, v in pairs(props or {}) do obj[k] = v end
+        obj.Parent = parent
+        return obj
+    end
+    local function corner(obj, radius)
+        make("UICorner", { CornerRadius = UDim.new(0, radius or 7) }, obj)
+    end
+    local function stroke(obj, color)
+        return make("UIStroke", { Color = color or Color3.fromRGB(43, 43, 46), Thickness = 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, obj)
+    end
+    local function label(parent, text, pos, size, color, textSize, bold)
+        return make("TextLabel", {
+            BackgroundTransparency = 1, BorderSizePixel = 0, Position = pos, Size = size,
+            Text = text, TextSize = textSize or 11, TextColor3 = color or THEME.Text,
+            Font = bold and Enum.Font.GothamMedium or Enum.Font.Gotham,
+            TextXAlignment = Enum.TextXAlignment.Left, TextTruncate = Enum.TextTruncate.AtEnd
+        }, parent)
+    end
+    local function button(parent, text, pos, size, color)
+        local b = make("TextButton", {
+            Position = pos, Size = size, BorderSizePixel = 0, BackgroundColor3 = color,
+            Text = text, TextColor3 = THEME.Text, Font = Enum.Font.GothamMedium,
+            TextSize = 11, AutoButtonColor = false
+        }, parent)
+        b:SetAttribute("KamuiNoDrag", true)
+        corner(b, 6)
+        return b
+    end
+    local function save()
+        if not fileOK then return end
+        pcall(function() writefile(STATE_FILE, HttpService:JSONEncode(state)) end)
+    end
+    if type(isfile) == "function" and type(readfile) == "function" then
+        pcall(function()
+            if isfile(STATE_FILE) then
+                local data = HttpService:JSONDecode(readfile(STATE_FILE))
+                if type(data) == "table" then
+                    if type(data.url) == "string" then state.url = data.url end
+                    if type(data.opacity) == "number" and data.opacity == data.opacity then state.opacity = math.clamp(data.opacity, 0, 1) end
+                    if type(data.backgroundOpacity) == "number" and data.backgroundOpacity == data.backgroundOpacity then state.backgroundOpacity = math.clamp(data.backgroundOpacity, 0, 1) end
+                    if data.imageMode == "Fit" or data.imageMode == "Fill" or data.imageMode == "Stretch" or data.imageMode == "Manual" then state.imageMode = data.imageMode end
+                    if type(data.imageZoom) == "number" and data.imageZoom == data.imageZoom then state.imageZoom = math.clamp(data.imageZoom, 0.25, 2) end
+                    if type(data.imageX) == "number" and data.imageX == data.imageX then state.imageX = math.clamp(data.imageX, -1, 1) end
+                    if type(data.imageY) == "number" and data.imageY == data.imageY then state.imageY = math.clamp(data.imageY, -1, 1) end
+                    if type(data.manualWidth) == "number" and data.manualWidth == data.manualWidth then state.manualWidth = math.clamp(data.manualWidth, 16, 2160) end
+                    if type(data.manualHeight) == "number" and data.manualHeight == data.manualHeight then state.manualHeight = math.clamp(data.manualHeight, 16, 1320) end
+                    if type(data.ratioW) == "number" and data.ratioW == data.ratioW then state.ratioW = math.clamp(data.ratioW, 0.01, 1000) end
+                    if type(data.ratioH) == "number" and data.ratioH == data.ratioH then state.ratioH = math.clamp(data.ratioH, 0.01, 1000) end
+                    -- Older versions defaulted to locked proportions, causing
+                    -- a side handle to change both dimensions. Migrate once.
+                    if data.manualSidesVersion == 1 and type(data.lockRatio) == "boolean" then state.lockRatio = data.lockRatio end
+                    -- Only permit the exact cache filenames created by this feature.
+                    if type(data.path) == "string" and data.path:match("^KAMUI_theme_%d+%.%a+$") then state.path = data.path end
+                    state.active = data.active == true
+                end
+            end
+        end)
+    end
+    -- Keep a fixed backing layer while the custom image moves inside it.
+    local customImage = make("ImageLabel", {
+        Name = "CustomThemeImage", BackgroundTransparency = 1, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.new(1, 0, 1, 0), Image = "", Visible = false,
+        Active = false, Selectable = false, ZIndex = background.ZIndex
+    }, background)
+    local themePage = make("ScrollingFrame", {
+        Name = "ThemesPage", BackgroundTransparency = 1, BorderSizePixel = 0,
+        Size = UDim2.new(1, 0, 1, 0), CanvasSize = UDim2.new(0, 0, 0, 300),
+        ScrollBarThickness = 2, ScrollBarImageColor3 = THEME.Red,
+        ScrollingDirection = Enum.ScrollingDirection.Y, Visible = false
+    }, root)
+    local gallery = make("Frame", { Name = "ThemeGallery", BackgroundTransparency = 1, Size = UDim2.new(1, -8, 0, 176) }, themePage)
+    local settings = make("Frame", { Name = "CustomImageSettings", BackgroundTransparency = 1, Size = UDim2.new(1, -8, 0, 640), Visible = false }, themePage)
+    label(gallery, "THEMES", UDim2.new(0, 4, 0, 3), UDim2.new(1, -8, 0, 18), THEME.MutedText, 10)
+    label(gallery, "Choose a theme", UDim2.new(0, 4, 0, 25), UDim2.new(1, -8, 0, 18), THEME.MutedText, 11)
+    -- Compact, name-only theme cards. Selection and editing are separate actions.
+    local defaultTile = make("Frame", { Name = "DefaultTheme", BackgroundColor3 = Color3.fromRGB(20, 20, 22),
+        BorderSizePixel = 0, Position = UDim2.new(0, 4, 0, 52), Size = UDim2.new(0, 132, 0, 52) }, gallery)
+    corner(defaultTile, 4)
+    local defaultStroke = stroke(defaultTile)
+    label(defaultTile, "Default", UDim2.new(0, 8, 0, 4), UDim2.new(1, -16, 0, 17), THEME.Text, 10, true)
+    local defaultChoose = button(defaultTile, "Choose", UDim2.new(0, 8, 0, 25), UDim2.new(1, -16, 0, 20), THEME.Red)
+    defaultChoose.Name = "ChooseDefaultTheme"
+    defaultChoose.TextSize = 10
+    defaultChoose:FindFirstChildOfClass("UICorner").CornerRadius = UDim.new(0, 4)
+
+    local tile = make("Frame", { Name = "CustomTheme", BackgroundColor3 = Color3.fromRGB(20, 20, 22),
+        BorderSizePixel = 0, Position = UDim2.new(0, 148, 0, 52), Size = UDim2.new(0, 132, 0, 52) }, gallery)
+    corner(tile, 4)
+    local customStroke = stroke(tile)
+    label(tile, "Custom", UDim2.new(0, 8, 0, 4), UDim2.new(1, -16, 0, 17), THEME.Text, 10, true)
+    local customChoose = button(tile, "Choose", UDim2.new(0, 8, 0, 25), UDim2.new(0, 64, 0, 20), THEME.Red)
+    customChoose.Name = "ChooseCustomTheme"
+    customChoose.TextSize = 10
+    customChoose:FindFirstChildOfClass("UICorner").CornerRadius = UDim.new(0, 4)
+    local editTheme = button(tile, "", UDim2.new(0, 77, 0, 25), UDim2.new(0, 47, 0, 20), Color3.fromRGB(37, 37, 40))
+    editTheme.Name = "EditCustomTheme"
+    editTheme:FindFirstChildOfClass("UICorner").CornerRadius = UDim.new(0, 4)
+    stroke(editTheme, Color3.fromRGB(55, 55, 59))
+    local editIcon = make("ImageLabel", { Name = "EditIcon", BackgroundTransparency = 1, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.new(0, 14, 0, 14), ImageColor3 = THEME.MutedText, Active = false }, editTheme)
+    local pencilId = tostring((_G.KAMUI_ProfileIcons or {}).Rename or "107672478385801"):match("%d+")
+    if pencilId and type(_G.KAMUI_SetImage) == "function" then _G.KAMUI_SetImage(editIcon, pencilId) end
+
+    local placeholder = make("Frame", { Name = "FutureTheme", BackgroundColor3 = Color3.fromRGB(14, 14, 16),
+        BorderSizePixel = 0, Position = UDim2.new(0, 4, 0, 113), Size = UDim2.new(0, 132, 0, 52) }, gallery)
+    corner(placeholder, 4); stroke(placeholder)
+    local futureLabel = label(placeholder, "More to come", UDim2.new(0, 4, 0, 0), UDim2.new(1, -8, 1, 0), THEME.MutedText, 9)
+    futureLabel.TextXAlignment = Enum.TextXAlignment.Center
+    local back = button(settings, "<  Themes", UDim2.new(0, 0, 0, 2), UDim2.new(0, 80, 0, 25), Color3.fromRGB(28, 28, 31))
+    label(settings, "CUSTOM", UDim2.new(0, 4, 0, 32), UDim2.new(1, -8, 0, 18), THEME.MutedText, 10)
+    local card = make("Frame", { BackgroundColor3 = Color3.fromRGB(15, 15, 17), BorderSizePixel = 0, Position = UDim2.new(0, 0, 0, 53), Size = UDim2.new(1, 0, 0, 112) }, settings)
+    corner(card, 9); stroke(card)
+    label(card, "Image or GIF URL", UDim2.new(0, 12, 0, 8), UDim2.new(1, -24, 0, 18), THEME.Text, 12, true)
+    label(card, "Direct Imgur / Pinterest image or GIPHY GIF link", UDim2.new(0, 12, 0, 28), UDim2.new(1, -24, 0, 17), THEME.MutedText, 10)
+    -- Clip long URLs inside the field without altering the actual pasted text.
+    local urlField = make("Frame", {
+        Name = "ImageUrlField", BackgroundColor3 = Color3.fromRGB(21, 21, 23), BorderSizePixel = 0,
+        Position = UDim2.new(0, 12, 0, 49), Size = UDim2.new(1, -108, 0, 29), ClipsDescendants = true
+    }, card)
+    corner(urlField, 6); stroke(urlField)
+    local box = make("TextBox", {
+        Name = "ImageUrlInput", BackgroundTransparency = 1, BorderSizePixel = 0,
+        Position = UDim2.new(0, 0, 0, 0), Size = UDim2.new(1, 0, 1, 0),
+        Text = state.url, PlaceholderText = "Paste a direct image or GIF URL", PlaceholderColor3 = THEME.MutedText,
+        TextColor3 = THEME.Text, Font = Enum.Font.Gotham, TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = false, MultiLine = false,
+        TextTruncate = Enum.TextTruncate.AtEnd, ClearTextOnFocus = false
+    }, urlField)
+    box:SetAttribute("KamuiNoDrag", true)
+    make("UIPadding", { PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 5) }, box)
+    box.Focused:Connect(function() box.TextTruncate = Enum.TextTruncate.None end)
+    box.FocusLost:Connect(function() box.TextTruncate = Enum.TextTruncate.AtEnd end)
+    local apply = button(card, "Apply", UDim2.new(1, -88, 0, 49), UDim2.new(0, 76, 0, 29), THEME.Red)
+    local status = label(card, "Recommended: 540 x 330 px", UDim2.new(0, 12, 0, 82), UDim2.new(1, -24, 0, 20), THEME.MutedText, 10)
+    status.TextTruncate = Enum.TextTruncate.AtEnd
+
+    label(settings, "IMAGE LAYOUT", UDim2.new(0, 4, 0, 173), UDim2.new(1, -8, 0, 18), THEME.MutedText, 10)
+    local layoutCard = make("Frame", { BackgroundColor3 = Color3.fromRGB(15, 15, 17), BorderSizePixel = 0, Position = UDim2.new(0, 0, 0, 194), Size = UDim2.new(1, 0, 0, 42), ZIndex = 3 }, settings)
+    corner(layoutCard, 9); stroke(layoutCard)
+    local modeLabel = label(layoutCard, "Display mode", UDim2.new(0, 12, 0, 8), UDim2.new(1, -128, 0, 26), THEME.Text, 11, true)
+    modeLabel.ZIndex = 4
+    local modeToggle = button(layoutCard, "", UDim2.new(1, -116, 0, 8), UDim2.new(0, 104, 0, 26), Color3.fromRGB(31, 31, 34))
+    modeToggle.Name = "DisplayModeDropdown"
+    modeToggle.ZIndex = 4
+    stroke(modeToggle)
+    local modeValue = label(modeToggle, "", UDim2.new(0, 10, 0, 0), UDim2.new(1, -35, 1, 0), THEME.Text, 11, true)
+    modeValue.Active = false; modeValue.ZIndex = 5
+    local modeChevron = make("Frame", { BackgroundTransparency = 1, BorderSizePixel = 0, Active = false,
+        AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(1, -15, 0.5, 0), Size = UDim2.new(0, 12, 0, 12), ZIndex = 5 }, modeToggle)
+    for _, side in ipairs({ {3.4, 40}, {8.6, -40} }) do
+        make("Frame", { BackgroundColor3 = THEME.MutedText, BorderSizePixel = 0, Active = false,
+            AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.new(0, side[1], 0, 5.5), Size = UDim2.new(0, 6.5, 0, 1.6), Rotation = side[2], ZIndex = 6 }, modeChevron)
+    end
+    -- Match the compact popover used by the other mode dropdowns.
+    local modeList = make("Frame", { Name = "DisplayModeOptions", BackgroundColor3 = Color3.fromRGB(31, 31, 34), BorderSizePixel = 0,
+        Position = UDim2.new(0, 0, 1, 4), Size = UDim2.new(1, 0, 0, 116), Visible = false, ZIndex = 10 }, modeToggle)
+    modeList:SetAttribute("KamuiThemeKeepBackground", true)
+    corner(modeList, 7)
+    local modeListStroke = stroke(modeList)
+    modeListStroke:SetAttribute("KamuiThemeKeepBackground", true)
+    local modeOpen = false
+    local modes = {}
+    for i, name in ipairs({ "Fit", "Fill", "Stretch", "Manual" }) do
+        local b = button(modeList, name, UDim2.new(0, 4, 0, 4 + (i - 1) * 27), UDim2.new(1, -8, 0, 26), Color3.fromRGB(53, 23, 26))
+        b.Name = "Option" .. name
+        b.ZIndex = 11; b.TextSize = 11; b.TextXAlignment = Enum.TextXAlignment.Left
+        make("UIPadding", { PaddingLeft = UDim.new(0, 10) }, b)
+        modes[name] = b
+    end
+
+    local positionRow = make("Frame", { BackgroundTransparency = 1, BorderSizePixel = 0, Position = UDim2.new(0, 4, 0, 304), Size = UDim2.new(1, -8, 0, 42) }, settings)
+    local function makeLayoutSlider(parent, title, pos, size)
+        local group = make("Frame", { BackgroundTransparency = 1, BorderSizePixel = 0, Position = pos, Size = size }, parent)
+        local titleLabel = label(group, title, UDim2.new(0, 0, 0, 0), UDim2.new(1, -40, 0, 17), THEME.Text, 10)
+        local value = label(group, "", UDim2.new(1, -40, 0, 0), UDim2.new(0, 40, 0, 17), THEME.MutedText, 10)
+        value.TextXAlignment = Enum.TextXAlignment.Right
+        local rail = make("Frame", { BackgroundColor3 = Color3.fromRGB(90, 90, 94), BorderSizePixel = 0, Position = UDim2.new(0, 0, 0, 25), Size = UDim2.new(1, 0, 0, 4) }, group)
+        corner(rail, 3)
+        local bar = make("Frame", { BackgroundColor3 = THEME.Red, BorderSizePixel = 0 }, rail); corner(bar, 3)
+        local dot = make("Frame", { BackgroundColor3 = Color3.fromRGB(242, 242, 242), BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5), Size = UDim2.new(0, 12, 0, 12) }, rail); corner(dot, 6)
+        local target = make("TextButton", { BackgroundTransparency = 1, Text = "", Size = UDim2.new(1, 0, 0, 24), Position = UDim2.new(0, 0, 0.5, -12), AutoButtonColor = false }, rail)
+        target:SetAttribute("KamuiNoDrag", true)
+        return { group = group, title = titleLabel, value = value, track = rail, fill = bar, knob = dot, hit = target }
+    end
+    local xSlider = makeLayoutSlider(positionRow, "Horizontal position", UDim2.new(0, 0, 0, 0), UDim2.new(0.5, -10, 1, 0))
+    local ySlider = makeLayoutSlider(positionRow, "Vertical position", UDim2.new(0.5, 10, 0, 0), UDim2.new(0.5, -10, 1, 0))
+    local zoomArea = make("Frame", { BackgroundTransparency = 1, BorderSizePixel = 0, Position = UDim2.new(0, 4, 0, 354), Size = UDim2.new(1, -8, 0, 48) }, settings)
+    local zoomSlider = makeLayoutSlider(zoomArea, "Image size", UDim2.new(0, 0, 0, 0), UDim2.new(0.46, -8, 1, 0))
+    local centerOther = button(zoomArea, "Center", UDim2.new(0.48, 2, 0, 8), UDim2.new(0.23, -4, 0, 26), THEME.Red)
+    local resetOther = button(zoomArea, "Reset layout", UDim2.new(0.71, 2, 0, 8), UDim2.new(0.29, -4, 0, 26), Color3.fromRGB(37, 37, 40))
+    resetOther.TextSize = 10
+
+    local manualHeading = label(settings, "MANUAL IMAGE EDITOR", UDim2.new(0, 4, 0, 348), UDim2.new(1, -8, 0, 18), THEME.MutedText, 10)
+    local manualEditor = make("Frame", { Name = "ManualImageEditor", BackgroundColor3 = Color3.fromRGB(15, 15, 17), BorderSizePixel = 0, Position = UDim2.new(0, 0, 0, 370), Size = UDim2.new(1, 0, 0, 170), Visible = false }, settings)
+    corner(manualEditor, 9); stroke(manualEditor)
+    label(manualEditor, "Dimensions", UDim2.new(0, 12, 0, 8), UDim2.new(0.5, -12, 0, 18), THEME.Text, 11, true)
+    local manualHint = label(manualEditor, "Drag the preview to edit", UDim2.new(0.5, 0, 0, 8), UDim2.new(0.5, -12, 0, 18), THEME.MutedText, 9)
+    manualHint.TextXAlignment = Enum.TextXAlignment.Right
+    local fields = make("Frame", { BackgroundTransparency = 1, BorderSizePixel = 0, Position = UDim2.new(0, 12, 0, 30), Size = UDim2.new(1, -164, 0, 130) }, manualEditor)
+    local function numberBox(title, pos, size)
+        label(fields, title, pos, UDim2.new(size.X.Scale, size.X.Offset, 0, 16), THEME.MutedText, 10)
+        local input = make("TextBox", { BackgroundColor3 = Color3.fromRGB(31, 31, 34), BorderSizePixel = 0,
+            Position = UDim2.new(pos.X.Scale, pos.X.Offset, pos.Y.Scale, pos.Y.Offset + 17), Size = UDim2.new(size.X.Scale, size.X.Offset, 0, 25), Text = "",
+            TextColor3 = THEME.Text, Font = Enum.Font.Gotham, TextSize = 11, ClearTextOnFocus = false }, fields)
+        input:SetAttribute("KamuiNoDrag", true); corner(input, 5); stroke(input)
+        return input
+    end
+    local widthBox = numberBox("Width (px)", UDim2.new(0, 0, 0, 0), UDim2.new(0.5, -4, 0, 0))
+    local heightBox = numberBox("Height (px)", UDim2.new(0.5, 4, 0, 0), UDim2.new(0.5, -4, 0, 0))
+    -- Give the caption its own width rather than limiting it to the 50px field.
+    label(fields, "Aspect ratio", UDim2.new(0, 0, 0, 50), UDim2.new(0, 94, 0, 16), THEME.MutedText, 10)
+    local ratioWidthBox = numberBox("", UDim2.new(0, 0, 0, 50), UDim2.new(0, 50, 0, 0))
+    local ratioHeightBox = numberBox("", UDim2.new(0, 65, 0, 50), UDim2.new(0, 50, 0, 0))
+    label(fields, "×", UDim2.new(0, 53, 0, 67), UDim2.new(0, 10, 0, 24), THEME.MutedText, 11)
+    -- The transparent button provides a larger click/touch target around the switch.
+    local ratioLock = button(fields, "", UDim2.new(1, -82, 0, 46), UDim2.new(0, 82, 0, 24), Color3.fromRGB(35, 35, 38))
+    ratioLock.BackgroundTransparency = 1
+    local lockTrack = make("Frame", { BackgroundColor3 = Color3.fromRGB(62, 57, 60), BorderSizePixel = 0,
+        Position = UDim2.new(0, 0, 0.5, -6), Size = UDim2.new(0, 22, 0, 12), Active = false }, ratioLock)
+    lockTrack:SetAttribute("KamuiThemeKeepBackground", true); corner(lockTrack, 6)
+    local lockKnob = make("Frame", { BackgroundColor3 = Color3.fromRGB(235, 230, 231), BorderSizePixel = 0,
+        Position = UDim2.new(0, 2, 0, 2), Size = UDim2.new(0, 8, 0, 8), Active = false }, lockTrack)
+    corner(lockKnob, 4)
+    local lockLabel = label(ratioLock, "Lock ratio", UDim2.new(0, 27, 0, 0), UDim2.new(1, -27, 1, 0), THEME.MutedText, 9)
+    lockLabel.Active = false
+    local centerImage = button(fields, "Center", UDim2.new(0, 0, 0, 100), UDim2.new(0, 66, 0, 26), THEME.Red)
+    local resetLayout = button(fields, "Reset layout", UDim2.new(0, 72, 0, 100), UDim2.new(1, -72, 0, 26), Color3.fromRGB(37, 37, 40))
+    resetLayout.TextSize = 10
+    local manualPreview = make("Frame", { Name = "ManualPreview", BackgroundColor3 = THEME.Background, BorderSizePixel = 0,
+        Position = UDim2.new(1, -142, 0, 34), Size = UDim2.new(0, 130, 0, 80), ClipsDescendants = true }, manualEditor)
+    manualPreview:SetAttribute("KamuiThemeKeepBackground", true)
+    corner(manualPreview, 5); stroke(manualPreview, Color3.fromRGB(90, 85, 88))
+    make("UIAspectRatioConstraint", { AspectRatio = 540 / 330, DominantAxis = Enum.DominantAxis.Width }, manualPreview)
+    local manualPreviewImage = make("ImageLabel", { BackgroundTransparency = 1, BorderSizePixel = 0,
+        AnchorPoint = Vector2.new(0.5, 0.5), Image = "", ScaleType = Enum.ScaleType.Stretch, Active = false, ZIndex = 1 }, manualPreview)
+    local manualMove = make("TextButton", { BackgroundTransparency = 1, BorderSizePixel = 0, Text = "", AutoButtonColor = false,
+        Size = UDim2.new(1, 0, 1, 0), ZIndex = 2 }, manualPreview)
+    manualMove:SetAttribute("KamuiNoDrag", true)
+    local manualOutline = make("Frame", { BackgroundTransparency = 1, BorderSizePixel = 0, Active = false, ZIndex = 3 }, manualPreview)
+    stroke(manualOutline, THEME.Red)
+    local manualHandles = {}
+    for _, item in ipairs({ {"tl",-1,-1}, {"t",0,-1}, {"tr",1,-1}, {"l",-1,0}, {"r",1,0}, {"bl",-1,1}, {"b",0,1}, {"br",1,1} }) do
+        local h = button(manualPreview, "", UDim2.new(), UDim2.new(0, 12, 0, 12), THEME.Red)
+        h.Name = "Resize_" .. item[1]; h.AnchorPoint = Vector2.new(0.5, 0.5); h.ZIndex = 4
+        manualHandles[#manualHandles + 1] = { button = h, sx = item[2], sy = item[3] }
+    end
+    label(manualEditor, "Drag handles to resize", UDim2.new(1, -142, 0, 119), UDim2.new(0, 130, 0, 18), THEME.MutedText, 9)
+
+    local backgroundHeading = label(settings, "BACKGROUND", UDim2.new(0, 4, 0, 548), UDim2.new(1, -8, 0, 18), THEME.MutedText, 10)
+    local panel = make("Frame", { BackgroundColor3 = Color3.fromRGB(15, 15, 17), BorderSizePixel = 0, Position = UDim2.new(0, 0, 0, 570), Size = UDim2.new(1, 0, 0, 110) }, settings)
+    corner(panel, 9); stroke(panel)
+    local imageOpacity = makeLayoutSlider(panel, "Image opacity", UDim2.new(0, 12, 0, 8), UDim2.new(0.5, -22, 0, 40))
+    local backgroundOpacity = makeLayoutSlider(panel, "Background opacity", UDim2.new(0.5, 10, 0, 8), UDim2.new(0.5, -22, 0, 40))
+    local amount, track, fill, knob, hit = imageOpacity.value, imageOpacity.track, imageOpacity.fill, imageOpacity.knob, imageOpacity.hit
+    local backgroundAmount, backgroundTrack, backgroundFill, backgroundKnob, backgroundHit = backgroundOpacity.value, backgroundOpacity.track, backgroundOpacity.fill, backgroundOpacity.knob, backgroundOpacity.hit
+    local divider = make("Frame", { BackgroundColor3 = Color3.fromRGB(60, 55, 58), BackgroundTransparency = 0.25, BorderSizePixel = 0, Position = UDim2.new(0, 12, 0, 58), Size = UDim2.new(1, -24, 0, 1) }, panel)
+    label(panel, "Restore original background", UDim2.new(0, 12, 0, 72), UDim2.new(1, -100, 0, 20), THEME.MutedText, 10)
+    local reset = button(panel, "Reset", UDim2.new(1, -76, 0, 68), UDim2.new(0, 64, 0, 27), Color3.fromRGB(30, 30, 33))
+    stroke(reset)
+
+    local function setStatus(message, bad)
+        -- Keep the recommendation visible; report failures without replacing it.
+        if bad then
+            warn("[KAMUI theme] " .. tostring(message))
+            apply.Text = "Error"
+            task.delay(3, function()
+                if apply.Parent and apply.Text == "Error" then apply.Text = "Apply" end
+            end)
+        end
+    end
+    -- With a custom theme, keep dark feature backgrounds faintly visible.
+    -- Preserve original transparencies so Default restores the original GUI.
+    local surfaceState = {}
+    local surfaceConnections = {}
+    local customSurfacesOn = false
+    local function isDarkNeutral(color)
+        local hi = math.max(color.R, color.G, color.B)
+        local lo = math.min(color.R, color.G, color.B)
+        return hi <= 0.28 and hi - lo <= 0.10
+    end
+    local function applySurface(entry)
+        local obj = entry.object
+        if not obj.Parent then return end
+        local shouldFade = customSurfacesOn and isDarkNeutral(obj[entry.colorProperty])
+        local target = entry.intendedTransparency
+        if shouldFade then
+            -- Feature cards retain a faint backing, but the large sidebar
+            -- background and its 20px cover must disappear completely.
+            if obj.Name == "SidebarBG" or obj.Name == "SidebarCover" or obj:IsA("UIStroke") then
+                target = 1
+            else
+                target = math.max(target, 0.80)
+            end
+        end
+        entry.hidden = shouldFade
+        if obj[entry.transparencyProperty] ~= target then
+            entry.updating = true
+            obj[entry.transparencyProperty] = target
+            entry.updating = false
+        end
+    end
+    local function trackSurface(obj)
+        if surfaceState[obj] or obj == background or obj:IsDescendantOf(background) or obj:GetAttribute("KamuiThemeKeepBackground") then return end
+        if not obj:IsDescendantOf(MainFrame) then return end
+        local colorProperty, transparencyProperty
+        if obj:IsA("GuiObject") then
+            colorProperty, transparencyProperty = "BackgroundColor3", "BackgroundTransparency"
+        elseif obj:IsA("UIStroke") then
+            colorProperty, transparencyProperty = "Color", "Transparency"
+        else
+            return
+        end
+        local entry = {
+            object = obj, colorProperty = colorProperty,
+            transparencyProperty = transparencyProperty,
+            intendedTransparency = obj[transparencyProperty], updating = false
+        }
+        surfaceState[obj] = entry
+        surfaceConnections[#surfaceConnections + 1] = obj:GetPropertyChangedSignal(transparencyProperty):Connect(function()
+            if entry.updating or (entry.hidden and obj[transparencyProperty] == 1) then return end
+            entry.intendedTransparency = obj[transparencyProperty]
+            applySurface(entry)
+        end)
+        surfaceConnections[#surfaceConnections + 1] = obj:GetPropertyChangedSignal(colorProperty):Connect(function()
+            applySurface(entry)
+        end)
+        applySurface(entry)
+    end
+    local function setCustomSurfaces(on)
+        if customSurfacesOn == on then return end
+        customSurfacesOn = on
+        for _, entry in pairs(surfaceState) do applySurface(entry) end
+    end
+    for _, obj in ipairs(MainFrame:GetDescendants()) do trackSurface(obj) end
+    local surfaceAddedConn = MainFrame.DescendantAdded:Connect(function(obj)
+        -- Many controls set their colors immediately after assigning Parent.
+        task.defer(function()
+            if isCurrent() and obj.Parent then trackSurface(obj) end
+        end)
+    end)
+    -- Decode GIF87a/89a into composited RGBA frames for EditableImage.
+    -- Limits keep malformed or very large animations from exhausting memory.
+    local function decodeGif(bytes)
+        local input = buffer.fromstring(bytes)
+        local length, pos = buffer.len(input), 0
+        local function take(n)
+            if n < 0 or pos + n > length then error("Truncated GIF") end
+            local old = pos; pos += n; return old
+        end
+        local function u8() return buffer.readu8(input, take(1)) end
+        local function u16() return buffer.readu16(input, take(2)) end
+        local signature = buffer.readstring(input, take(6), 6)
+        if signature ~= "GIF87a" and signature ~= "GIF89a" then error("Invalid GIF header") end
+        local width, height = u16(), u16()
+        if width < 1 or height < 1 or width > 1024 or height > 1024 then error("GIF dimensions must be at most 1024x1024") end
+        local packed, backgroundIndex = u8(), u8(); u8() -- flags, background index, pixel aspect
+        local function palette(count)
+            local colors = {}
+            for i = 0, count - 1 do colors[i] = { u8(), u8(), u8() } end
+            return colors
+        end
+        local globalPalette = bit32.band(packed, 128) ~= 0 and palette(2 ^ (bit32.band(packed, 7) + 1)) or nil
+        local function blocks()
+            local chunks, total = {}, 0
+            while true do
+                local n = u8()
+                if n == 0 then break end
+                total += n
+                if total > 8 * 1024 * 1024 then error("GIF data too large") end
+                chunks[#chunks + 1] = buffer.readstring(input, take(n), n)
+            end
+            return table.concat(chunks)
+        end
+        local function lzw(data, minCode, expected)
+            if minCode < 2 or minCode > 8 then error("Unsupported GIF LZW code size") end
+            local clear, finish = 2 ^ minCode, 2 ^ minCode + 1
+            local prefix, suffix = {}, {}
+            local nextCode, codeSize, bitPos = finish + 1, minCode + 1, 0
+            local previous, first = nil, nil
+            local result, count = buffer.create(expected), 0
+            local function readCode()
+                if bitPos + codeSize > #data * 8 then return nil end
+                local v = 0
+                for bit = 0, codeSize - 1 do
+                    local at = bitPos + bit
+                    local b = string.byte(data, math.floor(at / 8) + 1)
+                    v += bit32.band(bit32.rshift(b, at % 8), 1) * 2 ^ bit
+                end
+                bitPos += codeSize
+                return v
+            end
+            while true do
+                local code = readCode()
+                if code == nil then error("Truncated GIF image data") end
+                if code == clear then
+                    prefix, suffix = {}, {}; nextCode = finish + 1; codeSize = minCode + 1; previous = nil
+                elseif code == finish then break
+                else
+                    local original, stack = code, {}
+                    if code == nextCode and previous ~= nil then
+                        stack[#stack + 1] = first; code = previous
+                    elseif code >= nextCode then error("Invalid GIF LZW code") end
+                    local guard = 0
+                    while code >= clear do
+                        guard += 1
+                        if guard > 4096 or prefix[code] == nil then error("Invalid GIF LZW dictionary") end
+                        stack[#stack + 1] = suffix[code]; code = prefix[code]
+                    end
+                    first = code
+                    stack[#stack + 1] = code
+                    for i = #stack, 1, -1 do
+                        if count >= expected then error("GIF frame has too many pixels") end
+                        buffer.writeu8(result, count, stack[i]); count += 1
+                    end
+                    if previous ~= nil and nextCode < 4096 then
+                        prefix[nextCode], suffix[nextCode] = previous, first
+                        nextCode += 1
+                        if nextCode == 2 ^ codeSize and codeSize < 12 then codeSize += 1 end
+                    end
+                    previous = original
+                end
+            end
+            if count ~= expected then error("Incomplete GIF frame") end
+            return result
+        end
+        local canvas = buffer.create(width * height * 4)
+        local frames, delays = {}, {}
+        local disposal, delay, transparent = 0, 0.1, nil
+        local previousDisposal, previousRect, previousCanvas = 0, nil, nil
+        local previousClear = nil
+        while pos < length do
+            local marker = u8()
+            if marker == 0x3B then break
+            elseif marker == 0x21 then
+                local kind = u8()
+                if kind == 0xF9 then
+                    if u8() ~= 4 then error("Invalid GIF control extension") end
+                    local flags = u8(); local cs = u16(); local index = u8()
+                    if u8() ~= 0 then error("Invalid GIF control terminator") end
+                    disposal = bit32.band(bit32.rshift(flags, 2), 7)
+                    delay = cs > 0 and math.max(cs / 100, 0.02) or 0.1
+                    transparent = bit32.band(flags, 1) ~= 0 and index or nil
+                else blocks() end
+            elseif marker == 0x2C then
+                if previousDisposal == 2 and previousRect then
+                    for row = previousRect.y, previousRect.y + previousRect.h - 1 do
+                        if previousClear then
+                            for col = previousRect.x, previousRect.x + previousRect.w - 1 do
+                                local at = (row * width + col) * 4
+                                buffer.writeu8(canvas, at, previousClear[1]); buffer.writeu8(canvas, at + 1, previousClear[2])
+                                buffer.writeu8(canvas, at + 2, previousClear[3]); buffer.writeu8(canvas, at + 3, 255)
+                            end
+                        else
+                            buffer.fill(canvas, (row * width + previousRect.x) * 4, 0, previousRect.w * 4)
+                        end
+                    end
+                elseif previousDisposal == 3 and previousCanvas then
+                    buffer.copy(canvas, 0, previousCanvas, 0, width * height * 4)
+                end
+                local x, y, w, h, flags = u16(), u16(), u16(), u16(), u8()
+                if w < 1 or h < 1 or x + w > width or y + h > height then error("Invalid GIF frame dimensions") end
+                local colors = bit32.band(flags, 128) ~= 0 and palette(2 ^ (bit32.band(flags, 7) + 1)) or globalPalette
+                if not colors then error("GIF has no color palette") end
+                local minCode = u8(); local indices = lzw(blocks(), minCode, w * h)
+                local clearColor = transparent == nil and globalPalette and globalPalette[backgroundIndex] or nil
+                if #frames == 0 and clearColor then
+                    for at = 0, width * height * 4 - 1, 4 do
+                        buffer.writeu8(canvas, at, clearColor[1]); buffer.writeu8(canvas, at + 1, clearColor[2])
+                        buffer.writeu8(canvas, at + 2, clearColor[3]); buffer.writeu8(canvas, at + 3, 255)
+                    end
+                end
+                local saved = nil
+                if disposal == 3 then
+                    saved = buffer.create(width * height * 4)
+                    buffer.copy(saved, 0, canvas, 0, width * height * 4)
+                end
+                local rows = {}
+                if bit32.band(flags, 64) ~= 0 then
+                    for _, pass in ipairs({{0, 8}, {4, 8}, {2, 4}, {1, 2}}) do
+                        for row = pass[1], h - 1, pass[2] do rows[#rows + 1] = row end
+                    end
+                else for row = 0, h - 1 do rows[#rows + 1] = row end end
+                local pixel = 0
+                for _, row in ipairs(rows) do
+                    for col = 0, w - 1 do
+                        local index = buffer.readu8(indices, pixel); pixel += 1
+                        if index ~= transparent then
+                            local c = colors[index]
+                            if not c then error("Invalid GIF palette index") end
+                            local out = ((y + row) * width + x + col) * 4
+                            buffer.writeu8(canvas, out, c[1]); buffer.writeu8(canvas, out + 1, c[2])
+                            buffer.writeu8(canvas, out + 2, c[3]); buffer.writeu8(canvas, out + 3, 255)
+                        end
+                    end
+                end
+                if #frames >= 200 or (#frames + 1) * width * height * 4 > 64 * 1024 * 1024 then
+                    error("GIF is too large to animate (200 frames / 64 MB decoded maximum)")
+                end
+                local frame = buffer.create(width * height * 4)
+                buffer.copy(frame, 0, canvas, 0, width * height * 4)
+                frames[#frames + 1] = frame; delays[#delays + 1] = delay
+                previousDisposal, previousRect, previousCanvas = disposal, {x=x, y=y, w=w, h=h}, saved
+                previousClear = clearColor
+                disposal, delay, transparent = 0, 0.1, nil
+                if #frames % 4 == 0 then task.wait() end
+            else error("Invalid GIF block") end
+        end
+        if #frames == 0 then error("GIF contains no frames") end
+        return { width = width, height = height, frames = frames, delays = delays }
+    end
+    local gifImage, gifConnection
+    local function stopGif()
+        if gifConnection then gifConnection:Disconnect(); gifConnection = nil end
+        if gifImage then gifImage:Destroy(); gifImage = nil end
+    end
+    local function installGif(decoded)
+        local img = game:GetService("AssetService"):CreateEditableImage({ Size = Vector2.new(decoded.width, decoded.height) })
+        if not img then error("EditableImage is unavailable in this game") end
+        local ok, err = pcall(function()
+            img:WritePixelsBuffer(Vector2.zero, Vector2.new(decoded.width, decoded.height), decoded.frames[1])
+            local content = Content.fromObject(img)
+            customImage.ImageContent = content
+            manualPreviewImage.ImageContent = content
+        end)
+        if not ok then img:Destroy(); error(err) end
+        stopGif()
+        gifImage = img
+        local index, elapsed = 1, 0
+        gifConnection = RunService.Heartbeat:Connect(function(dt)
+            if not isCurrent() or not root.Parent then stopGif(); return end
+            if not state.active or #decoded.frames < 2 then return end
+            elapsed += dt
+            local changed = false
+            while elapsed >= decoded.delays[index] do
+                elapsed -= decoded.delays[index]
+                index = index % #decoded.frames + 1
+                changed = true
+                -- Avoid an unbounded catch-up loop after a long pause.
+                if elapsed > 2 then elapsed = 0; break end
+            end
+            if changed then
+                local wrote = pcall(function() img:WritePixelsBuffer(Vector2.zero, Vector2.new(decoded.width, decoded.height), decoded.frames[index]) end)
+                if not wrote then stopGif() end
+            end
+        end)
+    end
+    local function paintLayout()
+        local scaleTypes = { Fit = Enum.ScaleType.Fit, Fill = Enum.ScaleType.Crop, Stretch = Enum.ScaleType.Stretch }
+        modeValue.Text = state.imageMode
+        modeList.Visible = modeOpen
+        modeChevron.Rotation = modeOpen and 180 or 0
+        for name, b in pairs(modes) do
+            local selected = name == state.imageMode
+            b.BackgroundTransparency = selected and 0 or 1
+            b.TextColor3 = selected and THEME.Text or THEME.MutedText
+        end
+        local function paintSlider(slider, fraction, text)
+            fraction = math.clamp(fraction, 0, 1)
+            slider.value.Text = text
+            slider.fill.Size = UDim2.new(fraction, 0, 1, 0)
+            slider.knob.Position = UDim2.new(fraction, 0, 0.5, 0)
+        end
+        paintSlider(zoomSlider, (state.imageZoom - 0.25) / 1.75, tostring(math.floor(state.imageZoom * 100 + 0.5)) .. "%")
+        paintSlider(xSlider, (state.imageX + 1) / 2, tostring(math.floor(state.imageX * 100 + 0.5)) .. "%")
+        paintSlider(ySlider, (state.imageY + 1) / 2, tostring(math.floor(state.imageY * 100 + 0.5)) .. "%")
+        local manual = state.imageMode == "Manual"
+        local imageWidth = manual and state.manualWidth / 540 or state.imageZoom
+        local imageHeight = manual and state.manualHeight / 330 or state.imageZoom
+        for _, image in ipairs({customImage, manualPreviewImage}) do
+            image.ScaleType = manual and Enum.ScaleType.Stretch or scaleTypes[state.imageMode]
+            image.Size = UDim2.new(imageWidth, 0, imageHeight, 0)
+            image.Position = UDim2.new(0.5 + state.imageX, 0, 0.5 + state.imageY, 0)
+            image.ImageTransparency = 1 - state.opacity
+        end
+        if gifImage then
+            manualPreviewImage.ImageContent = Content.fromObject(gifImage)
+        else
+            manualPreviewImage.Image = customImage.Image
+        end
+        manualPreview.BackgroundColor3 = MainFrame.BackgroundColor3
+        manualPreview.BackgroundTransparency = 1 - state.backgroundOpacity
+        manualHeading.Visible = manual
+        manualEditor.Visible = manual
+        zoomArea.Visible = not manual
+        -- The compact options popover does not change the settings layout.
+        positionRow.Position = UDim2.new(0, 4, 0, 246)
+        zoomArea.Position = UDim2.new(0, 4, 0, 296)
+        manualHeading.Position = UDim2.new(0, 4, 0, 290)
+        manualEditor.Position = UDim2.new(0, 0, 0, 312)
+        backgroundHeading.Position = UDim2.new(0, 4, 0, (manual and 490 or 352))
+        panel.Position = UDim2.new(0, 0, 0, (manual and 512 or 374))
+        local editorHeight = (manual and 637 or 497)
+        settings.Size = UDim2.new(1, -8, 0, editorHeight)
+        themePage.CanvasSize = UDim2.new(0, 0, 0, settings.Visible and editorHeight or 176)
+        lockTrack.BackgroundColor3 = state.lockRatio and THEME.Red or Color3.fromRGB(62, 57, 60)
+        lockKnob.Position = state.lockRatio and UDim2.new(1, -10, 0, 2) or UDim2.new(0, 2, 0, 2)
+        lockLabel.TextColor3 = state.lockRatio and THEME.Text or THEME.MutedText
+        local function setBox(box, value)
+            if not box:IsFocused() then box.Text = tostring(value) end
+        end
+        setBox(ratioWidthBox, state.ratioW); setBox(ratioHeightBox, state.ratioH)
+        setBox(widthBox, math.floor(state.manualWidth + 0.5)); setBox(heightBox, math.floor(state.manualHeight + 0.5))
+        local centerX, centerY = 0.5 + state.imageX, 0.5 + state.imageY
+        local left = math.clamp(centerX - imageWidth / 2, 0.02, 0.98)
+        local right = math.clamp(centerX + imageWidth / 2, 0.02, 0.98)
+        local top = math.clamp(centerY - imageHeight / 2, 0.02, 0.98)
+        local bottom = math.clamp(centerY + imageHeight / 2, 0.02, 0.98)
+        manualOutline.Position = UDim2.new(left, 0, top, 0)
+        manualOutline.Size = UDim2.new(right - left, 0, bottom - top, 0)
+        for _, h in ipairs(manualHandles) do
+            local x = math.clamp(centerX + h.sx * imageWidth / 2, 0.02, 0.98)
+            local y = math.clamp(centerY + h.sy * imageHeight / 2, 0.02, 0.98)
+            h.button.Position = UDim2.new(x, 0, y, 0)
+        end
+    end
+    local function paintOpacity()
+        MainFrame:SetAttribute("KamuiCustomThemeActive", state.active)
+        setCustomSurfaces(state.active)
+        amount.Text = tostring(math.floor(state.opacity * 100 + 0.5)) .. "%"
+        fill.Size = UDim2.new(state.opacity, 0, 1, 0)
+        knob.Position = UDim2.new(state.opacity, 0, 0.5, 0)
+        backgroundAmount.Text = tostring(math.floor(state.backgroundOpacity * 100 + 0.5)) .. "%"
+        backgroundFill.Size = UDim2.new(state.backgroundOpacity, 0, 1, 0)
+        backgroundKnob.Position = UDim2.new(state.backgroundOpacity, 0, 0.5, 0)
+        if state.active then
+            -- The image is behind MainFrame (ZIndex 0). Move the dark base onto
+            -- the image itself so the frame does not darken it a second time.
+            background.BackgroundColor3 = MainFrame.BackgroundColor3
+            background.BackgroundTransparency = 1 - state.backgroundOpacity
+            background.ClipsDescendants = true
+            background.Image = ""
+            customImage.Visible = true
+            MainFrame.BackgroundTransparency = 1
+        else
+            customImage.Visible = false
+            background.ClipsDescendants = DEFAULT_CLIPS
+            background.Image = DEFAULT_IMAGE
+            background.ImageTransparency = DEFAULT_TRANSPARENCY
+            MainFrame.BackgroundTransparency = DEFAULT_FRAME_TRANSPARENCY
+            background.BackgroundColor3 = DEFAULT_BACKGROUND_COLOR
+            background.BackgroundTransparency = DEFAULT_BACKGROUND_TRANSPARENCY
+        end
+        paintLayout()
+    end
+    local function showSettings(on)
+        gallery.Visible = not on
+        settings.Visible = on
+        themePage.CanvasPosition = Vector2.new(0, 0)
+        modeOpen = false
+        paintLayout()
+    end
+    editTheme.MouseButton1Click:Connect(function() showSettings(true) end)
+    back.MouseButton1Click:Connect(function() showSettings(false) end)
+    -- Flat text tabs with a rounded underline, matching the GUI/Themes header.
+    local header = make("Frame", { Name = "GuiSubtabs", BackgroundTransparency = 1, BorderSizePixel = 0, Position = UDim2.new(0, 164, 0, 7), Size = UDim2.new(0, 158, 0, 26), Visible = currentTab == "GUI", ZIndex = 5 }, MainFrame)
+    G.Subtabs = header
+    local guiBtn = button(header, "GUI", UDim2.new(0, 2, 0, 2), UDim2.new(0, 74, 0, 22), THEME.Background)
+    local themeBtn = button(header, "Themes", UDim2.new(0, 78, 0, 2), UDim2.new(0, 78, 0, 22), THEME.Background)
+    guiBtn.BackgroundTransparency = 1; themeBtn.BackgroundTransparency = 1
+    guiBtn.ZIndex = 6; themeBtn.ZIndex = 6
+    local guiLine = make("Frame", { Name = "ActiveUnderline", BackgroundColor3 = THEME.Red, BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 1, -1), Size = UDim2.new(0, 22, 0, 2), ZIndex = 7 }, guiBtn)
+    local themeLine = make("Frame", { Name = "ActiveUnderline", BackgroundColor3 = THEME.Red, BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 1, -1), Size = UDim2.new(0, 45, 0, 2), ZIndex = 7 }, themeBtn)
+    corner(guiLine, 1); corner(themeLine, 1)
+    local function selectSubtab(which)
+        local onThemes = which == "Themes"
+        content.Visible = not onThemes; themePage.Visible = onThemes
+        guiBtn.TextColor3 = onThemes and THEME.MutedText or THEME.Text
+        themeBtn.TextColor3 = onThemes and THEME.Text or THEME.MutedText
+        guiLine.Visible = not onThemes; themeLine.Visible = onThemes
+        if onThemes then showSettings(false) end
+    end
+    guiBtn.MouseButton1Click:Connect(function() selectSubtab("GUI") end)
+    themeBtn.MouseButton1Click:Connect(function() selectSubtab("Themes") end)
+    selectSubtab("GUI")
+    -- Restrict inputs to direct images on known providers; never execute downloaded data.
+    local function validateURL(raw)
+        local url = tostring(raw or ""):match("^%s*(.-)%s*$")
+        if #url > 2048 or url:find("[%c%s]") then return nil, "Invalid image URL." end
+        local host, path = url:match("^https://([^/]+)(/[^?#]*)")
+        if not host then return nil, "Use a direct HTTPS image link." end
+        host = host:lower()
+        local ext = path:match("%.([%a]+)$")
+        ext = ext and ext:lower()
+        local imgur = host == "i.imgur.com" and path:match("^/[%w]+%.[%a]+$")
+        local pinterest = host == "i.pinimg.com" and path:match("^/[%w_/%-]+%.[%a]+$")
+        local giphy = host:match("^media%d*%.giphy%.com$") and path:match("^/media/[%w_/%-%.]+%.gif$")
+        if (imgur or pinterest) and (ext == "png" or ext == "jpg" or ext == "jpeg") then return url end
+        if giphy and ext == "gif" then return url end
+        return nil, "Use a direct Imgur/Pinterest PNG or JPG, or GIPHY GIF."
+    end
+    local function download(url)
+        local req = request or http_request or (syn and syn.request) or (http and http.request)
+        local body
+        if type(req) == "function" then
+            local ok, res = pcall(req, { Url = url, Method = "GET" })
+            if ok and type(res) == "table" then
+                local code = res.StatusCode or res.Status or res.status_code
+                if code and (tonumber(code) == nil or tonumber(code) < 200 or tonumber(code) >= 300) then
+                    return nil, "Image host returned HTTP " .. tostring(code) .. "."
+                end
+                body = res.Body or res.body
+            end
+        end
+        if type(body) ~= "string" or body == "" then
+            local ok, data = pcall(function() return game:HttpGet(url, true) end)
+            if ok then body = data end
+        end
+        if type(body) ~= "string" or body == "" then return nil, "Download failed. Check the link or executor." end
+        if #body > 8 * 1024 * 1024 then return nil, "Image is too large (8 MB maximum)." end
+        local ext
+        if body:sub(1, 8) == "\137PNG\13\10\26\10" then ext = "png"
+        elseif body:sub(1, 3) == "\255\216\255" then ext = "jpg"
+        elseif body:sub(1, 6) == "GIF87a" or body:sub(1, 6) == "GIF89a" then ext = "gif"
+        else return nil, "Link did not return a PNG, JPG, or GIF image." end
+        return body, ext
+    end
+    local generation = 0
+    local function paintSelection()
+        defaultStroke.Color = state.active and Color3.fromRGB(43, 43, 46) or THEME.Red
+        customStroke.Color = state.active and THEME.Red or Color3.fromRGB(43, 43, 46)
+        defaultChoose.Text = state.active and "Choose" or "Selected"
+        defaultChoose.BackgroundColor3 = state.active and THEME.Red or THEME.DarkRed
+        customChoose.Text = state.active and "Selected" or "Choose"
+        customChoose.BackgroundColor3 = state.active and THEME.DarkRed or THEME.Red
+    end
+    defaultChoose.MouseButton1Click:Connect(function()
+        generation += 1 -- prevent an in-flight image download from overriding Default
+        state.active = false
+        background.Image = DEFAULT_IMAGE
+        background.ImageTransparency = DEFAULT_TRANSPARENCY
+        paintOpacity(); paintSelection(); save(); setStatus("Default background restored.", false)
+    end)
+    customChoose.MouseButton1Click:Connect(function()
+        if state.active then return end
+        if state.path == "" or type(isfile) ~= "function" or not isfile(state.path) then
+            showSettings(true)
+            setStatus("Add an image or GIF, then press Apply.", false)
+            return
+        end
+        generation += 1
+        local ticket, path = generation, state.path
+        customChoose.Text = "Loading..."
+        task.spawn(function()
+            local isGif = path:match("%.gif$") ~= nil
+            local ok, result = pcall(function()
+                if isGif then
+                    if type(readfile) ~= "function" then error("readfile unavailable") end
+                    local bytes = readfile(path)
+                    if #bytes > 8 * 1024 * 1024 then error("GIF exceeds 8 MB") end
+                    return decodeGif(bytes)
+                end
+                if type(assetFn) ~= "function" then error("getcustomasset unavailable") end
+                local asset = assetFn(path)
+                if type(asset) ~= "string" or asset == "" then error("Image asset unavailable") end
+                return asset
+            end)
+            if ticket ~= generation or not isCurrent() or not root.Parent then return end
+            if ok and isGif then ok, result = pcall(installGif, result)
+            elseif ok then stopGif(); customImage.Image = result end
+            if not ok then
+                paintSelection(); showSettings(true)
+                setStatus("Saved image unavailable; press Apply again.", true)
+                return
+            end
+            state.active = true
+            paintOpacity(); paintSelection(); save()
+            setStatus("Saved image selected.", false)
+        end)
+    end)
+    apply.MouseButton1Click:Connect(function()
+        local url, err = validateURL(box.Text)
+        if not url then setStatus(err, true); return end
+        if not fileOK or type(assetFn) ~= "function" then
+            setStatus("Executor needs writefile and getcustomasset.", true); return
+        end
+        generation += 1
+        local ticket = generation
+        setStatus("Downloading image...", false)
+        task.spawn(function()
+            local bytes, extOrError = download(url)
+            if ticket ~= generation or not isCurrent() or not root.Parent then return end
+            if not bytes then setStatus(extOrError, true); return end
+            local decoded
+            if extOrError == "gif" then
+                setStatus("Decoding GIF...", false)
+                local ok, result = pcall(decodeGif, bytes)
+                if ticket ~= generation or not isCurrent() or not root.Parent then return end
+                if not ok then setStatus("GIF decode failed: " .. tostring(result), true); return end
+                decoded = result
+            end
+            local path = "KAMUI_theme_" .. tostring(os.time()) .. tostring(math.random(100000, 999999)) .. "." .. extOrError
+            local ok, asset = pcall(function()
+                writefile(path, bytes)
+                if decoded then installGif(decoded); return true end
+                return assetFn(path)
+            end)
+            if ticket ~= generation or not isCurrent() or not root.Parent then return end
+            if not ok or not asset or (not decoded and (type(asset) ~= "string" or asset == "")) then
+                setStatus("Could not load image: " .. tostring(asset), true); return
+            end
+            if not decoded then stopGif(); customImage.Image = asset end
+            state.url = url; state.path = path; state.active = true
+            box.Text = url
+            paintOpacity(); paintSelection(); save()
+            setStatus(decoded and "Animated GIF applied!" or "Image applied!", false)
+        end)
+    end)
+    reset.MouseButton1Click:Connect(function()
+        generation += 1
+        state.url = ""; state.path = ""; state.active = false; state.opacity = 0.5
+        state.backgroundOpacity = 1 - DEFAULT_FRAME_TRANSPARENCY
+        state.imageMode = "Fill"; state.imageZoom = 1; state.imageX = 0; state.imageY = 0
+        state.manualWidth = 540; state.manualHeight = 330; state.ratioW = 18; state.ratioH = 11; state.lockRatio = false
+        stopGif()
+        customImage.Image = ""
+        box.Text = ""
+        background.Image = DEFAULT_IMAGE; background.ImageTransparency = DEFAULT_TRANSPARENCY
+        paintOpacity(); paintSelection(); save(); setStatus("Default background restored.", false)
+    end)
+    modeToggle.MouseButton1Click:Connect(function()
+        if not isCurrent() then return end
+        if not modeOpen then
+            local below = themePage.AbsolutePosition.Y + themePage.AbsoluteSize.Y
+                - (modeToggle.AbsolutePosition.Y + modeToggle.AbsoluteSize.Y)
+            local above = modeToggle.AbsolutePosition.Y - themePage.AbsolutePosition.Y
+            modeList.Position = below < 120 and above >= 120 and UDim2.new(0, 0, 0, -120)
+                or UDim2.new(0, 0, 1, 4)
+        end
+        modeOpen = not modeOpen
+        paintLayout()
+    end)
+    local function insideModeControl(gui, point)
+        local pos, size = gui.AbsolutePosition, gui.AbsoluteSize
+        return point.X >= pos.X and point.X <= pos.X + size.X
+            and point.Y >= pos.Y and point.Y <= pos.Y + size.Y
+    end
+    local modeOutsideConn
+    modeOutsideConn = UIS.InputBegan:Connect(function(input)
+        if not isCurrent() or not root.Parent then
+            modeOutsideConn:Disconnect()
+            return
+        end
+        if not modeOpen or (input.UserInputType ~= Enum.UserInputType.MouseButton1
+            and input.UserInputType ~= Enum.UserInputType.Touch) then return end
+        local inset = game:GetService("GuiService"):GetGuiInset()
+        local point = Vector2.new(input.Position.X, input.Position.Y)
+        for _, p in ipairs({ point, point - inset, point + inset }) do
+            if insideModeControl(modeToggle, p) or insideModeControl(modeList, p) then return end
+        end
+        modeOpen = false
+        paintLayout()
+    end)
+    root.Destroying:Connect(function() modeOutsideConn:Disconnect() end)
+    themePage:GetPropertyChangedSignal("Visible"):Connect(function()
+        if not themePage.Visible and modeOpen then
+            modeOpen = false
+            paintLayout()
+        end
+    end)
+    for mode, modeButton in pairs(modes) do
+        modeButton.MouseButton1Click:Connect(function()
+            modeOpen = false
+            state.imageMode = mode
+            if mode == "Stretch" then
+                -- Fit the complete image to the window, regardless of its source size.
+                state.imageZoom = 1; state.imageX = 0; state.imageY = 0
+            end
+            paintLayout(); save()
+        end)
+    end
+    local function centerLayout()
+        state.imageX = 0; state.imageY = 0
+        paintLayout(); save()
+    end
+    centerImage.MouseButton1Click:Connect(centerLayout)
+    centerOther.MouseButton1Click:Connect(centerLayout)
+    local function resetImageLayout()
+        state.imageMode = "Fill"; state.imageZoom = 1; state.imageX = 0; state.imageY = 0
+        state.manualWidth = 540; state.manualHeight = 330; state.ratioW = 18; state.ratioH = 11; state.lockRatio = false
+        paintLayout(); save()
+    end
+    resetLayout.MouseButton1Click:Connect(resetImageLayout)
+    resetOther.MouseButton1Click:Connect(resetImageLayout)
+    local function setLockedWidth(width)
+        local ratio = state.ratioW / state.ratioH
+        -- Bound both dimensions without losing the requested ratio.
+        local low = math.max(16, 16 * ratio)
+        local high = math.min(2160, 1320 * ratio)
+        if low > high then return false end
+        state.manualWidth = math.clamp(width, low, high)
+        state.manualHeight = state.manualWidth / ratio
+        return true
+    end
+    local function validNumber(box, low, high)
+        local n = tonumber(box.Text)
+        if not n or n ~= n or n < low or n > high then return nil end
+        return n
+    end
+    local function commitManual(box, kind)
+        if kind == "ratioW" or kind == "ratioH" then
+            local n = validNumber(box, 0.01, 1000)
+            if n then
+                local previous = state[kind]
+                state[kind] = n
+                if not setLockedWidth(state.manualWidth) then state[kind] = previous end
+            end
+        elseif kind == "manualWidth" then
+            local n = validNumber(box, 16, 2160)
+            if n then
+                if state.lockRatio then setLockedWidth(n) else state.manualWidth = n end
+            end
+        elseif kind == "manualHeight" then
+            local n = validNumber(box, 16, 1320)
+            if n then
+                if state.lockRatio then setLockedWidth(n * state.ratioW / state.ratioH) else state.manualHeight = n end
+            end
+        end
+        paintLayout(); save()
+    end
+    for _, item in ipairs({ {ratioWidthBox, "ratioW"}, {ratioHeightBox, "ratioH"}, {widthBox, "manualWidth"}, {heightBox, "manualHeight"} }) do
+        item[1].FocusLost:Connect(function() commitManual(item[1], item[2]) end)
+    end
+    ratioLock.MouseButton1Click:Connect(function()
+        state.lockRatio = not state.lockRatio
+        if state.lockRatio then setLockedWidth(state.manualWidth) end
+        paintLayout(); save()
+    end)
+    local manualDrag = nil
+    local function startManualDrag(input, sx, sy, moving)
+        if state.imageMode ~= "Manual" or (input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch) then return end
+        -- If overlapping controls both receive the same press, the resize
+        -- handle must take precedence over the move surface.
+        if manualDrag then
+            if not moving and manualDrag.moving and manualDrag.sourceInput == input then
+                manualDrag.sx = sx; manualDrag.sy = sy; manualDrag.moving = false
+            end
+            return
+        end
+        if manualPreview.AbsoluteSize.X <= 0 or manualPreview.AbsoluteSize.Y <= 0 then return end
+        themePage.ScrollingEnabled = false
+        manualDrag = { sourceInput = input, touch = input.UserInputType == Enum.UserInputType.Touch and input or nil,
+            startX = input.Position.X, startY = input.Position.Y, sx = sx, sy = sy, moving = moving,
+            width = state.manualWidth, height = state.manualHeight, x = state.imageX, y = state.imageY }
+    end
+    local function handleAtPosition(input)
+        local point = Vector2.new(input.Position.X, input.Position.Y)
+        local inset = game:GetService("GuiService"):GetGuiInset()
+        -- Try the direct GUI coordinates first; the inset variants support
+        -- executors and devices that report pointer coordinates differently.
+        for _, p in ipairs({ point, point - inset, point + inset }) do
+            local best, bestDistance = nil, math.huge
+            for _, h in ipairs(manualHandles) do
+                local pos, size = h.button.AbsolutePosition, h.button.AbsoluteSize
+                local cx, cy = pos.X + size.X / 2, pos.Y + size.Y / 2
+                local dx, dy = p.X - cx, p.Y - cy
+                if math.abs(dx) <= size.X / 2 + 2 and math.abs(dy) <= size.Y / 2 + 2 then
+                    local distance = dx * dx + dy * dy
+                    if distance < bestDistance then best, bestDistance = h, distance end
+                end
+            end
+            if best then return best end
+        end
+        return nil
+    end
+    manualMove.InputBegan:Connect(function(input)
+        local handle = handleAtPosition(input)
+        if handle then startManualDrag(input, handle.sx, handle.sy, false)
+        else startManualDrag(input, 0, 0, true) end
+    end)
+    for _, h in ipairs(manualHandles) do
+        h.button.InputBegan:Connect(function(input) startManualDrag(input, h.sx, h.sy, false) end)
+    end
+    local function moveManual(input)
+        local d = manualDrag
+        if not d or manualPreview.AbsoluteSize.X <= 0 or manualPreview.AbsoluteSize.Y <= 0 then return end
+        local dx = (input.Position.X - d.startX) / manualPreview.AbsoluteSize.X
+        local dy = (input.Position.Y - d.startY) / manualPreview.AbsoluteSize.Y
+        if d.moving then
+            state.imageX = math.clamp(d.x + dx, -1, 1)
+            state.imageY = math.clamp(d.y + dy, -1, 1)
+        else
+            local newW = d.width + d.sx * dx * 540
+            local newH = d.height + d.sy * dy * 330
+            if state.lockRatio then
+                local ratio = state.ratioW / state.ratioH
+                if d.sx == 0 then newW = newH * ratio
+                elseif d.sy ~= 0 and math.abs((newH - d.height) / d.height) > math.abs((newW - d.width) / d.width) then newW = newH * ratio end
+                setLockedWidth(newW)
+            else
+                state.manualWidth = math.clamp(newW, 16, 2160)
+                state.manualHeight = math.clamp(newH, 16, 1320)
+            end
+            -- Move the center by half the size change so the opposite edge
+            -- stays in place: side handles change only their own edge.
+            state.imageX = math.clamp(d.x + d.sx * (state.manualWidth - d.width) / (2 * 540), -1, 1)
+            state.imageY = math.clamp(d.y + d.sy * (state.manualHeight - d.height) / (2 * 330), -1, 1)
+        end
+        paintLayout()
+    end
+    local dragging, touchInput, activeTrack, activeProperty, activeMin, activeMax = false, nil, nil, nil, 0, 1
+    local function setFromX(x)
+        if not activeTrack or activeTrack.AbsoluteSize.X <= 0 then return end
+        local fraction = math.clamp((x - activeTrack.AbsolutePosition.X) / activeTrack.AbsoluteSize.X, 0, 1)
+        state[activeProperty] = activeMin + fraction * (activeMax - activeMin)
+        paintOpacity()
+    end
+    local function bindSlider(sliderHit, sliderTrack, property, minValue, maxValue)
+        sliderHit.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = true
+                activeTrack, activeProperty = sliderTrack, property
+                activeMin, activeMax = minValue or 0, maxValue or 1
+                touchInput = input.UserInputType == Enum.UserInputType.Touch and input or nil
+                setFromX(input.Position.X)
+            end
+        end)
+    end
+    bindSlider(hit, track, "opacity")
+    bindSlider(backgroundHit, backgroundTrack, "backgroundOpacity")
+    bindSlider(zoomSlider.hit, zoomSlider.track, "imageZoom", 0.25, 2)
+    bindSlider(xSlider.hit, xSlider.track, "imageX", -1, 1)
+    bindSlider(ySlider.hit, ySlider.track, "imageY", -1, 1)
+    if type(_G.KAMUI_ThemeDisconnect) == "function" then pcall(_G.KAMUI_ThemeDisconnect) end
+    local changeConn, endConn
+    changeConn = UIS.InputChanged:Connect(function(input)
+        if not isCurrent() or not root.Parent then changeConn:Disconnect(); return end
+        if dragging and ((touchInput and input == touchInput) or (not touchInput and input.UserInputType == Enum.UserInputType.MouseMovement)) then setFromX(input.Position.X) end
+        if manualDrag and ((manualDrag.touch and input == manualDrag.touch) or (not manualDrag.touch and input.UserInputType == Enum.UserInputType.MouseMovement)) then moveManual(input) end
+    end)
+    endConn = UIS.InputEnded:Connect(function(input)
+        if not isCurrent() or not root.Parent then endConn:Disconnect(); return end
+        if dragging and ((touchInput and input == touchInput) or (not touchInput and input.UserInputType == Enum.UserInputType.MouseButton1)) then
+            dragging = false; touchInput = nil; activeTrack = nil; activeProperty = nil; save()
+        end
+        if manualDrag and ((manualDrag.touch and input == manualDrag.touch) or (not manualDrag.touch and input.UserInputType == Enum.UserInputType.MouseButton1)) then
+            manualDrag = nil; themePage.ScrollingEnabled = true; save()
+        end
+    end)
+    _G.KAMUI_ThemeDisconnect = function()
+        themePage.ScrollingEnabled = true
+        changeConn:Disconnect(); endConn:Disconnect(); surfaceAddedConn:Disconnect()
+        stopGif()
+        setCustomSurfaces(false)
+        for _, conn in ipairs(surfaceConnections) do conn:Disconnect() end
+    end
+    if state.active and state.path ~= "" and type(isfile) == "function" then
+        if state.path:match("%.gif$") then
+            -- Decode outside the UI setup so the controls stay responsive.
+            generation += 1
+            local ticket = generation
+            setStatus("Restoring animated GIF...", false)
+            task.spawn(function()
+                local ok, result = pcall(function()
+                    if type(readfile) ~= "function" or not isfile(state.path) then error("File unavailable") end
+                    local bytes = readfile(state.path)
+                    if #bytes > 8 * 1024 * 1024 then error("GIF exceeds 8 MB") end
+                    return decodeGif(bytes)
+                end)
+                if ticket ~= generation or not isCurrent() or not root.Parent then return end
+                if ok then ok, result = pcall(installGif, result) end
+                if ok then setStatus("Saved GIF restored.", false); paintOpacity()
+                else state.active = false; paintOpacity(); paintSelection(); setStatus("Saved GIF unavailable; press Apply again.", true) end
+            end)
+        else
+            local ok, asset = pcall(function()
+                if type(assetFn) ~= "function" or not isfile(state.path) then return nil end
+                return assetFn(state.path)
+            end)
+            if ok and type(asset) == "string" and asset ~= "" then
+                customImage.Image = asset
+                setStatus("Saved image restored.", false)
+            else
+                state.active = false
+                setStatus("Saved image unavailable; press Apply again.", true)
+            end
+        end
+    elseif state.active then
+        state.active = false
+        setStatus("Saved image unavailable; press Apply again.", true)
+    end
+    paintOpacity()
+    paintSelection()
+end
