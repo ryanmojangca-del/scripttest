@@ -56,9 +56,11 @@ _G.KAMUI_Modules = {
     Backdash = "https://raw.githubusercontent.com/ryanmojangca-del/scripttest/refs/heads/main/kamubackdash",
     TrueTwisted = "https://raw.githubusercontent.com/ryanmojangca-del/scripttest/refs/heads/main/kamutwisted",
     Music = "https://raw.githubusercontent.com/ryanmojangca-del/scripttest/refs/heads/main/kamuimusic",
+    Themes = "https://raw.githubusercontent.com/ryanmojangca-del/scripttest/refs/heads/main/kamuthemes",
 }
 _G.KAMUI_ModuleCache = _G.KAMUI_ModuleCache or {}
 _G.KAMUI_ModuleCache.Music = nil -- refresh Music on each full script execution
+_G.KAMUI_ModuleCache.Themes = nil -- do not reuse an older bundle after re-execution
 _G.KAMUI_FetchModule = function(name)
     local cached = _G.KAMUI_ModuleCache[name]
     if cached then
@@ -10895,16 +10897,14 @@ _G.KAMUI_BuildGUI = function(UI)
     end)
 end
 -- GUI / Themes navigation and custom image / animated GIF backgrounds.
--- The manager, Lite, and Hacker live together in one external theme bundle.
--- Theme bundle hosted on GitHub.
--- Pin to a commit or release tag to keep the two files compatible.
+-- Load the single theme bundle through the same downloader and compiler used
+-- by the other external modules, including its HTTP request fallback.
+local liteBootErrors = {}
 local KAMUI_ThemeBundle
  do
-    local THEMES_URL = "https://raw.githubusercontent.com/ryanmojangca-del/scripttest/refs/heads/main/kamuthemes"
     local ok, bundle, builder = pcall(function()
-        local source = game:HttpGet(THEMES_URL)
-        local compile, err = loadstring(source, "KAMUI Themes")
-        if not compile then error(err or "Could not compile the theme bundle") end
+        local compile, err = _G.KAMUI_LoadModule("Themes")
+        if not compile then error(err or "Could not load the theme bundle") end
         local result = compile()
         if type(result) ~= "table" or result.version ~= 1
             or type(result.bindManager) ~= "function"
@@ -10924,6 +10924,7 @@ local KAMUI_ThemeBundle
         _G.KAMUI_BuildThemes = builder
     else
         warn("[KAMUI] Theme bundle unavailable; using the default interface:", bundle)
+        table.insert(liteBootErrors, "Theme bundle: " .. tostring(bundle))
         _G.KAMUI_BuildThemes = function() end
     end
 end
@@ -14972,10 +14973,14 @@ _G.KAMUI_ContentInit = function()
         local ok2, err = pcall(_G["KAMUI_Build" .. name], UI)
         if not ok2 then
             warn("[dw] " .. name .. " tab redesign failed:", err)
+            table.insert(liteBootErrors, name .. " setup: " .. tostring(err))
         end
     end
     local themeOk, themeErr = pcall(_G.KAMUI_BuildThemes)
-    if not themeOk then warn("[KAMUI] themes setup failed:", themeErr) end
+    if not themeOk then
+        warn("[KAMUI] themes setup failed:", themeErr)
+        table.insert(liteBootErrors, "Themes setup: " .. tostring(themeErr))
+    end
 end
 _G.KAMUI_ContentInit()
 
@@ -15020,6 +15025,87 @@ do
         local partial = game:GetService("CoreGui"):FindFirstChild("KAMUI_LiteInterface")
         if partial then partial:Destroy() end
         warn("[KAMUI] Lite could not be loaded; retaining the original window:", result)
+        -- Mobile-friendly diagnostic: the cause is otherwise only in the console.
+        if UIS.TouchEnabled then
+            pcall(function()
+                local details = ok and "Lite returned no ScreenGui." or tostring(result)
+                local bridge = _G.KAMUI_M1TestBridge
+                local themeBridge = _G.KAMUI_ThemesTestBridge
+                if not bridge or type(bridge.valid) ~= "function" or not bridge.valid() then
+                    details = details .. "\nMissing or inactive combat controls bridge."
+                end
+                if not themeBridge or type(themeBridge.error) ~= "function"
+                    or type(themeBridge.valid) ~= "function" or not themeBridge.valid() then
+                    details = details .. "\nMissing or inactive theme bridge."
+                end
+                if type(_G.KAMUI_InstrumentMusicTest) ~= "function" then
+                    details = details .. "\nMissing music bridge."
+                end
+                for _, message in ipairs(liteBootErrors) do
+                    details = details .. "\n" .. message
+                end
+                if #details > 1100 then details = details:sub(1, 1100) .. "..." end
+                local box = Instance.new("Frame")
+                box.Name = "LiteLoadDiagnostic"
+                box.AnchorPoint = Vector2.new(0.5, 0.5)
+                box.Position = UDim2.fromScale(0.5, 0.5)
+                box.Size = UDim2.new(0.9, 0, 0.7, 0)
+                box.BackgroundColor3 = Color3.fromRGB(24, 23, 27)
+                box.BorderSizePixel = 0
+                box.ZIndex = 200
+                box:SetAttribute("KamuiSkinned", true)
+                box.Parent = ScreenGui
+                local sizeLimit = Instance.new("UISizeConstraint")
+                sizeLimit.MaxSize = Vector2.new(620, 360)
+                sizeLimit.Parent = box
+                local corner = Instance.new("UICorner")
+                corner.CornerRadius = UDim.new(0, 10)
+                corner.Parent = box
+                local title = Instance.new("TextLabel")
+                title.BackgroundTransparency = 1
+                title.Position = UDim2.fromOffset(14, 8)
+                title.Size = UDim2.new(1, -28, 0, 32)
+                title.Font = Enum.Font.GothamBold
+                title.TextSize = 17
+                title.TextColor3 = Color3.new(1, 1, 1)
+                title.Text = "Lite theme couldn't load"
+                title.TextXAlignment = Enum.TextXAlignment.Left
+                title.ZIndex = 201
+                title:SetAttribute("KamuiSkinned", true)
+                title.Parent = box
+                local body = Instance.new("TextLabel")
+                body.BackgroundTransparency = 1
+                body.Position = UDim2.fromOffset(14, 42)
+                body.Size = UDim2.new(1, -28, 1, -98)
+                body.Font = Enum.Font.Code
+                body.TextSize = 13
+                body.TextColor3 = Color3.fromRGB(235, 230, 235)
+                body.TextWrapped = true
+                body.TextXAlignment = Enum.TextXAlignment.Left
+                body.TextYAlignment = Enum.TextYAlignment.Top
+                body.Text = "Please screenshot this message:\n\n" .. details
+                body.ZIndex = 201
+                body:SetAttribute("KamuiSkinned", true)
+                body.Parent = box
+                local close = Instance.new("TextButton")
+                close.AnchorPoint = Vector2.new(1, 1)
+                close.Position = UDim2.new(1, -14, 1, -10)
+                close.Size = UDim2.fromOffset(100, 36)
+                close.BackgroundColor3 = Color3.fromRGB(62, 58, 66)
+                close.BorderSizePixel = 0
+                close.Font = Enum.Font.GothamMedium
+                close.TextSize = 14
+                close.TextColor3 = Color3.new(1, 1, 1)
+                close.Text = "Close"
+                close.ZIndex = 201
+                close:SetAttribute("KamuiSkinned", true)
+                close.Parent = box
+                local closeCorner = Instance.new("UICorner")
+                closeCorner.CornerRadius = UDim.new(0, 6)
+                closeCorner.Parent = close
+                close.MouseButton1Click:Connect(function() box:Destroy() end)
+            end)
+        end
         local themes = _G.KAMUI_ThemesTestBridge
         if themes and themes.state and themes.state.selectedTheme == "Lite" and themes.valid() then themes.chooseDefault() end
     end
@@ -15075,6 +15161,3 @@ task.delay(3, function()
         end)
     end
 end)
-
-
-
