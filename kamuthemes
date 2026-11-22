@@ -811,6 +811,7 @@ return function()
         generation += 1 -- prevent an in-flight image download from overriding Default
         state.active = false
         state.selectedTheme = "Default"
+        stopGif() -- release the animation and decoded frames when leaving Custom
         background.Image = DEFAULT_IMAGE
         background.ImageTransparency = DEFAULT_TRANSPARENCY
         paintOpacity(); paintSelection(); save(); setStatus("Default background restored.", false)
@@ -833,6 +834,7 @@ return function()
         generation += 1 -- cancel pending custom-image loads without deleting saved settings
         state.active = false
         state.selectedTheme = "Lite"
+        stopGif() -- a later Custom selection reloads the saved file
         background.Image = DEFAULT_IMAGE
         background.ImageTransparency = DEFAULT_TRANSPARENCY
         paintOpacity(); paintSelection(); save(); setStatus("", false)
@@ -847,6 +849,7 @@ return function()
         generation += 1
         state.active = false
         state.selectedTheme = "Hacker"
+        stopGif() -- a later Custom selection reloads the saved file
         background.Image = DEFAULT_IMAGE
         background.ImageTransparency = DEFAULT_TRANSPARENCY
         paintOpacity(); paintSelection(); save(); setStatus("", false)
