@@ -321,7 +321,8 @@ return function()
     -- With a custom theme, keep dark feature backgrounds faintly visible.
     -- Preserve original transparencies so Default restores the original GUI.
     local surfaceState = {}
-    local surfaceConnections = {}
+    local surfaceConnections = {} -- per-object connections, active only for Custom
+    local surfaceAddedConn, surfaceRemovingConn
     local customSurfacesOn = false
     local function isDarkNeutral(color)
         local hi = math.max(color.R, color.G, color.B)
@@ -366,28 +367,50 @@ return function()
             intendedTransparency = obj[transparencyProperty], updating = false
         }
         surfaceState[obj] = entry
-        surfaceConnections[#surfaceConnections + 1] = obj:GetPropertyChangedSignal(transparencyProperty):Connect(function()
+        local transparencyConn = obj:GetPropertyChangedSignal(transparencyProperty):Connect(function()
             if entry.updating or (entry.hidden and obj[transparencyProperty] == 1) then return end
             entry.intendedTransparency = obj[transparencyProperty]
             applySurface(entry)
         end)
-        surfaceConnections[#surfaceConnections + 1] = obj:GetPropertyChangedSignal(colorProperty):Connect(function()
+        local colorConn = obj:GetPropertyChangedSignal(colorProperty):Connect(function()
             applySurface(entry)
         end)
+        surfaceConnections[obj] = {transparencyConn, colorConn}
         applySurface(entry)
+    end
+    local function forgetSurface(obj, restore)
+        local entry = surfaceState[obj]
+        if entry and restore and obj.Parent then
+            entry.updating = true
+            obj[entry.transparencyProperty] = entry.intendedTransparency
+            entry.updating = false
+        end
+        local connections = surfaceConnections[obj]
+        if connections then for _, conn in ipairs(connections) do conn:Disconnect() end end
+        surfaceConnections[obj] = nil
+        surfaceState[obj] = nil
     end
     local function setCustomSurfaces(on)
         if customSurfacesOn == on then return end
         customSurfacesOn = on
-        for _, entry in pairs(surfaceState) do applySurface(entry) end
+        if on then
+            -- Listen only while needed; handle controls created after activation.
+            surfaceAddedConn = MainFrame.DescendantAdded:Connect(function(obj)
+                task.defer(function()
+                    if customSurfacesOn and isCurrent() and obj.Parent then trackSurface(obj) end
+                end)
+            end)
+            surfaceRemovingConn = MainFrame.DescendantRemoving:Connect(function(obj)
+                forgetSurface(obj, true)
+            end)
+            for _, obj in ipairs(MainFrame:GetDescendants()) do trackSurface(obj) end
+        else
+            if surfaceAddedConn then surfaceAddedConn:Disconnect(); surfaceAddedConn = nil end
+            if surfaceRemovingConn then surfaceRemovingConn:Disconnect(); surfaceRemovingConn = nil end
+            -- Restore originals before releasing references and signal handlers.
+            for obj in pairs(surfaceState) do forgetSurface(obj, true) end
+        end
     end
-    for _, obj in ipairs(MainFrame:GetDescendants()) do trackSurface(obj) end
-    local surfaceAddedConn = MainFrame.DescendantAdded:Connect(function(obj)
-        -- Many controls set their colors immediately after assigning Parent.
-        task.defer(function()
-            if isCurrent() and obj.Parent then trackSurface(obj) end
-        end)
-    end)
     -- Decode GIF87a/89a into composited RGBA frames for EditableImage.
     -- Limits keep malformed or very large animations from exhausting memory.
     local function decodeGif(bytes)
@@ -579,6 +602,10 @@ return function()
         gifConnection = RunService.Heartbeat:Connect(function(dt)
             if not isCurrent() or not root.Parent then stopGif(); return end
             if not state.active or #decoded.frames < 2 then return end
+            local host = MainFrame:FindFirstAncestorOfClass("ScreenGui")
+            local pill = MainFrame:FindFirstChild("MiniPill")
+            -- Freeze time as well as writes, so restoring resumes the same frame.
+            if not host or not host.Enabled or not MainFrame.Visible or (pill and pill.Visible) then return end
             elapsed += dt
             local changed = false
             while elapsed >= decoded.delays[index] do
@@ -1141,13 +1168,18 @@ return function()
             manualDrag = nil; themePage.ScrollingEnabled = true; save()
         end
     end)
-    _G.KAMUI_ThemeDisconnect = function()
-        themePage.ScrollingEnabled = true
-        changeConn:Disconnect(); endConn:Disconnect(); surfaceAddedConn:Disconnect()
+    local themeCleaned = false
+    local function cleanupTheme()
+        if themeCleaned then return end
+        themeCleaned = true
+        if themePage.Parent then themePage.ScrollingEnabled = true end
+        changeConn:Disconnect(); endConn:Disconnect()
         stopGif()
         setCustomSurfaces(false)
-        for _, conn in ipairs(surfaceConnections) do conn:Disconnect() end
+        if _G.KAMUI_ThemeDisconnect == cleanupTheme then _G.KAMUI_ThemeDisconnect = nil end
     end
+    _G.KAMUI_ThemeDisconnect = cleanupTheme
+    root.Destroying:Connect(cleanupTheme)
     -- Shared theme API: uses the original selection, download and persistence code.
     do
         local drag
