@@ -13483,6 +13483,7 @@ _G.KAMUI_BuildCombat = function(UI)
 end
 -- Shared Fling feature.
 do
+    local function initializeFling()
     if _G.KAMUI_FlingService and _G.KAMUI_FlingService.Destroy then
         pcall(_G.KAMUI_FlingService.Destroy)
     end
@@ -13923,6 +13924,8 @@ return Fling
         Fling.Destroy()
         if _G.KAMUI_FlingService == Fling then _G.KAMUI_FlingService = nil; _G.KAMUI_FlingBridge = nil end
     end)
+    end
+    initializeFling()
 end
 
 _G.KAMUI_BuildMovement = function(UI)
