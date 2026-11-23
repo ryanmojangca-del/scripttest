@@ -56,11 +56,9 @@ _G.KAMUI_Modules = {
     Backdash = "https://raw.githubusercontent.com/ryanmojangca-del/scripttest/refs/heads/main/kamubackdash",
     TrueTwisted = "https://raw.githubusercontent.com/ryanmojangca-del/scripttest/refs/heads/main/kamutwisted",
     Music = "https://raw.githubusercontent.com/ryanmojangca-del/scripttest/refs/heads/main/kamuimusic",
-    Themes = "https://raw.githubusercontent.com/ryanmojangca-del/scripttest/refs/heads/main/kamuthemes",
 }
 _G.KAMUI_ModuleCache = _G.KAMUI_ModuleCache or {}
 _G.KAMUI_ModuleCache.Music = nil -- refresh Music on each full script execution
-_G.KAMUI_ModuleCache.Themes = nil -- do not reuse an older bundle after re-execution
 _G.KAMUI_FetchModule = function(name)
     local cached = _G.KAMUI_ModuleCache[name]
     if cached then
@@ -92,117 +90,12 @@ _G.KAMUI_FetchModule = function(name)
     _G.KAMUI_ModuleCache[name] = body
     return body
 end
--- Shared controls for the already-loaded Music module. This does not
--- create a second player or change the module URL; unsupported revisions fall
--- back to the original unmodified module.
-do
-    local function instrumentMusic(source)
-        local function replaceExact(old, new, expected)
-            local count, result, start = 0, {}, 1
-            while true do
-                local a, b = string.find(source, old, start, true)
-                if not a then break end
-                count += 1; result[#result+1] = source:sub(start,a-1); result[#result+1] = new; start=b+1
-            end
-            if count ~= expected then error("Music module changed (expected "..expected.." matches, found "..count..")") end
-            result[#result+1] = source:sub(start);source=table.concat(result)
-        end
-        replaceExact("    local alive, conns = true, {}", "    local alive, conns = true, {}\n    local testActions = {}", 1)
-        replaceExact("    local C = {", [=[    local function connectButton(button, fn)
-        testActions[button] = fn
-        -- Rows are destroyed and recreated on refresh in the original player;
-        -- leave their connections attached only to the row, as before.
-        if button.Parent and button.Parent:IsA('ScrollingFrame') then return button.Activated:Connect(fn) end
-        return connect(button.Activated, fn)
-    end
-    local function connectFocus(box, fn)
-        testActions[box] = fn
-        return connect(box.FocusLost, fn)
-    end
-    local C = {]=], 1)
-        for _, name in ipairs({"reload","deleteBtn","prevBtn","nextBtn","playBtn","loopBtn","shuffleBtn","playlistBtn","searchTabBtn","goBtn","copyBtn","download"}) do
-            replaceExact("connect("..name..".Activated,", "connectButton("..name..",", 1)
-        end
-        replaceExact("row.Activated:Connect(function()", "connectButton(row,function()", 2)
-        replaceExact("connect(speed.FocusLost,function()", "connectFocus(speed,function()", 1)
-        replaceExact("if child:IsA('TextButton') then child:Destroy() end", "if child:IsA('TextButton') then testActions[child]=nil; child:Destroy() end", 1)
-        replaceExact("    scan()\nend\n-- Return success", [=[    scan()
-    -- Shared view of this same player; actions call the original handlers.
-    do
-        local buttons={playlist=playlistBtn,search=searchTabBtn,reload=reload,delete=deleteBtn,
-            prev=prevBtn,next=nextBtn,play=playBtn,loop=loopBtn,shuffle=shuffleBtn,go=goBtn,copy=copyBtn,download=download}
-        local api={}
-        api.valid=function() return alive and ScreenGui.Parent~=nil and _G.KAMUI_MusicTab and _G.KAMUI_MusicTab.Page==page end
-        api.snapshot=function()
-            return {view=lib.Visible and 'playlist' or 'search',title=track.Text,subtitle=sub.Text,
-                elapsed=elapsed.Text,duration=duration.Text,status=status.Text,bad=status.TextColor3==C.bright,
-                playing=sound.IsPlaying,position=sound.TimePosition,length=sound.TimeLength,volume=sound.Volume,
-                speed=sound.PlaybackSpeed,loop=looping,shuffle=shuffling,deleteText=deleteBtn.Text,query=queryBox.Text,count=count.Text}
-        end
-        api.rows=function(which)
-            local container=which=='results' and results or list
-            local out={}
-            for _,row in ipairs(container:GetChildren()) do
-                if row:IsA('TextButton') then
-                    local title,subtitle='', ''
-                    for _,obj in ipairs(row:GetChildren()) do
-                        if obj:IsA('TextLabel') and obj.Position.X.Offset==37 then
-                            if obj.Position.Y.Offset==5 then title=obj.Text elseif obj.Position.Y.Offset==22 then subtitle=obj.Text end
-                        end
-                    end
-                    out[#out+1]={object=row,title=title,subtitle=subtitle,selected=row.BackgroundTransparency<0.5,order=row.LayoutOrder}
-                end
-            end
-            table.sort(out,function(a,b) return a.order<b.order end)
-            return out
-        end
-        api.call=function(name)
-            local b=buttons[name];local fn=b and testActions[b]
-            if api.valid() and fn then task.spawn(fn) end
-        end
-        api.row=function(row)
-            local fn=testActions[row]
-            if api.valid() and fn and (row.Parent==list or row.Parent==results) then task.spawn(fn) end
-        end
-        api.query=function(value) if api.valid() then queryBox.Text=tostring(value) end end
-        api.speed=function(value)
-            if not api.valid() then return end
-            speed.Text=tostring(value);local fn=testActions[speed];if fn then fn(false) end
-        end
-        api.volume=function(value)
-            if not api.valid() or type(value)~='number' or value~=value then return end
-            local v=math.clamp(value,0,1)
-            sound.Volume=v;volumeFill.Size=UDim2.new(v,0,1,0);volumeText.Text=tostring(math.floor(v*100+0.5))..'%'
-        end
-        api.seek=function(value)
-            if api.valid() and type(value)=='number' and value==value and sound.TimeLength>0 then
-                sound.TimePosition=math.clamp(value,0,1)*sound.TimeLength
-            end
-        end
-        _G.KAMUI_MusicTestBridge=api
-    end
-end
--- Return success]=], 1)
-        return source
-    end
-    _G.KAMUI_InstrumentMusicTest = instrumentMusic
-end
-
 _G.KAMUI_LoadModule = function(name)
     local src, why = _G.KAMUI_FetchModule(name)
     if not src then
         return nil, why
     end
-    local originalSource = src
-    if name == "Music" then
-        local ok, patched = pcall(_G.KAMUI_InstrumentMusicTest, src)
-        if ok then src = patched else warn("[KAMUI Music] Lite controls unavailable: " .. tostring(patched)) end
-    end
     local fn, compileErr = loadstring(src)
-    if not fn and src ~= originalSource then
-        warn("[KAMUI Music] Lite controls did not compile; using the original Music module.")
-        fn, compileErr = loadstring(originalSource)
-    end
     if not fn then
         _G.KAMUI_ModuleCache[name] = nil --// drop a bad download so the next tap re-downloads
         return nil, compileErr or ("'" .. tostring(name) .. "' failed to compile")
@@ -1694,21 +1587,10 @@ do
     closeBtn.MouseLeave:Connect(function()
         TweenService:Create(closeBtn, hoverInfo, {TextColor3 = THEME.MutedText}):Play()
     end)
-    local hiddenWhileMinimized = {}
     local function setMinimized(state)
         isMinimized = state
         local corner = MainFrame:FindFirstChildOfClass("UICorner")
         if state then
-            -- The custom pill is transparent, so hide the full window behind it
-            -- rather than letting its controls and text overlap the pill.
-            if MainFrame:GetAttribute("KamuiCustomThemeActive") then
-                for _, child in ipairs(MainFrame:GetChildren()) do
-                    if child:IsA("GuiObject") and child ~= MiniPill and child.Name ~= "BackgroundImage" then
-                        hiddenWhileMinimized[child] = child.Visible
-                        child.Visible = false
-                    end
-                end
-            end
             MiniPill.Visible = true
             TweenService:Create(MainFrame, tweenInfo, {Size = UDim2.new(0, PILL_W, 0, PILL_H)}):Play()
             if corner then
@@ -1716,10 +1598,6 @@ do
             end
         else
             MiniPill.Visible = false
-            for child, wasVisible in pairs(hiddenWhileMinimized) do
-                if child.Parent == MainFrame then child.Visible = wasVisible end
-            end
-            table.clear(hiddenWhileMinimized)
             TweenService:Create(MainFrame, tweenInfo, {Size = FULL_SIZE}):Play()
             if corner then
                 TweenService:Create(corner, tweenInfo, {CornerRadius = UDim.new(0, 16)}):Play()
@@ -4926,11 +4804,6 @@ function _G.KAMUI_HideFX.play(vx, vy, reverse)
         ws.Name = "WindowScale"
         ws.Parent = MainFrame
     end
-    -- Lite subscribes to frame updates only for the duration of this effect.
-    if type(_G.KAMUI_LiteHideStart) == "function" then
-        local started, why = pcall(_G.KAMUI_LiteHideStart)
-        if not started then warn("[KAMUI Lite] hide sync:", why) end
-    end
     local sc = (ws.Scale > 0) and ws.Scale or 1
     local targetPos = MainFrame.Position
     local targetSize = MainFrame.Size
@@ -5142,7 +5015,7 @@ _G.KAMUI_HomeTestBridge.mode = function() return Config.LethalMode end
 _G.KAMUI_HomeTestBridge.setMode = function(name) if isCurrent() and _G.KAMUI_SetLethalMode then _G.KAMUI_SetLethalMode(name) end end
 _G.KAMUI_HomeTestBridge.key = function() return Config.HideGUIKeybind end
 _G.KAMUI_HomeTestBridge.capturing = function() return capturingHideGUIKey end
-_G.KAMUI_HomeTestBridge.visible = function() return ScreenGui.Enabled and (MainFrame.Visible or _G.KAMUI_LiteActive == true or _G.KAMUI_HackerActive == true) end
+_G.KAMUI_HomeTestBridge.visible = function() return ScreenGui.Enabled and MainFrame.Visible end
 _G.KAMUI_SettingsTestBridge.toggles.Touch = function()
     Config.TouchMode = not Config.TouchMode
     TouchBtn.Text = "Touch Mode: " .. (Config.TouchMode and "ON" or "OFF")
@@ -7398,13 +7271,10 @@ _G.KAMUI_BuildHome = function(UI)
         end
         task.spawn(function()
             while isCurrent() and ScreenGui.Parent and row.Parent do
-                if JD_REASON ~= "KEYLESS" and type(JD_SESSION_COUNT) == "number" then
-                    value.Text = tostring(math.max(0, math.floor(JD_SESSION_COUNT)))
-                    dot.Visible = true
-                else
-                    value.Text = "Unavailable"
-                    dot.Visible = false
-                end
+                local available = JD_REASON ~= "KEYLESS" and type(JD_SESSION_COUNT) == "number"
+                local text = available and tostring(math.max(0, math.floor(JD_SESSION_COUNT))) or "Unavailable"
+                if value.Text ~= text then value.Text = text end
+                if dot.Visible ~= available then dot.Visible = available end
                 task.wait(3)
             end
         end)
@@ -9365,6 +9235,7 @@ _G.KAMUI_BuildGUI = function(UI)
                     task.defer(function()
                         if d.Parent and isCurrent() then
                             fixIndent(d)
+                            register(d) -- keep accent bindings current as controls appear
                             if St.font ~= "Gotham" then
                                 applyFontTo(d, famByName[St.font] or famByName.Gotham)
                             end
@@ -10448,11 +10319,16 @@ _G.KAMUI_BuildGUI = function(UI)
         end
         local function placeHolder()
             local r, b = isRight(), isBottom()
-            holder.AnchorPoint = Vector2.new(r and 1 or 0, b and 1 or 0)
-            holder.Position = UDim2.new(r and 1 or 0, r and -CFG.OffX or CFG.OffX, b and 1 or 0, b and -CFG.OffY or CFG.OffY)
-            lay.HorizontalAlignment = r and Enum.HorizontalAlignment.Right or Enum.HorizontalAlignment.Left
-            lay.VerticalAlignment = b and Enum.VerticalAlignment.Bottom or Enum.VerticalAlignment.Top
-            lay.Padding = UDim.new(0, CFG.Spacing)
+            local anchor = Vector2.new(r and 1 or 0, b and 1 or 0)
+            local position = UDim2.new(r and 1 or 0, r and -CFG.OffX or CFG.OffX, b and 1 or 0, b and -CFG.OffY or CFG.OffY)
+            local horizontal = r and Enum.HorizontalAlignment.Right or Enum.HorizontalAlignment.Left
+            local vertical = b and Enum.VerticalAlignment.Bottom or Enum.VerticalAlignment.Top
+            local padding = UDim.new(0, CFG.Spacing)
+            if holder.AnchorPoint ~= anchor then holder.AnchorPoint = anchor end
+            if holder.Position ~= position then holder.Position = position end
+            if lay.HorizontalAlignment ~= horizontal then lay.HorizontalAlignment = horizontal end
+            if lay.VerticalAlignment ~= vertical then lay.VerticalAlignment = vertical end
+            if lay.Padding ~= padding then lay.Padding = padding end
         end
         local function curFont(bold)
             if CFG.Font ~= "Default" then
@@ -10719,11 +10595,12 @@ _G.KAMUI_BuildGUI = function(UI)
             if acc2 >= 0.15 then
                 acc2 = 0
                 -- These are settings controls, not the Arraylist overlay itself.
-                if ScreenGui.Enabled and MainFrame.Visible then
+                if ScreenGui.Enabled and MainFrame.Visible and page.Visible then
                     repaintAll()
                 end
             end
-            holder.Visible = _G.KAMUI_ArraylistOn == true
+            local showArraylist = _G.KAMUI_ArraylistOn == true
+            if holder.Visible ~= showArraylist then holder.Visible = showArraylist end
             if not holder.Visible then
                 return
             end
@@ -10790,19 +10667,19 @@ _G.KAMUI_BuildGUI = function(UI)
                 return a.idx < b.idx
             end)
             for n, r in ipairs(list) do
-                r.slot.LayoutOrder = n
+                if r.slot.LayoutOrder ~= n then r.slot.LayoutOrder = n end
                 local c = accentAt(n / math.max(#list, 1) * 0.25) -- rainbow fades down the list
-                r.label.TextColor3 = c
-                r.bar.BackgroundColor3 = c
-                r.stroke.Color = c
+                if r.label.TextColor3 ~= c then r.label.TextColor3 = c end
+                if r.bar.BackgroundColor3 ~= c then r.bar.BackgroundColor3 = c end
+                if r.stroke.Color ~= c then r.stroke.Color = c end
             end
             if titleRow then
-                titleRow.slot.LayoutOrder = 0
+                if titleRow.slot.LayoutOrder ~= 0 then titleRow.slot.LayoutOrder = 0 end
                 local c = accentAt(0)
-                titleRow.label.TextColor3 = c
-                titleRow.bar.BackgroundColor3 = c
-                titleRow.stroke.Color = c
-                if titleRow.logoA then
+                if titleRow.label.TextColor3 ~= c then titleRow.label.TextColor3 = c end
+                if titleRow.bar.BackgroundColor3 ~= c then titleRow.bar.BackgroundColor3 = c end
+                if titleRow.stroke.Color ~= c then titleRow.stroke.Color = c end
+                if titleRow.logoA and titleRow.logoA.ImageColor3 ~= c then
                     titleRow.logoA.ImageColor3 = c
                 end
             end
@@ -10893,7 +10770,7 @@ _G.KAMUI_BuildGUI = function(UI)
         if dirty and now - lastApply >= 0.04 then
             dirty = false
             lastApply = now
-            if now - lastSweep >= 0.4 then
+            if now - lastSweep >= 1 then
                 lastSweep = now
                 sweepAll()
             end
@@ -10902,11 +10779,11 @@ _G.KAMUI_BuildGUI = function(UI)
                 h, s, v = St.h, St.s, St.v
             end
             paint(h, s, v)
-        elseif custom and now - lastSweep >= 1 then
+        elseif custom and now - lastSweep >= 5 then
             lastSweep = now
             sweepAll()
         end
-        if now - lastFont >= 1 then
+        if now - lastFont >= 5 then
             lastFont = now
             hookRoots()
             if St.font ~= "Gotham" then
@@ -10915,39 +10792,6 @@ _G.KAMUI_BuildGUI = function(UI)
         end
     end)
 end
--- GUI / Themes navigation and custom image / animated GIF backgrounds.
--- Load the single theme bundle through the same downloader and compiler used
--- by the other external modules, including its HTTP request fallback.
-local liteBootErrors = {}
-local KAMUI_ThemeBundle
- do
-    local ok, bundle, builder = pcall(function()
-        local compile, err = _G.KAMUI_LoadModule("Themes")
-        if not compile then error(err or "Could not load the theme bundle") end
-        local result = compile()
-        if type(result) ~= "table" or result.version ~= 1
-            or type(result.bindManager) ~= "function"
-            or type(result.liteSource) ~= "string" or type(result.hackerSource) ~= "string" then
-            error("Theme bundle is missing or incompatible")
-        end
-        local buildManager = result.bindManager({
-            MainFrame = MainFrame, THEME = THEME, HttpService = HttpService,
-            RunService = RunService, UIS = UIS, isCurrent = isCurrent,
-            getCurrentTab = function() return currentTab end,
-        })
-        if type(buildManager) ~= "function" then error("Theme manager is unavailable") end
-        return result, buildManager
-    end)
-    if ok then
-        KAMUI_ThemeBundle = bundle
-        _G.KAMUI_BuildThemes = builder
-    else
-        warn("[KAMUI] Theme bundle unavailable; using the default interface:", bundle)
-        table.insert(liteBootErrors, "Theme bundle: " .. tostring(bundle))
-        _G.KAMUI_BuildThemes = function() end
-    end
-end
-
 _G.KAMUI_Combat = _G.KAMUI_Combat or {}
 do
     local CC = _G.KAMUI_Combat
@@ -10987,7 +10831,7 @@ _G.KAMUI_BuildCombat = function(UI)
     end
     UI.setupPage(page)
     local CC = _G.KAMUI_Combat
-    -- Shared bridge: Lite calls the original actions.
+    -- Shared controls for the existing actions.
     local M1Bridge = { toggles = {}, sliders = {}, groups = {}, valid = isCurrent, accent = function() return THEME.Red end }
     _G.KAMUI_M1TestBridge = M1Bridge
     local CHIP, LINE = UI.CHIP, UI.LINE
@@ -13820,7 +13664,7 @@ _G.KAMUI_BuildCombat = function(UI)
         end)
     end
 end
--- Shared Fling feature; each Movement theme uses the same actions and state.
+-- Shared Fling feature.
 do
     if _G.KAMUI_FlingService and _G.KAMUI_FlingService.Destroy then
         pcall(_G.KAMUI_FlingService.Destroy)
@@ -14061,21 +13905,19 @@ return Fling
     function bridge.isRunning() return Fling.IsRunning() end
     function bridge.status() return state.status end
 
-    -- Native-style target selector and action rows. Main/option switches are
-    -- made by each theme's existing control builders.
+    -- Native-style target selector and action rows.
     _G.KAMUI_BuildFlingRows = function(parent, style)
         style = style or {}
         local z, fs = style.z or 2, style.fontSize or 12
         local height, optionHeight, listHeight = style.height or 39, style.optionHeight or 27, style.listHeight or 112
         local dropdownWidth = style.dropdownWidth or 120
-        local hacker = style.hacker == true
         local font = style.font or Enum.Font.GothamMedium
         local labelSize = style.labelSize or fs
         local labelInset = style.labelInset or 14
         local rightInset = style.rightInset or 14
         local rowWidthOffset = style.rowWidthOffset or 0
         local buttonHeight = style.buttonHeight or (height - 10)
-        local radius = hacker and 0 or 6
+        local radius = 6
         local function currentAccent()
             return type(style.accent) == "function" and style.accent() or THEME.Red
         end
@@ -14127,7 +13969,7 @@ return Fling
             CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y, ScrollBarThickness = 3,
             Active = true, Visible = false, ZIndex = z + 4 }, choose)
         list:SetAttribute("KamuiKeepColor", true)
-        make("UICorner", { CornerRadius = UDim.new(0, hacker and 0 or 7) }, list)
+        make("UICorner", { CornerRadius = UDim.new(0, 7) }, list)
         local listStroke = make("UIStroke", { Color = line, Thickness = 1 }, list)
         make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder }, list)
         make("UIPadding", { PaddingTop = UDim.new(0, 4), PaddingBottom = UDim.new(0, 4),
@@ -14186,7 +14028,7 @@ return Fling
             if opened then showList(true) end
             if #candidates == 0 then
                 make("TextLabel", { BackgroundTransparency = 1, Size = UDim2.new(1, -4, 0, optionHeight),
-                    Text = "No other players", Font = hacker and font or Enum.Font.Gotham, TextSize = fs,
+                    Text = "No other players", Font = Enum.Font.Gotham, TextSize = fs,
                     TextColor3 = muted, ZIndex = z + 5 }, list)
             end
             for i, p in ipairs(candidates) do
@@ -14233,24 +14075,23 @@ return Fling
             elapsed = 0
             targetRow.Visible, actionRow.Visible = style.alwaysVisible == true or state.enabled, style.alwaysVisible == true or state.enabled
             if not state.enabled and opened then showList(false) end
+            -- Skip visual synchronization when any ancestor is hidden. State
+            -- remains shared and is refreshed on the first visible tick.
+            local ancestor = targetRow.Parent
+            if not ancestor then return end
+            while ancestor do
+                if ancestor:IsA("GuiObject") and not ancestor.Visible then return end
+                if ancestor:IsA("ScreenGui") and not ancestor.Enabled then return end
+                ancestor = ancestor.Parent
+            end
             if lastSelected ~= state.selected then lastSelected = state.selected; refreshPlayers() end
             value.Text = state.selected and ("@" .. state.selected.Name) or "Select player"
             action.Text = "Fling"
             -- Blended custom colors are not in the old palette matcher, so
             -- bind these explicitly to the current live accent (including rainbow).
             local accent = currentAccent()
-            if hacker then
-                action.BackgroundColor3 = Color3.fromRGB(5, 20, 17)
-                action.TextColor3 = accent
-                local edge = accent:Lerp(Color3.fromRGB(0, 16, 13), 0.53)
-                actionStroke.Color, chooseStroke.Color, listStroke.Color = edge, edge, edge
-                for _, arm in ipairs(chevron:GetChildren()) do
-                    if arm:IsA("Frame") then arm.BackgroundColor3 = accent end
-                end
-            else
-                action.BackgroundColor3 = chip:Lerp(accent, 0.10)
-                actionStroke.Color = chip:Lerp(accent, 0.55)
-            end
+            action.BackgroundColor3 = chip:Lerp(accent, 0.10)
+            actionStroke.Color = chip:Lerp(accent, 0.55)
             list.ScrollBarImageColor3 = accent
             for _, child in ipairs(list:GetChildren()) do
                 if child:IsA("TextButton") then child.BackgroundColor3 = chip:Lerp(accent, 0.25) end
@@ -14992,191 +14833,10 @@ _G.KAMUI_ContentInit = function()
         local ok2, err = pcall(_G["KAMUI_Build" .. name], UI)
         if not ok2 then
             warn("[dw] " .. name .. " tab redesign failed:", err)
-            table.insert(liteBootErrors, name .. " setup: " .. tostring(err))
         end
-    end
-    local themeOk, themeErr = pcall(_G.KAMUI_BuildThemes)
-    if not themeOk then
-        warn("[KAMUI] themes setup failed:", themeErr)
-        table.insert(liteBootErrors, "Themes setup: " .. tostring(themeErr))
     end
 end
 _G.KAMUI_ContentInit()
 
--- Lite runs as a separate local chunk so it shares the established bridges,
--- while its GUI lifetime and visibility are controlled by the original window.
-do
-    _G.KAMUI_LiteActive = false
-    _G.KAMUI_LiteReady = false
-    local liteGui
-    _G.KAMUI_SetLiteEnabled = function(enabled)
-        enabled = enabled == true
-        if enabled and (not _G.KAMUI_LiteReady or not liteGui or not liteGui.Parent) then return false end
-        _G.KAMUI_LiteActive = enabled
-        if liteGui and liteGui.Parent then liteGui.Enabled = enabled end
-        MainFrame.Visible = not enabled
-        return true
-    end
-    local visibleConn = MainFrame:GetPropertyChangedSignal("Visible"):Connect(function()
-        if _G.KAMUI_LiteActive and MainFrame.Visible then MainFrame.Visible = false end
-    end)
-    ScreenGui.Destroying:Connect(function()
-        visibleConn:Disconnect()
-        _G.KAMUI_LiteActive = false
-        _G.KAMUI_LiteReady = false
-        _G.KAMUI_SetLiteEnabled = nil
-        if liteGui then liteGui:Destroy(); liteGui = nil end
-    end)
-    local source = KAMUI_ThemeBundle and KAMUI_ThemeBundle.liteSource
-    local ok, result = pcall(function()
-        local build, err = loadstring(source, "KAMUI Lite")
-        if not build then error(err or "Lite could not be compiled") end
-        return build()
-    end)
-    if ok and typeof(result) == "Instance" and result:IsA("ScreenGui") then
-        liteGui = result
-        _G.KAMUI_LiteReady = true
-        local themes = _G.KAMUI_ThemesTestBridge
-        if themes and themes.state and themes.state.selectedTheme == "Lite" then
-            _G.KAMUI_SetLiteEnabled(true)
-        end
-    else
-        local partial = game:GetService("CoreGui"):FindFirstChild("KAMUI_LiteInterface")
-        if partial then partial:Destroy() end
-        warn("[KAMUI] Lite could not be loaded; retaining the original window:", result)
-        -- Mobile-friendly diagnostic: the cause is otherwise only in the console.
-        if UIS.TouchEnabled then
-            pcall(function()
-                local details = ok and "Lite returned no ScreenGui." or tostring(result)
-                local bridge = _G.KAMUI_M1TestBridge
-                local themeBridge = _G.KAMUI_ThemesTestBridge
-                if not bridge or type(bridge.valid) ~= "function" or not bridge.valid() then
-                    details = details .. "\nMissing or inactive combat controls bridge."
-                end
-                if not themeBridge or type(themeBridge.error) ~= "function"
-                    or type(themeBridge.valid) ~= "function" or not themeBridge.valid() then
-                    details = details .. "\nMissing or inactive theme bridge."
-                end
-                if type(_G.KAMUI_InstrumentMusicTest) ~= "function" then
-                    details = details .. "\nMissing music bridge."
-                end
-                for _, message in ipairs(liteBootErrors) do
-                    details = details .. "\n" .. message
-                end
-                if #details > 1100 then details = details:sub(1, 1100) .. "..." end
-                local box = Instance.new("Frame")
-                box.Name = "LiteLoadDiagnostic"
-                box.AnchorPoint = Vector2.new(0.5, 0.5)
-                box.Position = UDim2.fromScale(0.5, 0.5)
-                box.Size = UDim2.new(0.9, 0, 0.7, 0)
-                box.BackgroundColor3 = Color3.fromRGB(24, 23, 27)
-                box.BorderSizePixel = 0
-                box.ZIndex = 200
-                box:SetAttribute("KamuiSkinned", true)
-                box.Parent = ScreenGui
-                local sizeLimit = Instance.new("UISizeConstraint")
-                sizeLimit.MaxSize = Vector2.new(620, 360)
-                sizeLimit.Parent = box
-                local corner = Instance.new("UICorner")
-                corner.CornerRadius = UDim.new(0, 10)
-                corner.Parent = box
-                local title = Instance.new("TextLabel")
-                title.BackgroundTransparency = 1
-                title.Position = UDim2.fromOffset(14, 8)
-                title.Size = UDim2.new(1, -28, 0, 32)
-                title.Font = Enum.Font.GothamBold
-                title.TextSize = 17
-                title.TextColor3 = Color3.new(1, 1, 1)
-                title.Text = "Lite theme couldn't load"
-                title.TextXAlignment = Enum.TextXAlignment.Left
-                title.ZIndex = 201
-                title:SetAttribute("KamuiSkinned", true)
-                title.Parent = box
-                local body = Instance.new("TextLabel")
-                body.BackgroundTransparency = 1
-                body.Position = UDim2.fromOffset(14, 42)
-                body.Size = UDim2.new(1, -28, 1, -98)
-                body.Font = Enum.Font.Code
-                body.TextSize = 13
-                body.TextColor3 = Color3.fromRGB(235, 230, 235)
-                body.TextWrapped = true
-                body.TextXAlignment = Enum.TextXAlignment.Left
-                body.TextYAlignment = Enum.TextYAlignment.Top
-                body.Text = "Please screenshot this message:\n\n" .. details
-                body.ZIndex = 201
-                body:SetAttribute("KamuiSkinned", true)
-                body.Parent = box
-                local close = Instance.new("TextButton")
-                close.AnchorPoint = Vector2.new(1, 1)
-                close.Position = UDim2.new(1, -14, 1, -10)
-                close.Size = UDim2.fromOffset(100, 36)
-                close.BackgroundColor3 = Color3.fromRGB(62, 58, 66)
-                close.BorderSizePixel = 0
-                close.Font = Enum.Font.GothamMedium
-                close.TextSize = 14
-                close.TextColor3 = Color3.new(1, 1, 1)
-                close.Text = "Close"
-                close.ZIndex = 201
-                close:SetAttribute("KamuiSkinned", true)
-                close.Parent = box
-                local closeCorner = Instance.new("UICorner")
-                closeCorner.CornerRadius = UDim.new(0, 6)
-                closeCorner.Parent = close
-                close.MouseButton1Click:Connect(function() box:Destroy() end)
-            end)
-        end
-        local themes = _G.KAMUI_ThemesTestBridge
-        if themes and themes.state and themes.state.selectedTheme == "Lite" and themes.valid() then themes.chooseDefault() end
-    end
-end
-
--- Hacker is built only when selected. The normal script and its bridges remain
--- the single source of gameplay state, persistence, music and hide effects.
-do
-    _G.KAMUI_HackerActive = false
-    local hackerGui
-    local hackerSource = KAMUI_ThemeBundle and KAMUI_ThemeBundle.hackerSource
-    _G.KAMUI_SetHackerEnabled = function(enabled)
-        enabled = enabled == true
-        if not enabled then
-            _G.KAMUI_HackerActive = false
-            if hackerGui then local old=hackerGui;hackerGui=nil;old:Destroy() end
-            return true
-        end
-        if hackerGui and hackerGui.Parent then _G.KAMUI_HackerActive=true;return true end
-        local wasLite = _G.KAMUI_LiteActive == true
-        if wasLite and type(_G.KAMUI_SetLiteEnabled)=="function" then _G.KAMUI_SetLiteEnabled(false) end
-        local ok,result = pcall(function()
-            local build,err=loadstring(hackerSource,"KAMUI Hacker")
-            if not build then error(err or "Hacker could not be compiled") end
-            return build()
-        end)
-        if ok and typeof(result)=="Instance" and result:IsA("ScreenGui") then
-            hackerGui=result;_G.KAMUI_HackerActive=true
-            return true
-        end
-        local partial=game:GetService("CoreGui"):FindFirstChild("KAMUI_HackerInterface")
-        if partial then partial:Destroy() end
-        _G.KAMUI_HackerActive=false
-        if wasLite and type(_G.KAMUI_SetLiteEnabled)=="function" then _G.KAMUI_SetLiteEnabled(true) end
-        warn("[KAMUI] Hacker could not be loaded; retaining the current theme:",result)
-        return false
-    end
-    ScreenGui.Destroying:Connect(function()
-        if hackerGui then local old=hackerGui;hackerGui=nil;old:Destroy() end
-        _G.KAMUI_HackerActive=false
-        _G.KAMUI_SetHackerEnabled=nil
-    end)
-    local themes=_G.KAMUI_ThemesTestBridge
-    if themes and themes.state and themes.state.selectedTheme=="Hacker" then
-        if not _G.KAMUI_SetHackerEnabled(true) and themes.valid() then themes.chooseDefault() end
-    end
-end
-
-task.delay(3, function()
-    for name in pairs(_G.KAMUI_Modules) do
-        task.spawn(function()
-            pcall(_G.KAMUI_FetchModule, name)
-        end)
-    end
-end)
+-- Other modules are fetched and cached on demand by KAMUI_LoadModule.
+-- Avoid downloading unused modules in the background at every startup.
