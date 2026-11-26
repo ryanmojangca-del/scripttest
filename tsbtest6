@@ -1920,6 +1920,17 @@ do
     end)
 end
 do
+    -- Keep the animated window border preference across executions when supported.
+    local BORDER_FILE = "KAMUI_Borders.txt"
+    local bordersEnabled = _G.KAMUI_BordersEnabled ~= false
+    pcall(function()
+        if type(isfile) == "function" and type(readfile) == "function" and isfile(BORDER_FILE) then
+            local saved = readfile(BORDER_FILE)
+            if saved == "on" then bordersEnabled = true
+            elseif saved == "off" then bordersEnabled = false end
+        end
+    end)
+    _G.KAMUI_BordersEnabled = bordersEnabled
     local seq = ColorSequence.new({
         ColorSequenceKeypoint.new(0, Color3.fromRGB(110, 0, 10)),
         ColorSequenceKeypoint.new(0.25, Color3.fromRGB(255, 24, 30)),
@@ -1990,7 +2001,7 @@ do
         holder.Position = MainFrame.Position
         holder.Size = MainFrame.Size
         holder.Rotation = MainFrame.Rotation
-        holder.Visible = MainFrame.Visible
+        holder.Visible = bordersEnabled and MainFrame.Visible
         if windowScale then
             holderScale.Scale = windowScale.Scale
         end
@@ -2005,34 +2016,52 @@ do
     local conn
     local BORDER_UPDATE_INTERVAL = 1 / 30
     local borderElapsed = BORDER_UPDATE_INTERVAL
-    conn = RunService.RenderStepped:Connect(function(dt)
+    local function stopBorderUpdates()
+        if conn then conn:Disconnect(); conn = nil end
+    end
+    local function stepBorder(dt)
         if not isCurrent() or not MainFrame or not MainFrame.Parent then
-            conn:Disconnect()
+            stopBorderUpdates()
             holder:Destroy()
             return
         end
-        -- No visual updates are needed while the window itself is hidden.
         if not ScreenGui.Enabled or not MainFrame.Visible then
             borderElapsed = BORDER_UPDATE_INTERVAL
             return
         end
-        -- Bound visual work to 30 updates/second; elapsed time keeps the same speed.
         borderElapsed = borderElapsed + dt
-        if borderElapsed < BORDER_UPDATE_INTERVAL then
-            return
-        end
+        if borderElapsed < BORDER_UPDATE_INTERVAL then return end
         borderElapsed = borderElapsed % BORDER_UPDATE_INTERVAL
         local t = os.clock()
         local rot = (t * 60) % 360
         local pulse = 0.5 + (0.5 * math.sin(t * 2))
-        for _, g in ipairs(gradients) do
-            g.Rotation = rot
-        end
+        for _, g in ipairs(gradients) do g.Rotation = rot end
         GlowUIStroke.Transparency = 0.05 + (0.1 * pulse)
         for i, st in ipairs(strokes) do
             st.Transparency = math.clamp(baseT[i] - (0.12 * pulse), 0, 1)
         end
-    end)
+    end
+    local function setBorders(on, save)
+        if not isCurrent() then return end
+        bordersEnabled = on == true
+        _G.KAMUI_BordersEnabled = bordersEnabled
+        GlowUIStroke.Enabled = bordersEnabled
+        for _, st in ipairs(strokes) do st.Enabled = bordersEnabled end
+        holder.Visible = bordersEnabled and MainFrame.Visible
+        if bordersEnabled then
+            if not conn then
+                borderElapsed = BORDER_UPDATE_INTERVAL
+                conn = RunService.RenderStepped:Connect(stepBorder)
+            end
+        else
+            stopBorderUpdates() -- no border animation callback while off
+        end
+        if save and type(writefile) == "function" then
+            pcall(writefile, BORDER_FILE, bordersEnabled and "on" or "off")
+        end
+    end
+    _G.KAMUI_SetBordersEnabled = function(on) setBorders(on, true) end
+    setBorders(bordersEnabled, false)
 end
 local HomeTabBtn = Instance.new("TextButton")
 HomeTabBtn.Parent = TabHeader
@@ -9586,6 +9615,45 @@ _G.KAMUI_BuildGUI = function(UI)
             dirty = true
         end
     end)
+    local bordersCard = UI.card(page, "Borders")
+    local bordersRow = mk("Frame", { Name = "BordersRow", BackgroundTransparency = 1, BorderSizePixel = 0 }, nil)
+    UI.addRow(bordersCard, bordersRow, UI.ROW_SUB)
+    mk("TextLabel", {
+        Name = "RowLabel", BackgroundTransparency = 1,
+        Position = UDim2.new(0, 12, 0, 5), Size = UDim2.new(1, -100, 0, 20),
+        Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = THEME.Text,
+        TextXAlignment = Enum.TextXAlignment.Left, Text = "Borders"
+    }, bordersRow)
+    UI.subtitle(bordersRow, "Animated window border and glow", 100)
+    local bordersTrack = mk("Frame", {
+        Name = "BordersTrack", BorderSizePixel = 0, AnchorPoint = Vector2.new(1, 0.5),
+        Position = UDim2.new(1, -12, 0.5, 0), Size = UDim2.new(0, 36, 0, 20),
+        BackgroundColor3 = OFF_TRACK
+    }, bordersRow)
+    UI.corner(bordersTrack, 10)
+    local bordersKnob = mk("Frame", {
+        Name = "BordersKnob", BorderSizePixel = 0, Size = UDim2.new(0, 14, 0, 14),
+        Position = UDim2.new(0, 3, 0.5, -7), BackgroundColor3 = OFF_KNOB
+    }, bordersTrack)
+    UI.corner(bordersKnob, 7)
+    local function paintBorders(accent)
+        local on = _G.KAMUI_BordersEnabled == true
+        bordersTrack.BackgroundColor3 = on and (accent or THEME.Red) or OFF_TRACK
+        bordersKnob.Position = on and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+        bordersKnob.BackgroundColor3 = on and WHITE or OFF_KNOB
+    end
+    local bordersHit = mk("TextButton", {
+        Name = "BordersHit", BackgroundTransparency = 1, Text = "",
+        Size = UDim2.new(0, 72, 1, 0), Position = UDim2.new(1, -72, 0, 0)
+    }, bordersRow)
+    bordersHit.MouseButton1Click:Connect(function()
+        if not isCurrent() then return end
+        if type(_G.KAMUI_SetBordersEnabled) == "function" then
+            _G.KAMUI_SetBordersEnabled(not _G.KAMUI_BordersEnabled)
+            paintBorders()
+        end
+    end)
+    paintBorders()
     local rbCard = UI.card(page, "Rainbow")
     local rbRow = mk("Frame", { Name = "RainbowRow", BackgroundTransparency = 1, BorderSizePixel = 0 }, nil)
     UI.addRow(rbCard, rbRow, UI.ROW_SUB)
@@ -10755,6 +10823,7 @@ _G.KAMUI_BuildGUI = function(UI)
                 and math.abs(pr.s - St.s) < 0.02 and math.abs(pr.v - St.v) < 0.02
                 and (pr.s < 0.08 or math.min(math.abs(pr.h - St.h), 1 - math.abs(pr.h - St.h)) < 0.01)
         end
+        paintBorders(eff)
         rbTrack.BackgroundColor3 = St.rainbow and eff or OFF_TRACK
         rbKnob.Position = St.rainbow and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
         rbKnob.BackgroundColor3 = St.rainbow and WHITE or OFF_KNOB
@@ -14799,3 +14868,4 @@ task.delay(3, function()
         end)
     end
 end)
+
