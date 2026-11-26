@@ -1,0 +1,117 @@
+    return game:GetService("VirtualInputManager").ClassName
+end)
+
+probe("CoreGui service access", function()
+    return game:GetService("CoreGui").Name
+end)
+
+probe("CoreGui parenting permission (temporary test)", function()
+    local core = game:GetService("CoreGui")
+    local testGui = Instance.new("ScreenGui")
+    testGui.Name = "__DeltaDiagTemp"
+    testGui.ResetOnSpawn = false
+    testGui.Parent = core
+    assert(testGui.Parent == core, "Parent did not stick")
+    testGui:Destroy()
+    return "Create/parent/destroy succeeded"
+end)
+
+probe("PlayerGui parenting permission (temporary test)", function()
+    assert(playerGui, "PlayerGui unavailable")
+    local testGui = Instance.new("ScreenGui")
+    testGui.Name = "__DeltaDiagTemp"
+    testGui.ResetOnSpawn = false
+    testGui.Parent = playerGui
+    assert(testGui.Parent == playerGui, "Parent did not stick")
+    testGui:Destroy()
+    return "Create/parent/destroy succeeded"
+end)
+
+add("gethui()", type(gethui) == "function",
+    type(gethui) == "function" and "Function exists" or "Not provided")
+add("protect_gui()", type(protect_gui) == "function",
+    type(protect_gui) == "function" and "Function exists" or "Not provided")
+add("loadstring", type(loadstring) == "function",
+    type(loadstring) == "function" and "Function exists" or "Not provided")
+add("request / http_request", type(request) == "function" or type(http_request) == "function",
+    "request=" .. type(request) .. ", http_request=" .. type(http_request))
+add("readfile / isfile", type(readfile) == "function" and type(isfile) == "function",
+    "readfile=" .. type(readfile) .. ", isfile=" .. type(isfile))
+probe("Stats memory reading", function()
+    local stats = game:GetService("Stats")
+    return string.format("%.1f MB", stats:GetTotalMemoryUsageMb())
+end)
+
+local passed, failed = 0, 0
+for _, item in ipairs(results) do
+    if item.ok then passed = passed + 1 else failed = failed + 1 end
+end
+
+local lines = {
+    "DELTA MOBILE DIAGNOSTIC",
+    "Executor: " .. executorName,
+    string.format("Passed: %d   Failed: %d", passed, failed),
+    "------------------------------"
+}
+for _, item in ipairs(results) do
+    lines[#lines + 1] = (item.ok and "[PASS] " or "[FAIL] ")
+        .. item.name .. " : " .. item.detail
+end
+local report = table.concat(lines, "\n")
+print(report)
+
+-- Show a report in PlayerGui if it can be created. Console output above
+-- remains the fallback if this UI cannot be displayed.
+pcall(function()
+    if not playerGui then return end
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "DeltaDiagnosticReport"
+    gui.ResetOnSpawn = false
+    gui.DisplayOrder = 999999
+    gui.Parent = playerGui
+
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(0.94, 0, 0.82, 0)
+    frame.Position = UDim2.new(0.03, 0, 0.09, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
+    frame.BorderSizePixel = 0
+    frame.Parent = gui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = frame
+
+    local close = Instance.new("TextButton")
+    close.Size = UDim2.new(0, 42, 0, 34)
+    close.Position = UDim2.new(1, -46, 0, 5)
+    close.Text = "X"
+    close.TextColor3 = Color3.new(1, 1, 1)
+    close.BackgroundColor3 = Color3.fromRGB(130, 20, 25)
+    close.Parent = frame
+    close.Activated:Connect(function() gui:Destroy() end)
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -16, 1, -16)
+    label.Position = UDim2.new(0, 8, 0, 8)
+    label.BackgroundTransparency = 1
+    label.TextColor3 = Color3.fromRGB(235, 235, 235)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextYAlignment = Enum.TextYAlignment.Top
+    label.Font = Enum.Font.Code
+    label.TextSize = 12
+    label.TextWrapped = true
+    label.Text = report
+    label.Parent = frame
+
+    local scroll = Instance.new("ScrollingFrame")
+    scroll.Size = UDim2.new(1, -16, 1, -54)
+    scroll.Position = UDim2.new(0, 8, 0, 46)
+    scroll.BackgroundTransparency = 1
+    scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 6
+    scroll.CanvasSize = UDim2.new(0, 0, 0, #report * 0.42)
+    scroll.Parent = frame
+    label.Parent = scroll
+    label.Size = UDim2.new(1, -8, 0, math.max(250, #report * 0.42))
+    label.Position = UDim2.new(0, 0, 0, 0)
+end)
